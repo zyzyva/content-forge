@@ -51,10 +51,13 @@ Acceptance criteria:
 - **Smart review models** (Claude Opus, Gemini Pro, xAI): score and critique drafts, vote on winners, write improvement notes
 
 **Pipeline stages:**
-- Stage 1 (Content brief -- living strategy doc): On first run, query Claude, Gemini, and xAI with the product snapshot asking what makes high-ranking content in this niche. Synthesize into a content brief. On subsequent runs, the brief is rewritten (not appended to) by a smart model that receives: the product snapshot, the full performance scoreboard (see Feature 7), and the previous brief. The rewrite identifies which angles/formats/hooks are working, which are underperforming, and what to try next. This is the system's "program.md" -- the strategic document that steers all generation.
+- Stage 0 (Competitor intelligence): Before generating, pull recent top-performing content from competitor accounts in the same niche (via Apify/content intelligence). Feed trending topics, formats, hooks, and engagement patterns into the content brief. "Competitors are getting 5x engagement on before/after posts this month" directly steers what OC generates.
+- Stage 1 (Content brief -- living strategy doc): On first run, query Claude, Gemini, and xAI with the product snapshot and competitor intelligence asking what makes high-ranking content in this niche. Synthesize into a content brief. On subsequent runs, the brief is rewritten (not appended to) by a smart model that receives: the product snapshot, competitor intel, the full performance scoreboard (see Feature 7), and the previous brief. The rewrite identifies which angles/formats/hooks are working, which are underperforming, and what to try next. This is the system's "program.md" -- the strategic document that steers all generation.
 - Stage 2 (Bulk generation via OpenClaw): OpenClaw generates N variants of each content type per run -- for example, 20 Twitter posts, 10 LinkedIn posts, 5 blog drafts, 10 video scripts. Each variant takes a different angle (educational, entertaining, problem-aware, social proof, etc.). Every batch must include at least one explicitly humorous/funny variant per content type -- humor is a required angle, not optional. OpenClaw receives the full content brief including performance insights so it biases toward what's working.
 - Stage 3 (Multi-model ranking with performance context): Each smart model independently scores every draft on accuracy (0-10), SEO relevance (0-10), and entertainment/education value (0-10). Critically, each model also receives the performance scoreboard showing: how similar past content actually performed, how accurate that model's previous scores were vs real engagement (calibration data), and which angles/formats are currently outperforming. This lets models learn from their own prediction errors. Scores are averaged across models. Each model also writes a short critique that references performance data ("this angle has historically underperformed for this product" or "similar hooks drove 3x engagement last month"). Top-scoring drafts per content type advance; the rest are archived.
+- Stage 3.5 (Image generation -- required for social posts): Every social post that advances past ranking gets an AI-generated image tailored to the content. The image prompt is derived from the post text and product branding by a smart model. Images are generated via AI image generation (Flux/DALL-E/etc), stored in R2, and attached at publish time. This is not optional -- posts with images dramatically outperform text-only on every platform.
 - Stage 4 (Script gate -- video only): Before any video is produced, the top-ranked scripts go through a second ranking pass focused specifically on visual storytelling, hook strength, and retention. Only scripts clearing a configurable threshold proceed to video production. This gate prevents spending on HeyGen/ElevenLabs for weak scripts.
+- Stage 5 (Winner repurposing): When performance metrics confirm a published piece is a winner (above rolling average), automatically queue cross-platform variants. A winning Twitter post spawns LinkedIn, Reddit, and blog expansion drafts. A winning blog post spawns social post variants and a video script. Repurposed variants enter Stage 2 with a "repurposed_from" link to the original and go through normal ranking. This is how one hit becomes 10 pieces of content.
 
 Acceptance criteria:
 - [ ] Content brief generation queries at least 2 smart models and stores the synthesized brief per product with a timestamp and version number
@@ -70,6 +73,26 @@ Acceptance criteria:
 - [ ] All generation and ranking jobs run via Oban with retry support
 - [ ] Content brief, all variants, scores, and critiques are accessible via REST API
 - [ ] External models (OpenClaw or others) can submit new variants and scores via API without going through the LiveView
+- [ ] Competitor intelligence: configurable list of competitor social accounts per product. Before each generation run, an Oban job scrapes recent posts from competitor accounts (via Apify), extracts top-performing content by engagement, and summarizes trending topics/formats/hooks. Summary is included in the content brief.
+- [ ] Image generation: every social post that passes ranking gets an AI-generated image. A smart model writes an image prompt from the post text + product branding. Image is generated via configurable provider (Flux/DALL-E), stored in R2, and linked to the draft. Image generation runs as an Oban job after ranking, before scheduling.
+- [ ] Winner repurposing: when a published piece is labeled "winner" by the scoreboard, an Oban job automatically generates cross-platform variants (Twitter winner -> LinkedIn/Reddit/blog drafts, blog winner -> social posts + video script). Repurposed drafts have a repurposed_from field linking to the original and enter the normal ranking pipeline.
+- [ ] POST /api/products/:id/competitors -- add/remove competitor accounts for a product
+- [ ] GET /api/products/:id/competitor-intel -- retrieve latest competitor intelligence summary
+
+---
+
+### Feature 3.5: Competitor Content Monitoring
+
+**Purpose:** Know what's working in the niche before generating content. Track competitor accounts, scrape their recent posts, identify top-performing formats and hooks, and feed that intelligence into the content brief.
+
+Acceptance criteria:
+- [ ] Each product has a list of competitor social accounts (platform + handle/URL)
+- [ ] A scheduled Oban job (configurable cadence, default weekly) scrapes recent posts from each competitor account via Apify
+- [ ] Posts are scored by engagement (likes, shares, comments relative to the account's average)
+- [ ] A summary job synthesizes the top-performing competitor content into a "competitor intel" document: trending topics, winning formats, effective hooks, engagement patterns
+- [ ] Competitor intel is stored per product with a timestamp and included in the content brief context
+- [ ] Dashboard shows competitor content trends alongside your own performance
+- [ ] Competitor accounts and intel are manageable via REST API
 
 ---
 
@@ -78,13 +101,15 @@ Acceptance criteria:
 **Purpose:** Publish approved short-form posts to Twitter/X, LinkedIn, Reddit, and Facebook/Instagram.
 
 Acceptance criteria:
-- [ ] Twitter/X: Post text (up to 280 chars), with optional image attachment, via Twitter v2 API
-- [ ] LinkedIn: Post text + optional image to a personal profile or company page via LinkedIn API
-- [ ] Reddit: Submit a text post to a configured subreddit via Reddit API
-- [ ] Facebook/Instagram: Post text + optional image via Meta Graph API
+- [ ] Twitter/X: Post text (up to 280 chars) with image attachment via Twitter v2 API
+- [ ] LinkedIn: Post text + image to a personal profile or company page via LinkedIn API
+- [ ] Reddit: Submit a text post to a configured subreddit via Reddit API (image optional per subreddit rules)
+- [ ] Facebook/Instagram: Post text + image via Meta Graph API
+- [ ] All social posts include the AI-generated image from Stage 3.5 -- image is required, not optional
 - [ ] Each connector retrieves its OAuth tokens / API keys from 1Password at runtime
 - [ ] A failed publish is retried via Oban (up to 3 attempts) and flagged if all retries fail
 - [ ] Published posts record the platform post ID, timestamp, and link
+- [ ] Post timing optimization: track engagement by hour-of-day and day-of-week per platform per product. The scheduler picks optimal posting windows based on historical performance. Falls back to configured cadence when insufficient data exists (fewer than 20 published posts).
 
 ---
 
@@ -152,8 +177,13 @@ Acceptance criteria:
 - [ ] The scoreboard and model calibration data are available via API so OpenClaw and smart models can read them during generation and ranking
 - [ ] GET /api/products/:id/scoreboard -- returns the performance scoreboard for a product, filterable by platform, angle, date range
 - [ ] GET /api/products/:id/calibration -- returns per-model calibration data for a product
-- [ ] Dashboard shows per-content performance: views/engagement trend, retention curve for videos, flag for clippable segments, winner/loser labels
+- [ ] Engagement spike alerts: a fast-cadence poller (hourly for first 24h after publishing) checks early engagement. If a post's engagement in the first hour exceeds 3x the product's average for that platform, flag it as "hot" on the dashboard. Hot posts are candidates for paid boosting or rapid follow-up content.
+- [ ] Comment volume flagging: when a post accumulates comments above a configurable threshold (default 10), flag it as "needs attention" on the dashboard so the human can personally engage. Pull comment count alongside other metrics. Dashboard shows a dedicated "needs reply" queue.
+- [ ] Winner repurposing trigger: when a piece is labeled "winner", automatically trigger cross-platform variant generation (see Stage 5 in Feature 3). Track which repurposed variants came from which original.
+- [ ] Dashboard shows per-content performance: views/engagement trend, retention curve for videos, flag for clippable segments, winner/loser labels, hot/needs-reply flags
 - [ ] GET /api/products/:id/metrics -- returns aggregated performance data per product
+- [ ] GET /api/products/:id/hot -- returns currently hot posts (engagement spike in first 24h)
+- [ ] GET /api/products/:id/needs-reply -- returns posts with high comment counts needing personal engagement
 - [ ] GET /api/videos/:id/retention -- returns the retention curve data and any flagged clip segments
 
 ---
@@ -207,18 +237,23 @@ Acceptance criteria:
 - [ ] 1d. Product registry CRUD: Ecto schema, context functions, LiveView UI, API endpoints (depends on 1a, 1b)
 - [ ] 1e. Blog webhook registry: schema + CRUD + HMAC signing util (depends on 1d)
 
-### Phase 2: Content Ingestion (items 2a–2b are independent)
+### Phase 2: Content Ingestion + Competitor Intelligence (items 2a–2b, 2d are independent)
 
 - [ ] 2a. Repo cloning + extraction: Oban job that git clones to temp dir, reads README/docs, extracts text up to token limit, stores snapshot in R2
 - [ ] 2b. Site crawler: Oban job that fetches N pages via WebFetch/Playwright, extracts text + screenshots, stores in R2
 - [ ] 2c. Product snapshot schema + storage: link snapshot metadata (timestamp, R2 keys) to product in DB (depends on 2a, 2b)
+- [ ] 2d. Competitor account registry: schema (product_id, platform, handle/URL), CRUD in Products context, API endpoints
+- [ ] 2e. Competitor scraper: Oban job that scrapes recent posts from competitor accounts via Apify, scores by relative engagement, stores raw data (depends on 2d)
+- [ ] 2f. Competitor intel synthesizer: Oban job that takes scraped competitor posts and generates a "competitor intel" summary (trending topics, winning formats, effective hooks) via a smart model. Stored per product with timestamp. (depends on 2e)
 
-### Phase 3: AI Generation Pipeline (3a → 3b → 3c → 3d sequential)
+### Phase 3: AI Generation Pipeline (3a -> 3b -> 3c -> 3d -> 3e sequential, 3f independent)
 
-- [ ] 3a. Content brief system: brief schema with version history (brief_versions table). On first run, query Claude/Gemini/xAI with snapshot context, synthesize into initial brief. On subsequent runs with performance data, rewrite the brief using scoreboard + calibration data instead of appending.
-- [ ] 3b. OpenClaw bulk generation: Oban job calls OpenClaw API with content brief (including performance insights) -> N variants per platform, N blog drafts, N video scripts; store all as draft records with angle/type label
+- [ ] 3a. Content brief system: brief schema with version history (brief_versions table). On first run, query Claude/Gemini/xAI with snapshot + competitor intel context, synthesize into initial brief. On subsequent runs with performance data, rewrite the brief using scoreboard + calibration + competitor intel instead of appending.
+- [ ] 3b. OpenClaw bulk generation: Oban job calls OpenClaw API with content brief (including performance insights + competitor intel) -> N variants per platform, N blog drafts, N video scripts; store all as draft records with angle/type label
 - [ ] 3c. Multi-model ranking with performance context: Oban job calls each smart model with: the drafts to score, the product's performance scoreboard, and that model's own calibration data (avg predicted vs actual delta). Models score and critique with awareness of what has actually worked. Store per-model scores + critique; compute composite score; promote top N per type to review queue (depends on 3b)
 - [ ] 3d. Script gate: second Oban ranking pass on video scripts only; scripts below threshold are archived; approved scripts enqueue video production jobs (depends on 3c)
+- [ ] 3e. Image generation for social posts: Oban job for each ranked social post. Smart model writes an image prompt from post text + product branding. Image generated via configurable provider (Flux/DALL-E), stored in R2, linked to draft. Required before scheduling. (depends on 3c)
+- [ ] 3f. Winner repurposing engine: Oban job triggered when scoreboard labels a piece as "winner". Generates cross-platform variants (Twitter -> LinkedIn/Reddit/blog, blog -> social + video script). Repurposed drafts enter Stage 3b with repurposed_from link. (depends on Phase 7 scoreboard, runs async)
 
 ### Phase 4: Short-form Publishing (4a–4d are independent of each other, depend on Phase 3)
 
@@ -226,7 +261,7 @@ Acceptance criteria:
 - [ ] 4b. LinkedIn connector: OAuth2 client, post to profile/page, retry on failure
 - [ ] 4c. Reddit connector: OAuth2 client, submit text post to configured subreddit
 - [ ] 4d. Facebook/Instagram connector: Meta Graph API client, post text + image
-- [ ] 4e. Oban scheduler: per-product, per-platform job that picks next approved draft and calls the right connector (depends on 4a–4d)
+- [ ] 4e. Oban scheduler with timing optimization: per-product, per-platform job that picks next approved draft and calls the right connector. Tracks engagement by hour-of-day and day-of-week per platform per product. Picks optimal posting windows from historical data (requires 20+ published posts, falls back to configured cadence before that). (depends on 4a-4d)
 
 ### Phase 5: Blog Publishing (depends on Phase 3)
 
@@ -255,6 +290,9 @@ Acceptance criteria:
 - [ ] 7f. Clip production job: when a clip is approved, cut the source video using FFmpeg and enqueue for short-form publishing
 - [ ] 7g. Content brief rewrite job: Oban job triggered when 5+ new measured pieces exist since last rewrite. Sends scoreboard + calibration + current brief + snapshot to a smart model. Replaces the current brief with the rewrite, stores old version in brief_versions table.
 - [ ] 7h. Scoreboard and calibration API endpoints: GET /api/products/:id/scoreboard, GET /api/products/:id/calibration
+- [ ] 7i. Engagement spike detector: hourly Oban poller for first 24h after publishing. If a post's engagement in first hour exceeds 3x the product's platform average, flag as "hot". Dashboard shows hot posts prominently. API: GET /api/products/:id/hot
+- [ ] 7j. Comment volume monitor: pull comment counts alongside other metrics. When a post exceeds configurable threshold (default 10 comments), flag as "needs reply" on dashboard. API: GET /api/products/:id/needs-reply. Include direct link to the post on the platform so human can respond immediately.
+- [ ] 7k. Winner repurposing trigger: when scoreboard labels a piece as "winner", enqueue the repurposing engine (Phase 3, item 3f) to generate cross-platform variants automatically
 
 ### Phase 8: Dashboard (depends on Phases 1–7)
 
@@ -263,19 +301,22 @@ Acceptance criteria:
 - [ ] 8c. Script ranking LiveView (video scripts ranked with gate threshold visible)
 - [ ] 8d. Schedule + publishing history LiveView with live metrics inline
 - [ ] 8e. Video pipeline status board LiveView (per-step progress)
-- [ ] 8f. Performance dashboard: trends, retention curves, clip flags
+- [ ] 8f. Performance dashboard: trends, retention curves, clip flags, competitor intel comparison
 - [ ] 8g. Clip queue LiveView (approve flagged segments for short-form production)
-- [ ] 8h. Mobile responsiveness + accessibility pass
+- [ ] 8h. Hot posts + needs-reply queue LiveView (engagement spikes, high-comment posts with direct platform links)
+- [ ] 8i. Competitor intel LiveView (trending topics, top competitor content, side-by-side with your performance)
+- [ ] 8j. Mobile responsiveness + accessibility pass
 
 ---
 
 ## Parallelization Notes
 
 - Phase 1 items 1a, 1b, 1c can be built simultaneously by separate agents
-- Phase 2 items 2a and 2b (repo vs site ingestion) are fully independent
-- Phase 4 items 4a–4d (social connectors) are all independent — one agent per connector
+- Phase 2 items 2a, 2b, and 2d (repo ingestion, site crawler, competitor registry) are fully independent
+- Phase 3 item 3e (image generation) and 3f (winner repurposing) are independent of each other
+- Phase 4 items 4a-4d (social connectors) are all independent -- one agent per connector
 - Phase 6 items 6a, 6b, 6c (voiceover, screen recording, talking head) are independent until assembly
-- Phase 7 items 7a and 7b (YouTube vs social metrics) are independent
+- Phase 7 items 7c and 7d (YouTube vs social metrics) are independent; 7i and 7j (spike detector, comment monitor) are independent
 - Phase 8 LiveView pages can all be built in parallel once data layers exist
 
 ---
