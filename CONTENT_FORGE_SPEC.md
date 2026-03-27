@@ -51,13 +51,15 @@ Acceptance criteria:
 - **Smart review models** (Claude Opus, Gemini Pro, xAI): score and critique drafts, vote on winners, write improvement notes
 
 **Pipeline stages:**
-- Stage 1 (Content brief): Query Claude, Gemini, and xAI with the product snapshot asking what makes high-ranking content in this niche. Synthesize their responses into a content brief stored per product. Refresh when performance data changes significantly.
-- Stage 2 (Bulk generation via OpenClaw): OpenClaw generates N variants of each content type per run — for example, 20 Twitter posts, 10 LinkedIn posts, 5 blog drafts, 10 video scripts. Each variant takes a different angle (educational, entertaining, problem-aware, social proof, etc.). Every batch must include at least one explicitly humorous/funny variant per content type — humor is a required angle, not optional.
-- Stage 3 (Multi-model ranking): Each smart model independently scores every draft on accuracy (0-10), SEO relevance (0-10), and entertainment/education value (0-10). Scores are averaged across models. Each model also writes a short critique. Top-scoring drafts per content type advance; the rest are archived.
-- Stage 4 (Script gate — video only): Before any video is produced, the top-ranked scripts go through a second ranking pass focused specifically on visual storytelling, hook strength, and retention. Only scripts clearing a configurable threshold proceed to video production. This gate prevents spending on HeyGen/ElevenLabs for weak scripts.
+- Stage 1 (Content brief -- living strategy doc): On first run, query Claude, Gemini, and xAI with the product snapshot asking what makes high-ranking content in this niche. Synthesize into a content brief. On subsequent runs, the brief is rewritten (not appended to) by a smart model that receives: the product snapshot, the full performance scoreboard (see Feature 7), and the previous brief. The rewrite identifies which angles/formats/hooks are working, which are underperforming, and what to try next. This is the system's "program.md" -- the strategic document that steers all generation.
+- Stage 2 (Bulk generation via OpenClaw): OpenClaw generates N variants of each content type per run -- for example, 20 Twitter posts, 10 LinkedIn posts, 5 blog drafts, 10 video scripts. Each variant takes a different angle (educational, entertaining, problem-aware, social proof, etc.). Every batch must include at least one explicitly humorous/funny variant per content type -- humor is a required angle, not optional. OpenClaw receives the full content brief including performance insights so it biases toward what's working.
+- Stage 3 (Multi-model ranking with performance context): Each smart model independently scores every draft on accuracy (0-10), SEO relevance (0-10), and entertainment/education value (0-10). Critically, each model also receives the performance scoreboard showing: how similar past content actually performed, how accurate that model's previous scores were vs real engagement (calibration data), and which angles/formats are currently outperforming. This lets models learn from their own prediction errors. Scores are averaged across models. Each model also writes a short critique that references performance data ("this angle has historically underperformed for this product" or "similar hooks drove 3x engagement last month"). Top-scoring drafts per content type advance; the rest are archived.
+- Stage 4 (Script gate -- video only): Before any video is produced, the top-ranked scripts go through a second ranking pass focused specifically on visual storytelling, hook strength, and retention. Only scripts clearing a configurable threshold proceed to video production. This gate prevents spending on HeyGen/ElevenLabs for weak scripts.
 
 Acceptance criteria:
-- [ ] Content brief generation queries at least 2 smart models and stores the synthesized brief per product with a timestamp
+- [ ] Content brief generation queries at least 2 smart models and stores the synthesized brief per product with a timestamp and version number
+- [ ] On subsequent runs (when performance data exists), the content brief is fully rewritten by a smart model that receives: product snapshot, performance scoreboard, and previous brief. The rewrite replaces the previous brief (old versions are kept in a brief_versions table for history)
+- [ ] When ranking drafts, each smart model receives the performance scoreboard alongside the drafts, including that model's own calibration data (predicted score vs actual engagement for past content it scored)
 - [ ] OpenClaw is the designated bulk generation model — its API endpoint is configurable so it can be swapped
 - [ ] Per run, the system generates: configurable N variants per platform (default: 20 posts per social platform, 5 blog drafts, 10 video scripts)
 - [ ] Every batch guarantees at least one humor/funny variant per content type — the content brief instructs OpenClaw to include this angle
@@ -130,19 +132,28 @@ Acceptance criteria:
 
 **Purpose:** Pull real performance data from each platform after content is published, surface what's working, flag videos for clipping, and feed insights back into the content brief so future generation improves over time.
 
-**Why this matters:** Without feedback, the system is generating blind. With it, OpenClaw and the ranking models can learn which angles, hooks, and formats actually drive views, engagement, and conversions for each product.
+**Why this matters:** Without feedback, the system is generating blind. With it, OpenClaw and the ranking models can learn which angles, hooks, and formats actually drive views, engagement, and conversions for each product. The feedback loop is inspired by Karpathy's AutoResearch pattern: measure, compare predicted vs actual, keep what works, discard what doesn't, and let the strategy evolve autonomously.
+
+**Performance scoreboard:** A single table (`content_scoreboard`) that serves as the system's memory. Every published piece gets a row with: content_id, product_id, platform, angle, format, composite_ai_score (predicted), actual_engagement_score (measured), delta (predicted minus actual), per-model predicted scores, outcome label (winner/loser based on whether it beat the product's rolling average for that platform). This scoreboard is the primary input to content brief rewrites and ranking context.
+
+**Model calibration:** Each smart model's scoring accuracy is tracked over time. If Claude consistently over-scores humor posts that flop, that signal is fed back to Claude on the next ranking round: "Your humor scores have been 2.3 points higher than actual performance on average. Adjust accordingly." This is the equivalent of AutoResearch's agent learning from its own failed experiments.
 
 Acceptance criteria:
+- [ ] Performance scoreboard table: content_id, product_id, platform, angle, format, composite_ai_score, actual_engagement_score, delta, per_model_scores (jsonb), outcome (winner/loser/pending), measured_at timestamps (24h/7d/30d)
+- [ ] After each metrics sync, every published piece is labeled winner (above rolling average) or loser (below) for its platform
+- [ ] Model calibration table: model_name, product_id, platform, angle, avg_score_delta, sample_count, last_updated. Updated after each metrics sync. Tracks how accurately each model's scores predict real engagement.
 - [ ] YouTube Analytics: after a video is published, a scheduled job pulls views, watch time, average view duration, audience retention curve, likes, comments, and shares at 24h / 7d / 30d intervals
 - [ ] Social metrics: for each published post, pull platform-native engagement metrics (likes, shares, impressions, replies, click-throughs) at the same intervals
 - [ ] Blog metrics: if a blog webhook endpoint returns view/engagement data (optional), record it; otherwise track delivery status only
 - [ ] "Clip this" detection: videos where the audience retention curve shows a high-engagement segment (above configurable threshold for configurable duration) are automatically flagged with the timestamp range and a suggested short-form clip title
 - [ ] Clipping queue: flagged video segments are added to a clip queue; each clip can be approved to produce a short-form video (Reels/Shorts/TikTok length) cut from the source
-- [ ] Metrics feed back into the content brief: after each metrics sync, a job computes which content angles, formats, and topics are outperforming and appends a performance summary to the product's content brief
-- [ ] The content brief performance summary is available via API so OpenClaw and smart models can read it when generating new content
-- [ ] Dashboard shows per-content performance: views/engagement trend, retention curve for videos, flag for clippable segments
-- [ ] GET /api/products/:id/metrics — returns aggregated performance data per product
-- [ ] GET /api/videos/:id/retention — returns the retention curve data and any flagged clip segments
+- [ ] Content brief rewrite trigger: after each metrics sync, if 5+ new measured pieces exist since the last rewrite, trigger a brief rewrite job. A smart model receives the full scoreboard, current brief, and product snapshot, and writes a new brief version replacing the old one.
+- [ ] The scoreboard and model calibration data are available via API so OpenClaw and smart models can read them during generation and ranking
+- [ ] GET /api/products/:id/scoreboard -- returns the performance scoreboard for a product, filterable by platform, angle, date range
+- [ ] GET /api/products/:id/calibration -- returns per-model calibration data for a product
+- [ ] Dashboard shows per-content performance: views/engagement trend, retention curve for videos, flag for clippable segments, winner/loser labels
+- [ ] GET /api/products/:id/metrics -- returns aggregated performance data per product
+- [ ] GET /api/videos/:id/retention -- returns the retention curve data and any flagged clip segments
 
 ---
 
@@ -203,9 +214,9 @@ Acceptance criteria:
 
 ### Phase 3: AI Generation Pipeline (3a → 3b → 3c → 3d sequential)
 
-- [ ] 3a. Multi-LLM content brief: query Claude, Gemini, xAI with snapshot context, synthesize into a content brief stored per product; include performance summary field (empty at first)
-- [ ] 3b. OpenClaw bulk generation: Oban job calls OpenClaw API with content brief → N variants per platform, N blog drafts, N video scripts; store all as draft records with angle/type label
-- [ ] 3c. Multi-model ranking: Oban job calls each smart model to score and critique every draft; store per-model scores + critique; compute composite score; promote top N per type to review queue (depends on 3b)
+- [ ] 3a. Content brief system: brief schema with version history (brief_versions table). On first run, query Claude/Gemini/xAI with snapshot context, synthesize into initial brief. On subsequent runs with performance data, rewrite the brief using scoreboard + calibration data instead of appending.
+- [ ] 3b. OpenClaw bulk generation: Oban job calls OpenClaw API with content brief (including performance insights) -> N variants per platform, N blog drafts, N video scripts; store all as draft records with angle/type label
+- [ ] 3c. Multi-model ranking with performance context: Oban job calls each smart model with: the drafts to score, the product's performance scoreboard, and that model's own calibration data (avg predicted vs actual delta). Models score and critique with awareness of what has actually worked. Store per-model scores + critique; compute composite score; promote top N per type to review queue (depends on 3b)
 - [ ] 3d. Script gate: second Oban ranking pass on video scripts only; scripts below threshold are archived; approved scripts enqueue video production jobs (depends on 3c)
 
 ### Phase 4: Short-form Publishing (4a–4d are independent of each other, depend on Phase 3)
@@ -234,11 +245,14 @@ Acceptance criteria:
 
 ### Phase 7: Metrics & Feedback Loop (depends on Phase 4, 5, 6 publishing)
 
-- [ ] 7a. YouTube Analytics poller: Oban scheduled job pulls views, watch time, retention curve, engagement at 24h/7d/30d after upload; store in metrics table
-- [ ] 7b. Social metrics poller: per-platform jobs pull likes/shares/impressions/clicks for each published post at same intervals
-- [ ] 7c. Retention curve analyzer: detects high-engagement segments (above threshold, above min duration), creates clip suggestions with timestamp range + suggested title
-- [ ] 7d. Clip production job: when a clip is approved, cut the source video using FFmpeg and enqueue for short-form publishing
-- [ ] 7e. Content brief feedback writer: Oban job that runs after each metrics sync, computes top-performing angles/formats, appends performance summary to product's content brief
+- [ ] 7a. Performance scoreboard schema + context: content_scoreboard table with all fields from spec, winner/loser labeling logic (compare to rolling platform average), context functions for querying by product/platform/angle/date
+- [ ] 7b. Model calibration schema + updater: model_calibration table, Oban job that recalculates avg_score_delta per model per product per platform after each metrics sync
+- [ ] 7c. YouTube Analytics poller: Oban scheduled job pulls views, watch time, retention curve, engagement at 24h/7d/30d after upload; populates scoreboard
+- [ ] 7d. Social metrics poller: per-platform jobs pull likes/shares/impressions/clicks for each published post at same intervals; populates scoreboard
+- [ ] 7e. Retention curve analyzer: detects high-engagement segments (above threshold, above min duration), creates clip suggestions with timestamp range + suggested title
+- [ ] 7f. Clip production job: when a clip is approved, cut the source video using FFmpeg and enqueue for short-form publishing
+- [ ] 7g. Content brief rewrite job: Oban job triggered when 5+ new measured pieces exist since last rewrite. Sends scoreboard + calibration + current brief + snapshot to a smart model. Replaces the current brief with the rewrite, stores old version in brief_versions table.
+- [ ] 7h. Scoreboard and calibration API endpoints: GET /api/products/:id/scoreboard, GET /api/products/:id/calibration
 
 ### Phase 8: Dashboard (depends on Phases 1–7)
 
