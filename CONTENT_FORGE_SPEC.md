@@ -19,12 +19,15 @@ ContentForge is a standalone Elixir/Phoenix app that ingests a product's repo an
 **Purpose:** Register and configure each product so the system knows what to generate content about, where to publish it, and how often.
 
 Acceptance criteria:
-- [ ] A product has: name, repo URL (optional), site URL (optional), per-platform posting frequency, and a list of enabled publishing targets
+- [ ] A product has: name, repo URL (optional), site URL (optional), voice profile (text, required before first generation run), per-platform posting frequency, and a list of enabled publishing targets
 - [ ] Products can be created, read, updated, and deleted via LiveView UI
 - [ ] Products can be created, read, updated, and deleted via REST API
 - [ ] Each product has a publishing target config: each platform (YouTube, LinkedIn, Twitter/X, Reddit, Facebook/Instagram, blog) has enabled/disabled toggle and a cadence (e.g. 3x/week, 1x/month)
 - [ ] Products are stored in PostgreSQL
 - [ ] Each product can register one or more blog webhook endpoints (URL + optional HMAC secret) for blog delivery
+- [ ] Voice profile is a required text field on the product. Generation runs are blocked until a voice profile is set. The voice profile defines tone, vocabulary, personality, and communication style for all content generated for that product.
+- [ ] The content brief always includes the voice profile as context for both generation (OC) and ranking (smart models). Ranking models should evaluate voice consistency as part of their scoring.
+- [ ] If performance data shows content that drifts from the voice profile is outperforming on-brand content, the brief rewrite must flag this explicitly ("off-brand content is outperforming -- consider updating the voice profile") rather than silently shifting tone.
 
 ---
 
@@ -234,7 +237,7 @@ Acceptance criteria:
 - [ ] 1a. Scaffold new Phoenix app `content_forge` with Ecto/PostgreSQL, Oban, and 1Password integration — product registry context
 - [ ] 1b. REST API skeleton: authentication middleware, JSON response helpers, versioned routes
 - [ ] 1c. Cloudflare R2 client module (reuse ExAws.S3 pattern from other apps)
-- [ ] 1d. Product registry CRUD: Ecto schema, context functions, LiveView UI, API endpoints (depends on 1a, 1b)
+- [ ] 1d. Product registry CRUD: Ecto schema (including voice_profile text field), context functions, LiveView UI, API endpoints. Generation runs validate voice_profile is present before starting. (depends on 1a, 1b)
 - [ ] 1e. Blog webhook registry: schema + CRUD + HMAC signing util (depends on 1d)
 
 ### Phase 2: Content Ingestion + Competitor Intelligence (items 2a–2b, 2d are independent)
