@@ -18,9 +18,10 @@ defmodule ContentForgeWeb.MetricsController do
   def scoreboard(conn, %{"product_id" => product_id}) do
     product = Products.get_product(product_id)
 
-    with nil <- product do
-      {:error, :not_found}
-    else
+    case product do
+      nil ->
+        {:error, :not_found}
+
       _ ->
         entries =
           Metrics.list_scoreboard_entries(
@@ -36,9 +37,10 @@ defmodule ContentForgeWeb.MetricsController do
   def calibration(conn, %{"product_id" => product_id}) do
     product = Products.get_product(product_id)
 
-    with nil <- product do
-      {:error, :not_found}
-    else
+    case product do
+      nil ->
+        {:error, :not_found}
+
       _ ->
         calibrations =
           Metrics.list_model_calibration(
@@ -54,11 +56,11 @@ defmodule ContentForgeWeb.MetricsController do
   def metrics(conn, %{"product_id" => product_id}) do
     product = Products.get_product(product_id)
 
-    with nil <- product do
-      {:error, :not_found}
-    else
+    case product do
+      nil ->
+        {:error, :not_found}
+
       _ ->
-        # Aggregate metrics for the product
         platforms = ~w(twitter linkedin reddit facebook instagram blog youtube)
 
         platform_metrics =
@@ -85,9 +87,10 @@ defmodule ContentForgeWeb.MetricsController do
     product = Products.get_product(product_id)
     platform = conn.params["platform"]
 
-    with nil <- product do
-      {:error, :not_found}
-    else
+    case product do
+      nil ->
+        {:error, :not_found}
+
       _ ->
         hot_content = Metrics.get_hot_content(product_id, platform)
         render(conn, :hot, entries: hot_content, product: product)
@@ -99,12 +102,80 @@ defmodule ContentForgeWeb.MetricsController do
     product = Products.get_product(product_id)
     platform = conn.params["platform"]
 
-    with nil <- product do
-      {:error, :not_found}
-    else
+    case product do
+      nil ->
+        {:error, :not_found}
+
       _ ->
         needs_reply = Metrics.get_needs_reply(product_id, platform)
         render(conn, :needs_reply, entries: needs_reply, product: product)
+    end
+  end
+
+  # POST /api/videos/:video_id/clip
+  def clip(conn, %{"video_id" => video_id, "flag_id" => flag_id}) do
+    flag = Metrics.get_clip_flag(flag_id)
+
+    cond do
+      is_nil(flag) ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "Clip flag not found"})
+
+      flag.video_platform_id != video_id and to_string(flag.video_id) != video_id ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "Flag does not belong to this video"})
+
+      true ->
+        {:ok, updated_flag} = Metrics.approve_clip_flag(flag)
+
+        json(conn, %{
+          message: "Segment approved for clip production",
+          clip: %{
+            id: updated_flag.id,
+            video_id: video_id,
+            start_seconds: updated_flag.start_seconds,
+            end_seconds: updated_flag.end_seconds,
+            suggested_title: updated_flag.suggested_title,
+            status: "approved"
+          }
+        })
+    end
+  end
+
+  def clip(conn, %{"video_id" => video_id}) do
+    flags = Metrics.get_clip_flags_for_video(video_id)
+
+    best_flag =
+      Enum.max_by(flags, fn f -> f.segment_engagement_rate || 0 end, &>=/2, fn -> nil end)
+
+    cond do
+      flags == [] ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "No clip flags found for this video"})
+
+      is_nil(best_flag) or is_nil(best_flag.segment_engagement_rate) ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "No suitable clip flags found with engagement data"})
+
+      true ->
+        {:ok, updated_flag} = Metrics.approve_clip_flag(best_flag)
+
+        json(conn, %{
+          message: "Best segment approved for clip production",
+          clip: %{
+            id: updated_flag.id,
+            video_id: video_id,
+            start_seconds: updated_flag.start_seconds,
+            end_seconds: updated_flag.end_seconds,
+            suggested_title: updated_flag.suggested_title,
+            engagement_rate: updated_flag.segment_engagement_rate,
+            status: "approved"
+          }
+        })
     end
   end
 

@@ -45,87 +45,111 @@ defmodule ContentForgeWeb.DraftController do
 
   # GET /api/v1/drafts/:id
   def show(conn, %{"id" => id}) do
-    draft = ContentGeneration.get_draft!(id) |> ContentForge.Repo.preload(:draft_scores)
-    render(conn, :show, draft: draft)
+    case ContentGeneration.get_draft(id) do
+      nil ->
+        {:error, :not_found}
+
+      draft ->
+        draft = ContentForge.Repo.preload(draft, :draft_scores)
+        render(conn, :show, draft: draft)
+    end
   end
 
   # POST /api/v1/products/:product_id/drafts
   def create(conn, %{"product_id" => product_id, "draft" => draft_params}) do
-    # Verify product exists
-    product = Products.get_product!(product_id)
+    case Products.get_product(product_id) do
+      nil ->
+        {:error, :not_found}
 
-    attrs = Map.put(draft_params, "product_id", product.id)
+      product ->
+        attrs = Map.put(draft_params, "product_id", product.id)
 
-    with {:ok, draft} <- ContentGeneration.create_draft(attrs) do
-      conn
-      |> put_status(:created)
-      |> render(:created, draft: draft)
+        with {:ok, draft} <- ContentGeneration.create_draft(attrs) do
+          conn
+          |> put_status(:created)
+          |> render(:created, draft: draft)
+        end
     end
   end
 
   # POST /api/v1/drafts/:id/approve
   def approve(conn, %{"id" => id}) do
-    draft = ContentGeneration.get_draft!(id)
+    case ContentGeneration.get_draft(id) do
+      nil ->
+        {:error, :not_found}
 
-    with {:ok, draft} <- ContentGeneration.mark_draft_approved(draft) do
-      render(conn, :approved, draft: draft)
+      draft ->
+        with {:ok, draft} <- ContentGeneration.mark_draft_approved(draft) do
+          render(conn, :approved, draft: draft)
+        end
     end
   end
 
   # POST /api/v1/drafts/:id/reject
-  def reject(conn, %{"id" => id, "reason" => reason}) do
-    draft = ContentGeneration.get_draft!(id)
+  def reject(conn, %{"id" => id} = params) do
+    reason = Map.get(params, "reason", "")
 
-    with {:ok, draft} <- ContentGeneration.mark_draft_rejected(draft, reason) do
-      render(conn, :rejected, draft: draft)
+    case ContentGeneration.get_draft(id) do
+      nil ->
+        {:error, :not_found}
+
+      draft ->
+        with {:ok, draft} <- ContentGeneration.mark_draft_rejected(draft, reason) do
+          render(conn, :rejected, draft: draft)
+        end
     end
   end
 
   # POST /api/v1/drafts/:id/score
   def score(conn, %{"id" => id, "model_name" => model_name, "score" => score_params}) do
-    draft = ContentGeneration.get_draft!(id)
+    case ContentGeneration.get_draft(id) do
+      nil ->
+        {:error, :not_found}
 
-    attrs = %{
-      draft_id: draft.id,
-      model_name: model_name,
-      accuracy_score: score_params["accuracy_score"],
-      seo_score: score_params["seo_score"],
-      eev_score: score_params["eev_score"],
-      composite_score: score_params["composite_score"],
-      critique: score_params["critique"]
-    }
+      draft ->
+        attrs = %{
+          draft_id: draft.id,
+          model_name: model_name,
+          accuracy_score: score_params["accuracy_score"],
+          seo_score: score_params["seo_score"],
+          eev_score: score_params["eev_score"],
+          composite_score: score_params["composite_score"],
+          critique: score_params["critique"]
+        }
 
-    with {:ok, score} <- ContentGeneration.create_draft_score(attrs) do
-      render(conn, :scored, draft: draft, score: score)
+        with {:ok, score} <- ContentGeneration.create_draft_score(attrs) do
+          render(conn, :scored, draft: draft, score: score)
+        end
     end
   end
 
   # POST /api/v1/products/:product_id/generate
   def generate(conn, %{"product_id" => product_id, "options" => options}) do
-    product = Products.get_product!(product_id)
+    case Products.get_product(product_id) do
+      nil ->
+        {:error, :not_found}
 
-    if is_nil(product.voice_profile) do
-      conn
-      |> put_status(:unprocessable_entity)
-      |> json(%{error: "Product must have a voice_profile before generating content"})
-    else
-      # Enqueue content brief generation first
-      Oban.insert(%Oban.Job{
-        queue: :content_generation,
-        worker: "ContentForge.Jobs.ContentBriefGenerator",
-        args: %{"product_id" => product_id, "force_rewrite" => false},
-        max_attempts: 3
-      })
+      product ->
+        if is_nil(product.voice_profile) do
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "Product must have a voice_profile before generating content"})
+        else
+          brief_args = %{"product_id" => product_id, "force_rewrite" => false}
+          bulk_args = %{"product_id" => product_id, "options" => options || %{}}
 
-      # Then enqueue bulk generation (will wait for brief)
-      Oban.insert(%Oban.Job{
-        queue: :content_generation,
-        worker: "ContentForge.Jobs.OpenClawBulkGenerator",
-        args: %{"product_id" => product_id, "options" => options || %{}},
-        max_attempts: 3
-      })
-
-      json(conn, %{message: "Generation job enqueued", product_id: product_id})
+          with {:ok, _} <-
+                 Oban.insert(ContentForge.Jobs.ContentBriefGenerator.new(brief_args)),
+               {:ok, _} <-
+                 Oban.insert(ContentForge.Jobs.OpenClawBulkGenerator.new(bulk_args)) do
+            json(conn, %{message: "Generation job enqueued", product_id: product_id})
+          else
+            {:error, reason} ->
+              conn
+              |> put_status(:internal_server_error)
+              |> json(%{error: inspect(reason)})
+          end
+        end
     end
   end
 

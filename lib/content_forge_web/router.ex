@@ -63,7 +63,7 @@ defmodule ContentForgeWeb.Router do
     # Video retention and clip endpoints
     scope "/videos" do
       get "/:video_id/retention", MetricsController, :video_retention
-      post "/:video_id/clip", VideoController, :clip
+      post "/:video_id/clip", MetricsController, :clip
     end
 
     # Individual draft endpoints
