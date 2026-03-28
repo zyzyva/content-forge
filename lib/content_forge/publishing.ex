@@ -8,6 +8,7 @@ defmodule ContentForge.Publishing do
   alias ContentForge.Repo
   alias ContentForge.Publishing.PublishedPost
   alias ContentForge.Publishing.EngagementMetric
+  alias ContentForge.Publishing.WebhookDelivery
 
   # ============================================
   # Published Posts
@@ -130,6 +131,43 @@ defmodule ContentForge.Publishing do
   end
 
   # ============================================
+  # Webhook Deliveries
+  # ============================================
+
+  def list_webhook_deliveries(opts \\ []) do
+    opts = Keyword.validate!(opts, [:product_id, :blog_webhook_id, :draft_id, :status, :limit])
+
+    WebhookDelivery
+    |> maybe_filter_by_product(Keyword.get(opts, :product_id))
+    |> maybe_filter_by_blog_webhook(Keyword.get(opts, :blog_webhook_id))
+    |> maybe_filter_by_draft(Keyword.get(opts, :draft_id))
+    |> maybe_filter_by_status(Keyword.get(opts, :status))
+    |> maybe_limit(Keyword.get(opts, :limit, 100))
+    |> order_by(desc: :inserted_at)
+    |> Repo.all()
+  end
+
+  def get_webhook_delivery(id), do: Repo.get(WebhookDelivery, id)
+
+  def create_webhook_delivery(attrs) do
+    %WebhookDelivery{}
+    |> WebhookDelivery.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  def update_webhook_delivery(%WebhookDelivery{} = delivery, attrs) do
+    delivery
+    |> WebhookDelivery.changeset(attrs)
+    |> Repo.update()
+  end
+
+  def get_pending_webhook_deliveries(blog_webhook_id) do
+    WebhookDelivery
+    |> where(blog_webhook_id: ^blog_webhook_id, status: "pending")
+    |> Repo.all()
+  end
+
+  # ============================================
   # Helpers
   # ============================================
 
@@ -138,6 +176,17 @@ defmodule ContentForge.Publishing do
 
   defp maybe_filter_by_platform(query, nil), do: query
   defp maybe_filter_by_platform(query, platform), do: where(query, platform: ^platform)
+
+  defp maybe_filter_by_blog_webhook(query, nil), do: query
+
+  defp maybe_filter_by_blog_webhook(query, blog_webhook_id),
+    do: where(query, blog_webhook_id: ^blog_webhook_id)
+
+  defp maybe_filter_by_draft(query, nil), do: query
+  defp maybe_filter_by_draft(query, draft_id), do: where(query, draft_id: ^draft_id)
+
+  defp maybe_filter_by_status(query, nil), do: query
+  defp maybe_filter_by_status(query, status), do: where(query, status: ^status)
 
   defp maybe_limit(query, limit), do: limit(query, ^limit)
 

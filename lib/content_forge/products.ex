@@ -70,6 +70,12 @@ defmodule ContentForge.Products do
     Repo.delete(webhook)
   end
 
+  def list_active_blog_webhooks_for_product(product_id) do
+    BlogWebhook
+    |> where(product_id: ^product_id, active: true)
+    |> Repo.all()
+  end
+
   # ProductSnapshot CRUD
 
   def list_product_snapshots do
