@@ -8,6 +8,8 @@
 - Mark [built] when code compiles clean (mix compile --warnings-as-errors passes) and committed
 - Never modify files listed in a [stable] CLAUDE_TASKS entry
 - Append review entry to CLAUDE_TASKS.md when marking [built]
+- After appending the review entry, trigger Claude review by running:
+  bash workdir:~/projects/content-forge command:"claude -p 'Read CLAUDE_TASKS.md in ~/projects/content-forge. Find the first entry marked [built]. Review all files listed for that entry, fix any bugs, write real tests (failing first then passing), run mix compile --warnings-as-errors && mix format && mix test until clean, commit, then mark every item in that entry as [stable] in CLAUDE_TASKS.md and commit that too.' --permission-mode auto --output-format text 2>&1 | tail -20"
 
 ---
 
