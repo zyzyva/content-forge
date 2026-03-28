@@ -145,7 +145,11 @@ defmodule ContentForge.Metrics do
   end
 
   def create_clip_flags(attrs_list) when is_list(attrs_list) do
-    Repo.insert_all(ClipFlag, attrs_list, returning: true)
+    Enum.map(attrs_list, fn attrs ->
+      %ClipFlag{}
+      |> ClipFlag.changeset(attrs)
+      |> Repo.insert()
+    end)
   end
 
   # ============================================
@@ -291,9 +295,18 @@ defmodule ContentForge.Metrics do
 
         calibration ->
           # Update existing
-          calibration
-          |> ModelCalibration.add_sample(delta)
-          |> Repo.update!()
+          result =
+            calibration
+            |> ModelCalibration.add_sample(delta)
+            |> Repo.update()
+
+          case result do
+            {:ok, _} ->
+              :ok
+
+            {:error, changeset} ->
+              Logger.error("update_model_calibration failed: #{inspect(changeset.errors)}")
+          end
       end
     end)
 

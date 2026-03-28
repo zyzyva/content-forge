@@ -53,9 +53,16 @@ defmodule ContentForge.Metrics.ClipFlag do
     |> generate_suggested_title()
   end
 
-  defp validate_that(changeset, _field, _other_field, _comparator) do
-    # Custom validation can be added if needed
-    changeset
+  defp validate_that(changeset, field, other_field, comparator) do
+    validate_change(changeset, field, fn ^field, value ->
+      other_value = get_field(changeset, other_field)
+
+      if other_value != nil and not comparator.(other_value, value) do
+        [{field, "must be greater than #{other_field}"}]
+      else
+        []
+      end
+    end)
   end
 
   defp generate_suggested_title(changeset) do
@@ -87,6 +94,8 @@ defmodule ContentForge.Metrics.ClipFlag do
       spikes ->
         flags =
           Enum.map(spikes, fn {start, end_sec, views, rate} ->
+            spike_type = if rate != nil, do: detect_spike_type(rate), else: :notable
+
             %__MODULE__{}
             |> changeset(%{
               video_id: video_id,
@@ -98,7 +107,7 @@ defmodule ContentForge.Metrics.ClipFlag do
               segment_engagement_rate: rate,
               retention_curve: retention_curve,
               engagement_spike_data: %{
-                spike_type: detect_spike_type(rate),
+                spike_type: spike_type,
                 detected_at: DateTime.utc_now()
               }
             })

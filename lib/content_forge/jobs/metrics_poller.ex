@@ -128,20 +128,27 @@ defmodule ContentForge.Jobs.MetricsPoller do
             composite_score = calculate_composite_from_draft(draft.id)
             model_scores = get_model_scores(draft.id)
 
-            {:ok, entry} =
-              Metrics.create_scoreboard_entry(%{
-                content_id: draft.id,
-                product_id: post.product_id,
-                platform: post.platform,
-                angle: draft.angle,
-                format: draft.content_type,
-                composite_ai_score: composite_score,
-                per_model_scores: model_scores,
-                draft_id: draft.id,
-                measured_at: DateTime.utc_now()
-              })
+            case Metrics.create_scoreboard_entry(%{
+                   content_id: draft.id,
+                   product_id: post.product_id,
+                   platform: post.platform,
+                   angle: draft.angle,
+                   format: draft.content_type,
+                   composite_ai_score: composite_score,
+                   per_model_scores: model_scores,
+                   draft_id: draft.id,
+                   measured_at: DateTime.utc_now()
+                 }) do
+              {:ok, entry} ->
+                entry
 
-            entry
+              {:error, changeset} ->
+                Logger.error(
+                  "MetricsPoller: Failed to create scoreboard entry for draft #{draft.id}: #{inspect(changeset.errors)}"
+                )
+
+                nil
+            end
 
           entry when entry != nil ->
             entry

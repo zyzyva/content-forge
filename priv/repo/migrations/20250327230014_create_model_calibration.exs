@@ -22,6 +22,6 @@ defmodule ContentForge.Repo.Migrations.CreateModelCalibration do
     create index(:model_calibration, [:model_name])
     create index(:model_calibration, [:product_id])
     create index(:model_calibration, [:model_name, :product_id, :platform])
-    unique_index(:model_calibration, [:model_name, :product_id, :platform, :angle])
+    create unique_index(:model_calibration, [:model_name, :product_id, :platform, :angle])
   end
 end
