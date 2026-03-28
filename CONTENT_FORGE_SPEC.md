@@ -242,12 +242,12 @@ Acceptance criteria:
 
 ### Phase 2: Content Ingestion + Competitor Intelligence (items 2a–2b, 2d are independent)
 
-- [ ] 2a. Repo cloning + extraction: Oban job that git clones to temp dir, reads README/docs, extracts text up to token limit, stores snapshot in R2
-- [ ] 2b. Site crawler: Oban job that fetches N pages via WebFetch/Playwright, extracts text + screenshots, stores in R2
-- [ ] 2c. Product snapshot schema + storage: link snapshot metadata (timestamp, R2 keys) to product in DB (depends on 2a, 2b)
-- [ ] 2d. Competitor account registry: schema (product_id, platform, handle/URL), CRUD in Products context, API endpoints
-- [ ] 2e. Competitor scraper: Oban job that scrapes recent posts from competitor accounts via Apify, scores by relative engagement, stores raw data (depends on 2d)
-- [ ] 2f. Competitor intel synthesizer: Oban job that takes scraped competitor posts and generates a "competitor intel" summary (trending topics, winning formats, effective hooks) via a smart model. Stored per product with timestamp. (depends on 2e)
+- [x] 2a. Repo cloning + extraction: Oban job that git clones to temp dir, reads README/docs, extracts text up to token limit, stores snapshot in R2
+- [x] 2b. Site crawler: Oban job that fetches N pages via WebFetch/Playwright, extracts text + screenshots, stores in R2
+- [x] 2c. Product snapshot schema + storage: link snapshot metadata (timestamp, R2 keys) to product in DB (depends on 2a, 2b)
+- [x] 2d. Competitor account registry: schema (product_id, platform, handle/URL), CRUD in Products context, API endpoints
+- [x] 2e. Competitor scraper: Oban job that scrapes recent posts from competitor accounts via Apify, scores by relative engagement, stores raw data (depends on 2d)
+- [x] 2f. Competitor intel synthesizer: Oban job that takes scraped competitor posts and generates a "competitor intel" summary (trending topics, winning formats, effective hooks) via a smart model. Stored per product with timestamp. (depends on 2e)
 
 ### Phase 3: AI Generation Pipeline (3a -> 3b -> 3c -> 3d -> 3e sequential, 3f independent)
 
