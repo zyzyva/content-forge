@@ -173,7 +173,7 @@ defmodule ContentForge.Publishing.YouTube do
   end
 
   defp build_multipart_body(metadata, video_data, boundary) do
-    metadata_json = Jason.encode!(metadata)
+    metadata_json = JSON.encode!(metadata)
 
     """
     --#{boundary}\r
