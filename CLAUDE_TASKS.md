@@ -67,3 +67,11 @@ Commit: dc466a7
 - [stable] WebhookDelivery schema: product_id, blog_webhook_id, draft_id, status (pending/success/failed), delivered_at, error, timestamps
 - [stable] BlogPublisher Oban job (max_attempts: 3): stores markdown in R2 with stable URL (`blogs/{product_slug}/{draft_id}.md`), POSTs to each active webhook, HMAC-signs when secret present, records delivery status
 - [stable] Context functions for WebhookDelivery CRUD exist in ContentForge.Publishing
+
+## Feature 6: Video Production Pipeline
+Files: lib/content_forge/publishing/video_job.ex, lib/content_forge/publishing/youtube.ex, lib/content_forge/jobs/video_producer.ex, priv/repo/migrations/20250327230012_create_video_jobs.exs
+Commit: c217847
+
+- [stable] VideoJob schema: draft_id, product_id, status enum (script_approved→voiceover_done→recording_done→avatar_done→assembled→uploaded), per_step_r2_keys (jsonb), error, feature_flag
+- [stable] VideoProducer Oban job: 6-step pipeline (ElevenLabs→Playwright→HeyGen→Remotion→FFmpeg→YouTube), each step updates status, retries 3x then pauses on failure
+- [stable] YouTube connector: OAuth2 with encrypted token refresh, multipart upload, AI-generated title/description/tags/thumbnail

@@ -26,9 +26,9 @@ Files to create: lib/content_forge/jobs/blog_publisher.ex, priv/repo/migrations/
 Dependencies: Feature 3 [stable] (ScriptGate, Draft schema)
 Files to create: lib/content_forge/jobs/video_producer.ex, lib/content_forge/publishing/youtube.ex, lib/content_forge/publishing/video_job.ex, priv/repo/migrations/*_create_video_jobs.exs
 
-- [ ] VideoJob schema: draft_id (script), status enum (script_approved/voiceover_done/recording_done/avatar_done/assembled/uploaded), per-step r2_keys, error, feature_flag (enabled per product)
-- [ ] VideoProducer Oban job pipeline: ElevenLabs voiceover → Playwright screen recording → HeyGen avatar → Remotion assembly → FFmpeg encode → YouTube upload. Each step updates VideoJob status. Failed step retries 3x then pauses job.
-- [ ] YouTube connector: OAuth2 client with encrypted token storage, upload video with AI-generated title/description/tags/thumbnail
+- [built] VideoJob schema: draft_id (script), status enum (script_approved/voiceover_done/recording_done/avatar_done/assembled/uploaded), per-step r2_keys, error, feature_flag (enabled per product)
+- [built] VideoProducer Oban job pipeline: ElevenLabs voiceover → Playwright screen recording → HeyGen avatar → Remotion assembly → FFmpeg encode → YouTube upload. Each step updates VideoJob status. Failed step retries 3x then pauses job.
+- [built] YouTube connector: OAuth2 client with encrypted token storage, upload video with AI-generated title/description/tags/thumbnail
 
 ---
 
