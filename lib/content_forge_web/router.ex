@@ -51,6 +51,18 @@ defmodule ContentForgeWeb.Router do
       # Engagement metrics
       get "/engagement-metrics", ScheduleController, :get_engagement_metrics
       post "/engagement-metrics/refresh", ScheduleController, :refresh_engagement_metrics
+
+      # Performance metrics & scoreboard
+      get "/scoreboard", MetricsController, :scoreboard
+      get "/calibration", MetricsController, :calibration
+      get "/metrics", MetricsController, :metrics
+      get "/hot", MetricsController, :hot
+      get "/needs-reply", MetricsController, :needs_reply
+    end
+
+    # Video retention endpoints
+    scope "/videos" do
+      get "/:video_id/retention", MetricsController, :video_retention
     end
 
     # Individual draft endpoints

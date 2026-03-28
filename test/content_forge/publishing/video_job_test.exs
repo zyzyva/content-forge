@@ -65,10 +65,11 @@ defmodule ContentForge.Publishing.VideoJobTest do
         error: "Previous error"
       }
 
-      changeset = VideoJob.status_changeset(video_job, %{
-        status: "voiceover_done",
-        per_step_r2_keys: %{"voiceover" => "test_key.mp3"}
-      })
+      changeset =
+        VideoJob.status_changeset(video_job, %{
+          status: "voiceover_done",
+          per_step_r2_keys: %{"voiceover" => "test_key.mp3"}
+        })
 
       assert changeset.valid?
       assert changeset.changes.status == "voiceover_done"
