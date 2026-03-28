@@ -87,10 +87,11 @@ Commit: 9dd6bed
 - [stable] Metrics API endpoints: /scoreboard, /calibration, /metrics, /hot, /needs-reply, /videos/:id/retention
 
 ## Feature 8: Content Review API
-Files: lib/content_forge_web/controllers/video_controller.ex, lib/content_forge_web/router.ex (modified)
-Commit: df8d54a
+Files: lib/content_forge_web/router.ex (modified), controller tests
+Commit: 701c3a7
 
 - [stable] All draft endpoints verified: GET/POST /api/v1/products/:id/drafts, approve/reject/score
 - [stable] POST /api/v1/products/:id/generate triggers generation run
 - [stable] GET /api/v1/products/:id/brief returns brief with performance summary
-- [stable] POST /api/videos/:id/clip approves flagged segment (new endpoint added)
+- [stable] POST /api/videos/:id/clip approves flagged segment (uses MetricsController)
+- [stable] Review fixes applied: removed dead VideoController, 11 controller tests added
