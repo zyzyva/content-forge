@@ -75,3 +75,13 @@ Commit: c217847
 - [stable] VideoJob schema: draft_id, product_id, status enum (script_approved→voiceover_done→recording_done→avatar_done→assembled→uploaded), per_step_r2_keys (jsonb), error, feature_flag
 - [stable] VideoProducer Oban job: 6-step pipeline (ElevenLabs→Playwright→HeyGen→Remotion→FFmpeg→YouTube), each step updates status, retries 3x then pauses on failure
 - [stable] YouTube connector: OAuth2 with encrypted token refresh, multipart upload, AI-generated title/description/tags/thumbnail
+
+## Feature 7: Performance Metrics & Feedback Loop
+Files: lib/content_forge/metrics.ex, lib/content_forge/metrics/scoreboard_entry.ex, lib/content_forge/metrics/model_calibration.ex, lib/content_forge/metrics/clip_flag.ex, lib/content_forge/jobs/metrics_poller.ex, priv/repo/migrations/20250327230013_create_content_scoreboard.exs, 20250327230014_create_model_calibration.exs, 20250327230015_create_clip_flags.exs
+Commit: 9dd6bed
+
+- [stable] ContentScoreboard schema: content_id, product_id, platform, angle, format, composite_ai_score, actual_engagement_score, delta, per_model_scores jsonb, outcome (winner/loser/pending), measured_at timestamps
+- [stable] ModelCalibration schema: model_name, product_id, platform, angle, avg_score_delta, sample_count, last_updated
+- [stable] MetricsPoller job: polls at 24h/7d/30d, updates scoreboard, labels winner/loser vs rolling avg, updates calibration, triggers alerts and brief rewrite
+- [stable] ClipFlag schema + detection: parses YouTube retention curve, flags high-engagement segments
+- [stable] Metrics API endpoints: /scoreboard, /calibration, /metrics, /hot, /needs-reply, /videos/:id/retention

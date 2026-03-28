@@ -36,11 +36,11 @@ Files to create: lib/content_forge/jobs/video_producer.ex, lib/content_forge/pub
 Dependencies: Feature 4 [stable] (PublishedPost), Feature 6 [stable] (VideoJob)
 Files to create: lib/content_forge/metrics.ex, lib/content_forge/metrics/scoreboard_entry.ex, lib/content_forge/metrics/model_calibration.ex, lib/content_forge/metrics/clip_flag.ex, lib/content_forge/jobs/metrics_poller.ex, lib/content_forge/jobs/brief_rewrite_trigger.ex, priv/repo/migrations/*_create_metrics_tables.exs
 
-- [ ] ContentScoreboard schema: content_id, product_id, platform, angle, format, composite_ai_score, actual_engagement_score, delta, per_model_scores jsonb, outcome (winner/loser/pending), measured_at timestamps
-- [ ] ModelCalibration schema: model_name, product_id, platform, angle, avg_score_delta, sample_count, last_updated
-- [ ] MetricsPoller job: pulls platform metrics at 24h/7d/30d intervals, updates scoreboard, labels winner/loser vs rolling average, updates model calibration, triggers engagement spike alerts and comment flagging, triggers brief rewrite when 5+ new measured pieces
-- [ ] ClipFlag schema + detection: parses YouTube retention curve, flags high-engagement segments with timestamp range and suggested title
-- [ ] Metrics API endpoints: GET /api/products/:id/scoreboard, /calibration, /metrics, /hot, /needs-reply; GET /api/videos/:id/retention
+- [built] ContentScoreboard schema: content_id, product_id, platform, angle, format, composite_ai_score, actual_engagement_score, delta, per_model_scores jsonb, outcome (winner/loser/pending), measured_at timestamps
+- [built] ModelCalibration schema: model_name, product_id, platform, angle, avg_score_delta, sample_count, last_updated
+- [built] MetricsPoller job: pulls platform metrics at 24h/7d/30d intervals, updates scoreboard, labels winner/loser vs rolling average, updates model calibration, triggers engagement spike alerts and comment flagging, triggers brief rewrite when 5+ new measured pieces
+- [built] ClipFlag schema + detection: parses YouTube retention curve, flags high-engagement segments with timestamp range and suggested title
+- [built] Metrics API endpoints: GET /api/products/:id/scoreboard, /calibration, /metrics, /hot, /needs-reply; GET /api/videos/:id/retention
 
 ---
 
