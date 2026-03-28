@@ -180,6 +180,34 @@ Then register the app's webhook URL (and optional HMAC secret) in ContentForge u
 
 ---
 
+### seo-agi — SEO Content Quality Patterns
+https://github.com/gbessoni/seo-agi
+
+AI SEO writer with a 28-point quality framework. The tool itself is a CLI skill for single-page generation, but several patterns are worth adopting directly into ContentForge's generation and ranking pipeline.
+
+**Three concrete things to adopt:**
+
+**1. AI Summary Nugget**
+A 200-character block placed above the H1, inside `<div class="ai-summary">`. Pure facts, no marketing language: `[Entity]: [key metric], [alternative], [condition]. [recent context].` Designed for LLM citation on Perplexity, ChatGPT, etc. Every blog post ContentForge generates should include one — add it to the OpenClaw generation prompt and to the ranking checklist.
+
+**2. 28-point quality checklist (minimum 22/28 to pass)**
+Key points beyond standard SEO that are worth adding to ContentForge's `MultiModelRanker` scoring prompt:
+- Information gain over existing ranking pages
+- "Reddit test" — would a real person find this useful or is it AI filler?
+- Fast-scan summary present (headers, tables, bold facts)
+- Banned phrases list (avoid "delve", "comprehensive guide", "in today's digital landscape", etc.)
+- Original research block present (see below)
+- AI Summary Nugget present
+- FAQ schema included
+- Entity consensus — key claims validated against 2+ high-ranking sources
+
+**3. Original Research block**
+Every piece must include a section framed as a specific test, analysis, or first-hand observation with at least one data point, methodology note, or timeframe. Pages without it can't score above 20/28. For ContentForge: instruct OpenClaw to always include a "we tested / we measured / we observed" section, even if lightweight.
+
+**Proposed implementation:** add these three requirements to the OpenClaw generation prompt in `ContentBriefGenerator`, and add a simplified version of the 28-point checklist as an additional scoring dimension in `MultiModelRanker` alongside accuracy/SEO/EEV.
+
+---
+
 ### opc-skills — Reddit & Twitter Read Access
 https://github.com/ReScienceLab/opc-skills
 
