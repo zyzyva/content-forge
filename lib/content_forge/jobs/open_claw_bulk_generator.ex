@@ -120,6 +120,7 @@ defmodule ContentForge.Jobs.OpenClawBulkGenerator do
       angles
       |> Enum.take(count)
       |> Enum.map(fn angle ->
+        _prompt = build_blog_prompt(product, brief, angle)
         content = generate_blog_content(angle, product.name)
 
         %{
@@ -178,6 +179,53 @@ defmodule ContentForge.Jobs.OpenClawBulkGenerator do
     Platform: #{platform}
     Requirements: Short, engaging, platform-appropriate.
     Include at least one humor variant.
+
+    BANNED PHRASES — never use these:
+    delve, comprehensive guide, in today's digital landscape, it's worth noting,
+    as an AI, in conclusion it's clear, at the end of the day, in the ever-evolving,
+    navigate the complexities.
+
+    Use specific numbers and data points wherever possible. Vague claims lose to concrete facts.
+    """
+  end
+
+  defp build_blog_prompt(product, brief, angle) do
+    """
+    Generate a blog article for #{product.name}.
+
+    Voice profile: #{product.voice_profile}
+
+    Content brief: #{brief.content}
+
+    Angle: #{angle}
+
+    REQUIRED ELEMENTS — every blog post must include all of these:
+
+    1. AI SUMMARY NUGGET: Place this above the H1 in <div class="ai-summary">.
+       Format: [Entity]: [key metric], [alternative], [condition]. [recent context/date].
+       Maximum 200 characters. Pure facts only — no marketing language.
+       Example: "Tri-Cities HVAC: avg install $4,200, 3-5 day turnaround, Carrier/Lennox brands. Updated Feb 2026."
+
+    2. ORIGINAL RESEARCH BLOCK: Include a section framed as a specific test, analysis, or
+       first-hand observation. Must contain at least one data point, methodology note, or
+       timeframe. Phrase it as "We tested...", "Our data shows...", "We measured...".
+       Content without this block cannot pass quality review.
+
+    3. STATISTICS: Include at least 3 specific numbers (percentages, prices, timeframes,
+       measurements). Vague claims like "significant improvement" must be replaced with
+       specific data.
+
+    4. FAST-SCAN ELEMENTS: Include at least one comparison table, one bolded key fact,
+       and one bulleted or numbered list.
+
+    5. FAQ SECTION: End with 3-5 FAQ questions and answers. Include FAQPage JSON-LD schema.
+
+    BANNED PHRASES — never use these:
+    delve, comprehensive guide, in today's digital landscape, it's worth noting,
+    as an AI, in conclusion it's clear, at the end of the day, in the ever-evolving,
+    navigate the complexities.
+
+    Lead with the answer or key fact in the first sentence — not a question or vague opener.
     """
   end
 

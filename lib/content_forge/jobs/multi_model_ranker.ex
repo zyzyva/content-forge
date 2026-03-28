@@ -163,10 +163,22 @@ defmodule ContentForge.Jobs.MultiModelRanker do
 
     Score on:
     - Accuracy (0-10): How well does this align with product/policy?
-    - SEO (0-10): How well optimized for discovery?
-    - EEV (0-10): Entertainment/Education Value
+    - SEO (0-10): How well optimized for discovery? For blog content, check:
+        * AI Summary Nugget present (≤200 char factual block at top)
+        * FAQPage schema or FAQ section included
+        * At least 3 specific statistics or data points
+        * No banned AI filler phrases (delve, comprehensive guide, in today's
+          digital landscape, it's worth noting, navigate the complexities, etc.)
+    - EEV (0-10): Entertainment/Education Value. For blog content, check:
+        * Original research block present (we tested/measured/found + data point)
+        * Fast-scan elements present (table, bold facts, bullet list)
+        * Leads with the answer — not a vague opener or question
+        * External citations linking to authoritative sources
 
-    Provide scores and a brief critique.
+    If any required element is missing from blog content, cap the relevant
+    score at 6 and call it out in your critique.
+
+    Provide scores and a brief critique referencing specific missing elements.
     """
   end
 
