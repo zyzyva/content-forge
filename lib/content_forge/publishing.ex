@@ -9,6 +9,7 @@ defmodule ContentForge.Publishing do
   alias ContentForge.Publishing.PublishedPost
   alias ContentForge.Publishing.EngagementMetric
   alias ContentForge.Publishing.WebhookDelivery
+  alias ContentForge.Publishing.VideoJob
 
   # ============================================
   # Published Posts
@@ -166,6 +167,86 @@ defmodule ContentForge.Publishing do
     |> where(blog_webhook_id: ^blog_webhook_id, status: "pending")
     |> Repo.all()
   end
+
+  # ============================================
+  # Video Jobs
+  # ============================================
+
+  def list_video_jobs(opts \\ []) do
+    opts = Keyword.validate!(opts, [:product_id, :draft_id, :status, :feature_flag, :limit])
+
+    VideoJob
+    |> maybe_filter_by_product(Keyword.get(opts, :product_id))
+    |> maybe_filter_by_draft(Keyword.get(opts, :draft_id))
+    |> maybe_filter_by_video_status(Keyword.get(opts, :status))
+    |> maybe_filter_by_feature_flag(Keyword.get(opts, :feature_flag))
+    |> maybe_limit(Keyword.get(opts, :limit, 100))
+    |> order_by(desc: :inserted_at)
+    |> Repo.all()
+  end
+
+  def get_video_job(id), do: Repo.get(VideoJob, id)
+
+  def get_video_job_by_draft(draft_id) do
+    VideoJob
+    |> where(draft_id: ^draft_id)
+    |> Repo.one()
+  end
+
+  def create_video_job(attrs) do
+    %VideoJob{}
+    |> VideoJob.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  def update_video_job(%VideoJob{} = video_job, attrs) do
+    video_job
+    |> VideoJob.changeset(attrs)
+    |> Repo.update()
+  end
+
+  def update_video_job_status(%VideoJob{} = video_job, status, r2_keys) do
+    current_keys = video_job.per_step_r2_keys || %{}
+    merged_keys = Map.merge(current_keys, r2_keys)
+
+    video_job
+    |> VideoJob.status_changeset(%{
+      status: status,
+      per_step_r2_keys: merged_keys
+    })
+    |> Repo.update()
+  end
+
+  def pause_video_job(%VideoJob{} = video_job, reason) do
+    video_job
+    |> VideoJob.status_changeset(%{
+      status: "paused",
+      error: reason
+    })
+    |> Repo.update()
+  end
+
+  def resume_video_job(%VideoJob{} = video_job) do
+    video_job
+    |> VideoJob.status_changeset(%{
+      status: "script_approved",
+      error: nil
+    })
+    |> Repo.update()
+  end
+
+  def get_pending_video_jobs do
+    VideoJob
+    |> where(status: "script_approved")
+    |> where(feature_flag: true)
+    |> Repo.all()
+  end
+
+  defp maybe_filter_by_video_status(query, nil), do: query
+  defp maybe_filter_by_video_status(query, status), do: where(query, status: ^status)
+
+  defp maybe_filter_by_feature_flag(query, nil), do: query
+  defp maybe_filter_by_feature_flag(query, flag), do: where(query, feature_flag: ^flag)
 
   # ============================================
   # Helpers
