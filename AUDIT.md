@@ -141,3 +141,17 @@ These jobs exist but aren't automatically triggered when they should be:
 5. Add auto-triggers for winner repurposing and brief rewrites
 6. Build schedule calendar UI and script gate view (Feature 9)
 7. Accessibility audit
+
+---
+
+## References
+
+### opc-skills — Reddit & Twitter Read Access
+https://github.com/ReScienceLab/opc-skills
+
+Collection of AI agent skills including Reddit and Twitter read integrations. Relevant when wiring up trending/current affairs data as a content signal:
+
+- **Reddit skill** — searches posts, comments, subreddit info via Reddit's public JSON API (no auth required). Useful for pulling trending topics and community discussion into the content brief before a generation run.
+- **Twitter skill** — searches tweets, user data, and trends via twitterapi.io. Useful for surfacing what's currently trending in a niche so OpenClaw can generate content that hooks into the moment.
+
+**Proposed use:** add a `TrendingIntelJob` (Oban, runs before each generation) that pulls Reddit/Twitter trending topics for the product's niche and appends them to the content brief context alongside competitor intel. This gives OpenClaw current-affairs angles without requiring a human to brief it manually.
