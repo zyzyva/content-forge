@@ -29,6 +29,11 @@ defmodule ContentForgeWeb.Router do
     pipe_through :api_auth
 
     resources "/products", ProductController, only: [:index, :show, :create, :update, :delete]
+
+    scope "/products/:product_id" do
+      resources "/competitors", CompetitorController,
+        only: [:index, :show, :create, :update, :delete]
+    end
   end
 
   # Other scopes may use custom stacks.

@@ -13,15 +13,22 @@ Steps each iteration:
 4) Run mix compile --warnings-as-errors && mix format && mix test. All must pass.
 5) Commit with a descriptive message and push.
 6) Check off the item in CONTENT_FORGE_SPEC.md.
-7) When ALL Phase 1 items (1a-1e) are checked off, run the REVIEW STEP below.
-8) If the review passes with no critical issues, output the completion promise.
-9) If the review finds issues, fix them, re-run tests, commit, and re-run the review. Repeat until clean.
+7) Log progress to Lead Intelligence: call the log_plan_result MCP tool with plan_id 13 and a note like "Completed 1a: schema setup" (use the actual item and a brief description).
+8) When ALL Phase 1 items (1a-1e) are checked off, run the REVIEW STEP below.
+9) If the review passes with no critical issues, output the completion promise.
+10) If the review finds issues, fix them, re-run tests, commit, and re-run the review. Repeat until clean.
 
 REVIEW STEP (run after all items complete):
 Run this exact command and save the output:
-bash pty:true timeout:300 workdir:~/projects/content-forge command:"claude -p 'Review the full codebase for Phase 1 of ContentForge. Read CONTENT_FORGE_SPEC.md Phase 1 requirements. Then review all code in lib/, test/, and config/. Check: 1) Every acceptance criterion in Phase 1 is implemented and tested. 2) Code follows Elixir conventions (native JSON module, function head pattern matching, Logger, verified routes). 3) No compilation warnings. 4) Test coverage is thorough (not placeholder tests). 5) Security: API key auth is solid, HMAC signing is correct, no secrets in code. 6) Schema design is clean. Report any issues as CRITICAL (must fix) or MINOR (nice to have). If no critical issues, end with REVIEW_PASSED.' --permission-mode bypassPermissions --output-format text"
+bash pty:true timeout:300 workdir:~/projects/content-forge command:"claude --model claude-opus-4-6 --effort high -p 'Review the full codebase for Phase 1 of ContentForge. Read CONTENT_FORGE_SPEC.md Phase 1 requirements. Then review all code in lib/, test/, and config/. Check: 1) Every acceptance criterion in Phase 1 is implemented and tested. 2) Code follows Elixir conventions (native JSON module, function head pattern matching, Logger, verified routes). 3) No compilation warnings. 4) Test coverage is thorough (not placeholder tests). 5) Security: API key auth is solid, HMAC signing is correct, no secrets in code. 6) Schema design is clean. Report any issues as CRITICAL (must fix) or MINOR (nice to have). If no critical issues, end with REVIEW_PASSED.' --permission-mode auto --output-format text"
 
-Read the review output. If it contains REVIEW_PASSED, proceed to completion. If it contains CRITICAL issues, fix each one, re-run tests, commit, and re-run the review command.
+Read the review output. If it contains REVIEW_PASSED, do the COMPLETION STEP. If it contains CRITICAL issues, fix each one, re-run tests, commit, and re-run the review command.
+
+COMPLETION STEP (only after REVIEW_PASSED):
+1) Call the complete_plan_step MCP tool with plan_id 13 and step text "Phase 1: Foundation (1a schema, 1b API auth, 1c R2 storage, 1d Product CRUD, 1e webhooks)".
+2) Call the log_plan_result MCP tool with plan_id 13 and message "Phase 1 complete. All items 1a-1e implemented, tested, reviewed. REVIEW_PASSED."
+3) Run: bash command:"openclaw message send --target telegram --message 'ContentForge Phase 1 complete. All items done and reviewed. Ready to kick off Phase 2.'"
+4) Output the completion promise.
 
 Details per item:
 - 1a: mix phx.new content_forge --database postgres, add oban + exaws_s3 + req + zyzyva_telemetry deps, configure Oban in application.ex, create Product schema (name, repo_url, site_url, voice_profile text field, publishing_targets as jsonb map of platform configs with enabled/cadence per platform). Run mix ecto.create && mix ecto.migrate.
@@ -37,8 +44,10 @@ Elixir conventions: Use native JSON module (not Jason), function head pattern ma
 
 ## Chaining to Phase 2
 
-When Phase 1 completes, OC can automatically kick off Phase 2 by adding this to the end of the prompt:
+When you get the Telegram notification that Phase 1 is complete, kick off Phase 2:
 
-"After outputting PHASE_1_COMPLETE, immediately start a new ralph-loop for Phase 2 using ~/projects/content-forge/RALPH_PHASE2.md"
+```bash
+claude --permission-mode auto -p "$(cat ~/projects/content-forge/RALPH_PHASE2.md | grep -A1000 '^\`\`\`$' | tail -n +2 | head -n -1)"
+```
 
-Or keep phases separate and let OC message you when each one finishes.
+Or ask OC to do it: "Phase 1 is done, kick off the Phase 2 ralph loop for ContentForge per RALPH_PHASE2.md"
