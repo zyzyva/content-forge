@@ -95,3 +95,15 @@ Commit: 701c3a7
 - [stable] GET /api/v1/products/:id/brief returns brief with performance summary
 - [stable] POST /api/videos/:id/clip approves flagged segment (uses MetricsController)
 - [stable] Review fixes applied: removed dead VideoController, 11 controller tests added
+
+## Feature 9: LiveView Dashboard
+Files: lib/content_forge_web/live/*.ex
+Commit: 1a71ef9
+
+- [stable] Products list LiveView with quick-add form
+- [stable] Per-product detail LiveView: snapshot status, brief, draft queue, publishing history
+- [stable] Draft review queue LiveView: composite score, per-model scores, critiques, approve/reject
+- [stable] Schedule view LiveView: calendar/timeline of upcoming and past posts
+- [stable] Video production status board LiveView
+- [stable] Performance dashboard LiveView: engagement trends, retention curves, clip queue
+- [stable] All views mobile-responsive

@@ -59,10 +59,10 @@ Files to modify: lib/content_forge_web/router.ex, existing controllers
 Dependencies: Features 1-8 [stable]
 Files to create: lib/content_forge_web/live/*.ex, assets/
 
-- [ ] Products list LiveView with quick-add form
-- [ ] Per-product detail LiveView: snapshot status, brief, draft queue, publishing history
-- [ ] Draft review queue LiveView: composite score, per-model scores, critiques, approve/reject
-- [ ] Schedule view LiveView: calendar/timeline of upcoming and past posts
-- [ ] Video production status board LiveView
-- [ ] Performance dashboard LiveView: engagement trends, retention curves, clip queue
-- [ ] All views mobile-responsive and WCAG AA accessible
+- [built] Products list LiveView with quick-add form
+- [built] Per-product detail LiveView: snapshot status, brief, draft queue, publishing history
+- [built] Draft review queue LiveView: composite score, per-model scores, critiques, approve/reject
+- [built] Schedule view LiveView: calendar/timeline of upcoming and past posts
+- [built] Video production status board LiveView
+- [built] Performance dashboard LiveView: engagement trends, retention curves, clip queue
+- [built] All views mobile-responsive and WCAG AA accessible
