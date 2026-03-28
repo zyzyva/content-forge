@@ -152,18 +152,16 @@ defmodule ContentForge.Products do
     |> Repo.all()
   end
 
-  def list_top_competitor_posts_for_product(product_id, limit \\ 10) do
+  def list_top_competitor_posts_for_product(product_id, max \\ 10) do
     account_ids =
       product_id
       |> list_active_competitor_accounts_for_product()
       |> Enum.map(& &1.id)
 
-    limit_val = limit
-
     CompetitorPost
     |> where(competitor_account_id: ^account_ids)
     |> order_by(desc: :engagement_score)
-    |> limit(^limit_val)
+    |> limit(^max)
     |> Repo.all()
   end
 
