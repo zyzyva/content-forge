@@ -46,7 +46,9 @@ defmodule ContentForge.Jobs.WinnerRepurposingEngine do
   end
 
   defp generate_repurposed_variants(%Draft{} = original) do
-    Logger.info("Generating repurposed variants for draft #{original.id} (#{original.platform}/#{original.content_type})")
+    Logger.info(
+      "Generating repurposed variants for draft #{original.id} (#{original.platform}/#{original.content_type})"
+    )
 
     # Determine target platforms based on original content type
     targets = get_repurposing_targets(original)
@@ -111,18 +113,20 @@ defmodule ContentForge.Jobs.WinnerRepurposingEngine do
     transformed_content = transform_content(original.content, platform, content_type, angle)
 
     case ContentGeneration.create_draft(%{
-      product_id: original.product_id,
-      content_brief_id: original.content_brief_id,
-      content: transformed_content,
-      platform: platform,
-      content_type: content_type,
-      angle: angle,
-      generating_model: "repurposing_engine",
-      status: "draft",
-      repurposed_from_id: original.id
-    }) do
+           product_id: original.product_id,
+           content_brief_id: original.content_brief_id,
+           content: transformed_content,
+           platform: platform,
+           content_type: content_type,
+           angle: angle,
+           generating_model: "repurposing_engine",
+           status: "draft",
+           repurposed_from_id: original.id
+         }) do
       {:ok, new_draft} ->
-        Logger.info("Created repurposed draft #{new_draft.id} from #{original.id} -> #{platform}/#{content_type}")
+        Logger.info(
+          "Created repurposed draft #{new_draft.id} from #{original.id} -> #{platform}/#{content_type}"
+        )
 
         # Enqueue this new draft for ranking (go through normal pipeline)
         Oban.insert(%Oban.Job{

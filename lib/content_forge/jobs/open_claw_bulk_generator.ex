@@ -45,10 +45,13 @@ defmodule ContentForge.Jobs.OpenClawBulkGenerator do
       blog_count = Map.get(options, :blog_drafts, @default_blog_drafts)
       video_count = Map.get(options, :video_scripts, @default_video_scripts)
 
-      Logger.info("Generating content for product #{product.id}: #{social_count} social, #{blog_count} blog, #{video_count} video")
+      Logger.info(
+        "Generating content for product #{product.id}: #{social_count} social, #{blog_count} blog, #{video_count} video"
+      )
 
       # Generate social posts for each platform
       platforms = ["twitter", "linkedin", "reddit", "facebook", "instagram"]
+
       Enum.each(platforms, fn platform ->
         generate_social_variants(product, brief, platform, social_count)
       end)
@@ -90,6 +93,7 @@ defmodule ContentForge.Jobs.OpenClawBulkGenerator do
       |> Enum.take(count)
       |> Enum.map(fn angle ->
         content = generate_social_content(platform, angle, product.name)
+
         %{
           product_id: product.id,
           content_brief_id: brief.id,
@@ -117,6 +121,7 @@ defmodule ContentForge.Jobs.OpenClawBulkGenerator do
       |> Enum.take(count)
       |> Enum.map(fn angle ->
         content = generate_blog_content(angle, product.name)
+
         %{
           product_id: product.id,
           content_brief_id: brief.id,
@@ -143,6 +148,7 @@ defmodule ContentForge.Jobs.OpenClawBulkGenerator do
       |> Enum.take(count)
       |> Enum.map(fn angle ->
         content = generate_video_script_content(angle, product.name)
+
         %{
           product_id: product.id,
           content_brief_id: brief.id,
@@ -179,16 +185,21 @@ defmodule ContentForge.Jobs.OpenClawBulkGenerator do
   defp generate_social_content(platform, angle, product_name) do
     sample_content = %{
       "twitter" => %{
-        "educational" => "Learn how #{product_name} helps you solve X in 3 simple steps. Thread 🧵",
-        "humor" => "Me: I'll just check email quickly. Also me: *3 hours later* At least #{product_name} made my life easier 😂",
-        "problem_aware" => "Still struggling with X? Here's how #{product_name} changed the game for us..."
+        "educational" =>
+          "Learn how #{product_name} helps you solve X in 3 simple steps. Thread 🧵",
+        "humor" =>
+          "Me: I'll just check email quickly. Also me: *3 hours later* At least #{product_name} made my life easier 😂",
+        "problem_aware" =>
+          "Still struggling with X? Here's how #{product_name} changed the game for us..."
       },
       "linkedin" => %{
         "educational" => "Here's what we learned about solving X with #{product_name}...",
-        "humor" => "My team meeting about #{product_name}: 50% actual work, 50% laughing at our past manual processes 🤦‍♂️"
+        "humor" =>
+          "My team meeting about #{product_name}: 50% actual work, 50% laughing at our past manual processes 🤦‍♂️"
       },
       "reddit" => %{
-        "problem_aware" => "Has anyone used #{product_name}? Looking for real experiences before I commit."
+        "problem_aware" =>
+          "Has anyone used #{product_name}? Looking for real experiences before I commit."
       },
       "facebook" => %{
         "social_proof" => "Check out what our community is saying about #{product_name}! 🌟"

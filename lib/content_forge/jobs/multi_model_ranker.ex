@@ -17,7 +17,9 @@ defmodule ContentForge.Jobs.MultiModelRanker do
   @default_top_n 3
 
   @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"product_id" => product_id, "content_type" => content_type, "top_n" => top_n}}) do
+  def perform(%Oban.Job{
+        args: %{"product_id" => product_id, "content_type" => content_type, "top_n" => top_n}
+      }) do
     rank_drafts(product_id, content_type, top_n || @default_top_n)
   end
 
@@ -39,7 +41,9 @@ defmodule ContentForge.Jobs.MultiModelRanker do
         ["post", "blog", "video_script"]
       end
 
-    Logger.info("Starting multi-model ranking for product #{product_id}, types: #{inspect(types_to_rank)}")
+    Logger.info(
+      "Starting multi-model ranking for product #{product_id}, types: #{inspect(types_to_rank)}"
+    )
 
     # Get performance scoreboard and model calibration data
     # (Would come from Phase 7 when implemented)
@@ -55,8 +59,9 @@ defmodule ContentForge.Jobs.MultiModelRanker do
 
   defp rank_drafts_by_type(product_id, content_type, top_n, scoreboard_context) do
     # Get all draft records for this content type
-    drafts = ContentGeneration.list_drafts_by_type(product_id, content_type)
-            |> Enum.filter(fn d -> d.status == "draft" end)
+    drafts =
+      ContentGeneration.list_drafts_by_type(product_id, content_type)
+      |> Enum.filter(fn d -> d.status == "draft" end)
 
     if drafts == [] do
       Logger.info("No drafts to rank for #{content_type}")

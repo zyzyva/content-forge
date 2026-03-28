@@ -110,5 +110,4 @@ defmodule ContentForge.Jobs.ImageGenerator do
     # Generate a placeholder - in real implementation, this would be an R2 URL
     "https://placeholder.contentforge.dev/images/#{draft_id}.png"
   end
-
 end

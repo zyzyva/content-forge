@@ -104,15 +104,15 @@ Acceptance criteria:
 **Purpose:** Publish approved short-form posts to Twitter/X, LinkedIn, Reddit, and Facebook/Instagram.
 
 Acceptance criteria:
-- [ ] Twitter/X: Post text (up to 280 chars) with image attachment via Twitter v2 API
-- [ ] LinkedIn: Post text + image to a personal profile or company page via LinkedIn API
-- [ ] Reddit: Submit a text post to a configured subreddit via Reddit API (image optional per subreddit rules)
-- [ ] Facebook/Instagram: Post text + image via Meta Graph API
-- [ ] All social posts include the AI-generated image from Stage 3.5 -- image is required, not optional
-- [ ] Each connector retrieves its OAuth tokens / API keys from 1Password at runtime
-- [ ] A failed publish is retried via Oban (up to 3 attempts) and flagged if all retries fail
-- [ ] Published posts record the platform post ID, timestamp, and link
-- [ ] Post timing optimization: track engagement by hour-of-day and day-of-week per platform per product. The scheduler picks optimal posting windows based on historical performance. Falls back to configured cadence when insufficient data exists (fewer than 20 published posts).
+- [x] Twitter/X: Post text (up to 280 chars) with image attachment via Twitter v2 API
+- [x] LinkedIn: Post text + image to a personal profile or company page via LinkedIn API
+- [x] Reddit: Submit a text post to a configured subreddit via Reddit API (image optional per subreddit rules)
+- [x] Facebook/Instagram: Post text + image via Meta Graph API
+- [x] All social posts include the AI-generated image from Stage 3.5 -- image is required, not optional
+- [x] Each connector retrieves its OAuth tokens / API keys from 1Password at runtime
+- [x] A failed publish is retried via Oban (up to 3 attempts) and flagged if all retries fail
+- [x] Published posts record the platform post ID, timestamp, and link
+- [x] Post timing optimization: track engagement by hour-of-day and day-of-week per platform per product. The scheduler picks optimal posting windows based on historical performance. Falls back to configured cadence when insufficient data exists (fewer than 20 published posts).
 
 ---
 

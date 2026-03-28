@@ -43,6 +43,14 @@ defmodule ContentForgeWeb.Router do
 
       # Competitor intel
       get "/competitor-intel", CompetitorController, :intel
+
+      # Publishing schedule
+      post "/schedule", ScheduleController, :schedule
+      get "/schedule", ScheduleController, :get_schedule
+
+      # Engagement metrics
+      get "/engagement-metrics", ScheduleController, :get_engagement_metrics
+      post "/engagement-metrics/refresh", ScheduleController, :refresh_engagement_metrics
     end
 
     # Individual draft endpoints

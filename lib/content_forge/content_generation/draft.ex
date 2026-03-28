@@ -16,7 +16,10 @@ defmodule ContentForge.ContentGeneration.Draft do
 
     belongs_to :product, ContentForge.Products.Product
     belongs_to :content_brief, ContentForge.Products.ContentBrief
-    belongs_to :repurposed_from, ContentForge.ContentGeneration.Draft, foreign_key: :repurposed_from_id
+
+    belongs_to :repurposed_from, ContentForge.ContentGeneration.Draft,
+      foreign_key: :repurposed_from_id
+
     has_many :draft_scores, ContentForge.ContentGeneration.DraftScore, on_delete: :delete_all
 
     timestamps type: :utc_datetime
@@ -41,7 +44,11 @@ defmodule ContentForge.ContentGeneration.Draft do
     |> validate_inclusion(:platform, ~w(twitter linkedin reddit facebook instagram blog youtube))
     |> validate_inclusion(:content_type, ~w(post blog video_script))
     |> validate_inclusion(:status, ~w(draft ranked approved rejected published))
-    |> validate_inclusion(:angle, ~w(educational entertaining problem_aware social_proof humor testimonial case_study how_to listicle), allow_nil: true)
+    |> validate_inclusion(
+      :angle,
+      ~w(educational entertaining problem_aware social_proof humor testimonial case_study how_to listicle),
+      allow_nil: true
+    )
     |> put_default_status()
   end
 

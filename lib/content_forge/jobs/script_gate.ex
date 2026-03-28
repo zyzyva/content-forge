@@ -22,7 +22,9 @@ defmodule ContentForge.Jobs.ScriptGate do
       ContentGeneration.list_drafts_by_type(product_id, "video_script")
       |> Enum.filter(fn d -> d.status == "ranked" end)
 
-    Logger.info("Script gate: evaluating #{length(scripts)} video scripts with threshold #{threshold}")
+    Logger.info(
+      "Script gate: evaluating #{length(scripts)} video scripts with threshold #{threshold}"
+    )
 
     results =
       Enum.map(scripts, fn script ->

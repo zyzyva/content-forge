@@ -38,7 +38,10 @@ defmodule ContentForge.Jobs.ContentBriefGenerator do
     existing_brief = ContentGeneration.get_latest_content_brief_for_product(product.id)
 
     if existing_brief && !force_rewrite do
-      Logger.info("Content brief already exists for product #{product.id}, skipping initial generation")
+      Logger.info(
+        "Content brief already exists for product #{product.id}, skipping initial generation"
+      )
+
       {:ok, existing_brief}
     else
       # Determine if we should rewrite based on performance data

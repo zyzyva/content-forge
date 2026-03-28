@@ -143,12 +143,15 @@ defmodule ContentForgeWeb.DraftController do
         content: brief.content,
         model_used: brief.model_used,
         inserted_at: brief.inserted_at,
-        versions: Enum.map(versions, fn v -> %{
-          version: v.version,
-          content: v.content,
-          rewrite_reason: v.rewrite_reason,
-          inserted_at: v.inserted_at
-        } end)
+        versions:
+          Enum.map(versions, fn v ->
+            %{
+              version: v.version,
+              content: v.content,
+              rewrite_reason: v.rewrite_reason,
+              inserted_at: v.inserted_at
+            }
+          end)
       })
     else
       conn
@@ -167,6 +170,7 @@ defmodule ContentForgeWeb.DraftController do
   end
 
   defp parse_float(nil), do: nil
+
   defp parse_float(value) do
     case Float.parse(value) do
       {num, _} -> num

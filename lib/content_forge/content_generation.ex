@@ -70,7 +70,12 @@ defmodule ContentForge.ContentGeneration do
   end
 
   # Creates a new version of a brief, archiving the old one
-  def create_new_brief_version(%ContentBrief{} = brief, new_content, performance_summary \\ %{}, rewrite_reason \\ nil) do
+  def create_new_brief_version(
+        %ContentBrief{} = brief,
+        new_content,
+        performance_summary \\ %{},
+        rewrite_reason \\ nil
+      ) do
     Repo.transaction(fn ->
       # Archive current version
       current_version = Map.get(brief, :version, 1)
@@ -195,8 +200,15 @@ defmodule ContentForge.ContentGeneration do
   # Get top N drafts by composite score per type
   def list_top_drafts_by_type(product_id, content_type, limit \\ 3) do
     from(d in Draft,
-      where: d.product_id == ^product_id and d.content_type == ^content_type and d.status == "ranked",
-      order_by: [desc: fragment("SELECT composite_score FROM draft_scores WHERE draft_id = ? ORDER BY composite_score DESC LIMIT 1", d.id)],
+      where:
+        d.product_id == ^product_id and d.content_type == ^content_type and d.status == "ranked",
+      order_by: [
+        desc:
+          fragment(
+            "SELECT composite_score FROM draft_scores WHERE draft_id = ? ORDER BY composite_score DESC LIMIT 1",
+            d.id
+          )
+      ],
       limit: ^limit
     )
     |> Repo.all()
