@@ -85,3 +85,12 @@ Commit: 9dd6bed
 - [stable] MetricsPoller job: polls at 24h/7d/30d, updates scoreboard, labels winner/loser vs rolling avg, updates calibration, triggers alerts and brief rewrite
 - [stable] ClipFlag schema + detection: parses YouTube retention curve, flags high-engagement segments
 - [stable] Metrics API endpoints: /scoreboard, /calibration, /metrics, /hot, /needs-reply, /videos/:id/retention
+
+## Feature 8: Content Review API
+Files: lib/content_forge_web/controllers/video_controller.ex, lib/content_forge_web/router.ex (modified)
+Commit: df8d54a
+
+- [stable] All draft endpoints verified: GET/POST /api/v1/products/:id/drafts, approve/reject/score
+- [stable] POST /api/v1/products/:id/generate triggers generation run
+- [stable] GET /api/v1/products/:id/brief returns brief with performance summary
+- [stable] POST /api/videos/:id/clip approves flagged segment (new endpoint added)

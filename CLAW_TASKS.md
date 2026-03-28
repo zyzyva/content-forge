@@ -48,10 +48,10 @@ Files to create: lib/content_forge/metrics.ex, lib/content_forge/metrics/scorebo
 Dependencies: Feature 3 [stable], Feature 7 [stable]
 Files to modify: lib/content_forge_web/router.ex, existing controllers
 
-- [ ] All draft endpoints already exist — verify GET/POST /api/drafts, POST /api/drafts/:id/approve|reject|score work end to end
-- [ ] POST /api/products/:id/generate triggers generation run
-- [ ] GET /api/products/:id/brief returns current brief with performance summary
-- [ ] POST /api/videos/:id/clip approves flagged segment for short-form clip production
+- [built] All draft endpoints already exist — verify GET/POST /api/drafts, POST /api/drafts/:id/approve|reject|score work end to end
+- [built] POST /api/products/:id/generate triggers generation run
+- [built] GET /api/products/:id/brief returns current brief with performance summary
+- [built] POST /api/videos/:id/clip approves flagged segment for short-form clip production
 
 ---
 
