@@ -146,6 +146,40 @@ These jobs exist but aren't automatically triggered when they should be:
 
 ## References
 
+### content_forge_receiver — Webhook Receiver Library
+https://github.com/zyzyva/content_forge_receiver
+
+Companion hex package for any Phoenix app that wants to receive blog content published by ContentForge. Public repo, no hex.pm account or API keys needed.
+
+**How it works:** ContentForge stores the approved markdown article in R2, then POSTs a webhook payload `{title, r2_url, product_slug, timestamp}` to each registered endpoint. The receiver plug verifies the HMAC signature, fetches the markdown from R2, and calls a `handle_content/3` callback your app implements.
+
+**Adding to a Phoenix app:**
+
+```elixir
+# mix.exs
+{:content_forge_receiver, github: "zyzyva/content_forge_receiver"}
+
+# router.ex
+plug ContentForgeReceiver.Plug,
+  handler: MyApp.ContentHandler,
+  secret: System.get_env("CONTENT_FORGE_SECRET")
+
+# my_app/content_handler.ex
+defmodule MyApp.ContentHandler do
+  @behaviour ContentForgeReceiver
+
+  @impl true
+  def handle_content(title, markdown, metadata) do
+    # save to DB, render, index for search, etc.
+    :ok
+  end
+end
+```
+
+Then register the app's webhook URL (and optional HMAC secret) in ContentForge under the product's blog webhook settings.
+
+---
+
 ### opc-skills — Reddit & Twitter Read Access
 https://github.com/ReScienceLab/opc-skills
 
