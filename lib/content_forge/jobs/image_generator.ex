@@ -7,11 +7,9 @@ defmodule ContentForge.Jobs.ImageGenerator do
   stored in R2, and linked to the draft.
   """
   use Oban.Worker, queue: :content_generation, max_attempts: 3
+  require Logger
 
-  alias ContentForge.{Products, ContentGeneration, Storage}
-  alias ContentForge.ContentGeneration.Draft
-
-  @image_providers [:flux, :dalle]
+  alias ContentForge.{Products, ContentGeneration}
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"draft_id" => draft_id, "provider" => provider}}) do
@@ -113,18 +111,4 @@ defmodule ContentForge.Jobs.ImageGenerator do
     "https://placeholder.contentforge.dev/images/#{draft_id}.png"
   end
 
-  # Placeholder for actual image generation API calls
-  defp call_flux_api(prompt) do
-    # Would call Flux API with prompt
-    # Return R2 URL of generated image
-    Logger.info("Calling Flux API with prompt: #{String.slice(prompt, 0, 100)}...")
-    nil
-  end
-
-  defp call_dalle_api(prompt) do
-    # Would call DALL-E API with prompt
-    # Return R2 URL of generated image
-    Logger.info("Calling DALL-E API with prompt: #{String.slice(prompt, 0, 100)}...")
-    nil
-  end
 end

@@ -10,8 +10,9 @@ defmodule ContentForge.Jobs.WinnerRepurposingEngine do
   Repurposed drafts enter Stage 3b with repurposed_from link.
   """
   use Oban.Worker, queue: :content_generation, max_attempts: 3
+  require Logger
 
-  alias ContentForge.{Products, ContentGeneration}
+  alias ContentForge.ContentGeneration
   alias ContentForge.ContentGeneration.Draft
 
   @impl Oban.Worker
@@ -139,7 +140,7 @@ defmodule ContentForge.Jobs.WinnerRepurposingEngine do
     end
   end
 
-  defp transform_content(original_content, platform, content_type, angle) do
+  defp transform_content(original_content, platform, content_type, _angle) do
     # Transform the original content for the new platform/format
     # In production, this could use an LLM for better transformations
 

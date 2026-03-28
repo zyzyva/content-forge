@@ -8,9 +8,10 @@ defmodule ContentForge.Jobs.MultiModelRanker do
   Composite score is averaged across models. Top N per content type are promoted to review queue.
   """
   use Oban.Worker, queue: :content_generation, max_attempts: 3
+  require Logger
 
-  alias ContentForge.{Products, ContentGeneration}
-  alias ContentForge.ContentGeneration.{Draft, DraftScore}
+  alias ContentForge.ContentGeneration
+  alias ContentForge.ContentGeneration.DraftScore
 
   @models ["claude", "gemini", "xai"]
   @default_top_n 3

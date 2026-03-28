@@ -8,9 +8,9 @@ defmodule ContentForge.Jobs.OpenClawBulkGenerator do
   Ensures at least one humor variant per content type.
   """
   use Oban.Worker, queue: :content_generation, max_attempts: 3
+  require Logger
 
   alias ContentForge.{Products, ContentGeneration}
-  alias ContentForge.ContentGeneration.Draft
 
   # Default generation counts (configurable)
   @default_social_variants 20

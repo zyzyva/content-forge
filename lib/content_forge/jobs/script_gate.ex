@@ -1,13 +1,8 @@
 defmodule ContentForge.Jobs.ScriptGate do
-  @mod """
-  Oban job that performs a second ranking pass on video scripts only.
-
-  Scripts below the threshold are archived.
-  Approved scripts enqueue video production jobs.
-  """
   use Oban.Worker, queue: :content_generation, max_attempts: 3
+  require Logger
 
-  alias ContentForge.{ContentGeneration, Jobs}
+  alias ContentForge.ContentGeneration
   alias ContentForge.ContentGeneration.Draft
 
   @default_threshold 6.0

@@ -2,7 +2,6 @@ defmodule ContentForgeWeb.DraftController do
   use ContentForgeWeb, :controller
 
   alias ContentForge.ContentGeneration
-  alias ContentForge.ContentGeneration.Draft
   alias ContentForge.Products
 
   action_fallback ContentForgeWeb.FallbackController

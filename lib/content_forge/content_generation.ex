@@ -10,7 +10,6 @@ defmodule ContentForge.ContentGeneration do
   alias ContentForge.Products.BriefVersion
   alias ContentForge.ContentGeneration.Draft
   alias ContentForge.ContentGeneration.DraftScore
-  alias ContentForge.Products.Product
 
   # ContentBrief CRUD
 
@@ -171,7 +170,7 @@ defmodule ContentForge.ContentGeneration do
     update_draft_status(draft, "approved")
   end
 
-  def mark_draft_rejected(%Draft{} = draft, reason \\ nil) do
+  def mark_draft_rejected(%Draft{} = draft, _reason \\ nil) do
     draft
     |> Draft.changeset(%{status: "rejected"})
     |> Repo.update()

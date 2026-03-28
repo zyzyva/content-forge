@@ -9,9 +9,9 @@ defmodule ContentForge.Jobs.ContentBriefGenerator do
   when performance data exists.
   """
   use Oban.Worker, queue: :content_generation, max_attempts: 3
+  require Logger
 
-  alias ContentForge.{Products, ContentGeneration, Storage}
-  alias ContentForge.Products.Product
+  alias ContentForge.{Products, ContentGeneration}
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"product_id" => product_id, "force_rewrite" => force_rewrite}}) do
@@ -52,7 +52,7 @@ defmodule ContentForge.Jobs.ContentBriefGenerator do
     end
   end
 
-  defp has_significant_performance_data?(product_id) do
+  defp has_significant_performance_data?(_product_id) do
     # Check if there are enough measured pieces to trigger a rewrite
     # For now, we'll check if content_scoreboard has entries
     # This would be implemented when Phase 7 is complete
