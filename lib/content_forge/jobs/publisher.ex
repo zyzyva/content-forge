@@ -82,39 +82,48 @@ defmodule ContentForge.Jobs.Publisher do
         {:cancel, "Draft not found"}
 
       draft ->
-        product = Products.get_product(draft.product_id)
-
-        case get_credentials(product, draft.platform) do
+        case Products.get_product(draft.product_id) do
           nil ->
-            {:cancel, "No credentials for platform"}
+            Logger.error("Publisher: Product not found for draft #{draft_id}")
+            {:cancel, "Product not found"}
 
-          credentials ->
-            optimal_windows =
-              Publishing.get_optimal_posting_windows(draft.product_id, draft.platform)
+          product ->
+            do_publish(draft, product)
+        end
+    end
+  end
 
-            opts = build_post_opts(draft, optimal_windows, product)
-            platform_module = get_platform_module(draft.platform)
+  defp do_publish(draft, product) do
+    case get_credentials(product, draft.platform) do
+      nil ->
+        {:cancel, "No credentials for platform"}
 
-            case platform_module.post(draft.content, credentials, opts) do
-              {:ok, %{post_id: post_id, post_url: post_url}} ->
-                Publishing.create_published_post(%{
-                  product_id: draft.product_id,
-                  draft_id: draft.id,
-                  platform: draft.platform,
-                  platform_post_id: post_id,
-                  platform_post_url: post_url,
-                  posted_at: DateTime.utc_now()
-                })
+      credentials ->
+        optimal_windows =
+          Publishing.get_optimal_posting_windows(draft.product_id, draft.platform)
 
-                Draft.changeset(draft, %{status: "published"}) |> ContentForge.Repo.update!()
+        opts = build_post_opts(draft, optimal_windows, product)
+        platform_module = get_platform_module(draft.platform)
 
-                Logger.info("Publisher: Published draft #{draft.id} to #{draft.platform}")
-                :ok
+        case platform_module.post(draft.content, credentials, opts) do
+          {:ok, %{post_id: post_id, post_url: post_url}} ->
+            Publishing.create_published_post(%{
+              product_id: draft.product_id,
+              draft_id: draft.id,
+              platform: draft.platform,
+              platform_post_id: post_id,
+              platform_post_url: post_url,
+              posted_at: DateTime.utc_now()
+            })
 
-              {:error, reason} ->
-                Logger.error("Publisher: Failed to publish: #{reason}")
-                {:error, reason}
-            end
+            Draft.changeset(draft, %{status: "published"}) |> ContentForge.Repo.update!()
+
+            Logger.info("Publisher: Published draft #{draft.id} to #{draft.platform}")
+            :ok
+
+          {:error, reason} ->
+            Logger.error("Publisher: Failed to publish: #{reason}")
+            {:error, reason}
         end
     end
   end
@@ -248,14 +257,18 @@ defmodule ContentForge.Jobs.Publisher do
         "facebook" ->
           publishing_config = product.publishing_targets || %{}
           facebook_config = publishing_config["facebook"] || %{}
-          Keyword.put(opts, :page_id, facebook_config["page_id"])
-          Keyword.put(opts, :target, :facebook_page)
+
+          opts
+          |> Keyword.put(:page_id, facebook_config["page_id"])
+          |> Keyword.put(:target, :facebook_page)
 
         "instagram" ->
           publishing_config = product.publishing_targets || %{}
           instagram_config = publishing_config["instagram"] || %{}
-          Keyword.put(opts, :instagram_account_id, instagram_config["account_id"])
-          Keyword.put(opts, :target, :instagram)
+
+          opts
+          |> Keyword.put(:instagram_account_id, instagram_config["account_id"])
+          |> Keyword.put(:target, :instagram)
 
         _ ->
           opts

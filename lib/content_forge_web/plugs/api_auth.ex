@@ -16,7 +16,7 @@ defmodule ContentForgeWeb.Plugs.ApiAuth do
       _ ->
         conn
         |> put_status(:unauthorized)
-        |> put_view(html: ContentForgeWeb.ErrorJSON)
+        |> put_view(json: ContentForgeWeb.ErrorJSON)
         |> render(:error, message: "Unauthorized")
         |> halt()
     end

@@ -17,13 +17,21 @@ defmodule ContentForge.Jobs.RepoIngestion do
     Logger.info("Starting repo ingestion for product #{product_id} from #{repo_url}")
 
     with {:ok, _product} <- fetch_product(product_id),
-         {:ok, temp_dir} <- clone_repo(repo_url),
-         {:ok, extracted_content} <- extract_content(temp_dir),
-         :ok <- cleanup_temp_dir(temp_dir),
-         {:ok, r2_keys} <- store_in_r2(product_id, extracted_content),
-         {:ok, _snapshot} <- create_snapshot(product_id, r2_keys, extracted_content.token_count) do
-      Logger.info("Repo ingestion completed for product #{product_id}")
-      :ok
+         {:ok, temp_dir} <- clone_repo(repo_url) do
+      extract_result = extract_content(temp_dir)
+      cleanup_temp_dir(temp_dir)
+
+      with {:ok, extracted_content} <- extract_result,
+           {:ok, r2_keys} <- store_in_r2(product_id, extracted_content),
+           {:ok, _snapshot} <-
+             create_snapshot(product_id, r2_keys, extracted_content.token_count) do
+        Logger.info("Repo ingestion completed for product #{product_id}")
+        :ok
+      else
+        {:error, reason} ->
+          Logger.error("Repo ingestion failed: #{inspect(reason)}")
+          {:error, reason}
+      end
     else
       {:error, reason} ->
         Logger.error("Repo ingestion failed: #{inspect(reason)}")
@@ -80,9 +88,9 @@ defmodule ContentForge.Jobs.RepoIngestion do
     lib_files = files_in_dir(Path.join(temp_dir, "lib"))
     src_files = files_in_dir(Path.join(temp_dir, "src"))
 
-    doc_content = Enum.map(doc_files, &read_and_tag/1)
-    lib_content = Enum.map(lib_files, &read_and_tag/1)
-    src_content = Enum.map(src_files, &read_and_tag/1)
+    doc_content = doc_files |> Enum.map(&read_and_tag/1) |> Enum.reject(&is_nil/1)
+    lib_content = lib_files |> Enum.map(&read_and_tag/1) |> Enum.reject(&is_nil/1)
+    src_content = src_files |> Enum.map(&read_and_tag/1) |> Enum.reject(&is_nil/1)
 
     all_content = content_parts ++ doc_content ++ lib_content ++ src_content
 

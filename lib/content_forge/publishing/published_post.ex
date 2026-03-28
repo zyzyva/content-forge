@@ -29,6 +29,6 @@ defmodule ContentForge.Publishing.PublishedPost do
       :engagement_data
     ])
     |> validate_required([:product_id, :draft_id, :platform])
-    |> validate_inclusion(:platform, ~w(twitter linkedin reddit facebook instagram))
+    |> validate_inclusion(:platform, ~w(twitter linkedin reddit facebook instagram blog youtube))
   end
 end

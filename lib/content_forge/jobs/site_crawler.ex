@@ -106,7 +106,7 @@ defmodule ContentForge.Jobs.SiteCrawler do
     description =
       case Floki.find(html, "meta[name=\"description\"]") do
         [] -> nil
-        [{_, attrs, _}] -> Keyword.get(attrs, :content)
+        [{_, attrs, _}] -> Enum.find_value(attrs, fn {k, v} -> if k == "content", do: v end)
       end
 
     keywords =
@@ -115,7 +115,7 @@ defmodule ContentForge.Jobs.SiteCrawler do
           []
 
         [{_, attrs, _}] ->
-          case Keyword.get(attrs, :content) do
+          case Enum.find_value(attrs, fn {k, v} -> if k == "content", do: v end) do
             nil -> []
             k -> String.split(k, ",", trim: true)
           end
@@ -134,14 +134,11 @@ defmodule ContentForge.Jobs.SiteCrawler do
   end
 
   defp resolve_url(href, base_url) do
-    case URI.merge(base_url, href) do
-      {:ok, uri} ->
-        uri = %{uri | fragment: nil, query: nil}
-        to_string(uri)
-
-      _ ->
-        nil
-    end
+    uri = URI.merge(base_url, href)
+    uri = %{uri | fragment: nil, query: nil}
+    to_string(uri)
+  rescue
+    _ -> nil
   end
 
   defp is_external?(url, base_url) do
@@ -159,7 +156,7 @@ defmodule ContentForge.Jobs.SiteCrawler do
     Enum.reduce(pages, {:ok, keys}, fn page, {:ok, acc} ->
       page_key = "snapshots/#{product_id}/site/#{timestamp}/#{slugify(page.url)}.json"
 
-      page_json = Jason.encode!(page)
+      page_json = JSON.encode!(page)
 
       case Storage.put_object(page_key, page_json, content_type: "application/json") do
         {:ok, url} ->

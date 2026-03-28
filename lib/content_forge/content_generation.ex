@@ -77,8 +77,8 @@ defmodule ContentForge.ContentGeneration do
         rewrite_reason \\ nil
       ) do
     Repo.transaction(fn ->
-      # Archive current version
-      current_version = Map.get(brief, :version, 1)
+      # Archive current version; treat nil as 1 so archive version is always valid (> 0)
+      current_version = brief.version || 1
 
       # Create historical version record
       %BriefVersion{}
