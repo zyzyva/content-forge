@@ -22,6 +22,16 @@ defmodule ContentForgeWeb.Router do
     pipe_through :browser
 
     get "/", PageController, :home
+
+    # Dashboard LiveViews
+    live "/dashboard", Live.Dashboard.DashboardLive, :index
+    live "/dashboard/products", Live.Dashboard.Products.ListLive, :index
+    live "/dashboard/products/:id", Live.Dashboard.Products.DetailLive, :show
+    live "/dashboard/drafts", Live.Dashboard.Drafts.ReviewLive, :index
+    live "/dashboard/schedule", Live.Dashboard.Schedule.Live, :index
+    live "/dashboard/video", Live.Dashboard.Video.StatusLive, :index
+    live "/dashboard/performance", Live.Dashboard.Performance.DashboardLive, :index
+    live "/dashboard/clips", Live.Dashboard.Clips.QueueLive, :index
   end
 
   scope "/api/v1", ContentForgeWeb do
