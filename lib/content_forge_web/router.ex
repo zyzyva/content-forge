@@ -33,7 +33,25 @@ defmodule ContentForgeWeb.Router do
     scope "/products/:product_id" do
       resources "/competitors", CompetitorController,
         only: [:index, :show, :create, :update, :delete]
+
+      # Drafts endpoints
+      resources "/drafts", DraftController, only: [:index, :create]
+
+      # Content generation triggers
+      post "/generate", DraftController, :generate
+      get "/brief", DraftController, :get_brief
+
+      # Competitor intel
+      get "/competitor-intel", CompetitorController, :intel
     end
+
+    # Individual draft endpoints
+    resources "/drafts", DraftController, only: [:show]
+
+    # Draft actions
+    post "/drafts/:id/approve", DraftController, :approve
+    post "/drafts/:id/reject", DraftController, :reject
+    post "/drafts/:id/score", DraftController, :score
   end
 
   # Other scopes may use custom stacks.
