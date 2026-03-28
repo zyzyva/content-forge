@@ -34,17 +34,19 @@ defmodule ContentForgeWeb.Live.Dashboard.Components do
     """
   end
 
-  attr :score, :float, required: true
+  attr :score, :any, required: true
 
   def score_display(assigns) do
+    score = assigns.score * 1.0
+
     score_class =
       cond do
-        assigns.score >= 8.0 -> "text-success"
-        assigns.score >= 5.0 -> "text-warning"
+        score >= 8.0 -> "text-success"
+        score >= 5.0 -> "text-warning"
         true -> "text-error"
       end
 
-    assigns = assign(assigns, :score_class, score_class)
+    assigns = assigns |> assign(:score_class, score_class) |> assign(:score, score)
 
     ~H"""
     <span class={["font-mono font-semibold", @score_class]}>
@@ -90,6 +92,13 @@ defmodule ContentForgeWeb.Live.Dashboard.Components do
 
   def format_datetime(%DateTime{} = dt) do
     "#{dt.year}-#{pad(dt.month)}-#{pad(dt.day)} #{pad(dt.hour)}:#{pad(dt.minute)}"
+  end
+
+  def format_datetime(str) when is_binary(str) do
+    case DateTime.from_iso8601(str) do
+      {:ok, dt, _offset} -> format_datetime(dt)
+      _ -> str
+    end
   end
 
   defp pad(n) when n < 10, do: "0#{n}"

@@ -289,12 +289,20 @@ defmodule ContentForgeWeb.Live.Dashboard.Clips.QueueLive do
     data
     |> Enum.take(30)
     |> Enum.map(fn
-      %{"time" => t, "value" => v} -> {String.to_integer(t), String.to_float(v)}
-      {t, v} when is_binary(t) -> {String.to_integer(t), String.to_float(v)}
-      {t, v} -> {t, v}
+      %{"time" => t, "value" => v} -> {to_int(t), to_float(v)}
+      {t, v} when is_binary(t) -> {to_int(t), to_float(v)}
+      {t, v} -> {t, v * 1.0}
     end)
-    |> Enum.map(fn {t, v} -> {t, max(v, 1)} end)
+    |> Enum.map(fn {t, v} -> {t, max(v, 1.0)} end)
   end
 
   defp parse_retention(_), do: []
+
+  defp to_int(v) when is_binary(v), do: String.to_integer(v)
+  defp to_int(v) when is_integer(v), do: v
+  defp to_int(v), do: round(v)
+
+  defp to_float(v) when is_binary(v), do: String.to_float(v)
+  defp to_float(v) when is_float(v), do: v
+  defp to_float(v) when is_integer(v), do: v * 1.0
 end

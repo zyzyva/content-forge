@@ -99,7 +99,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.ListLive do
           name="search"
           placeholder="Search products..."
           class="input input-bordered w-full"
-          phx-input="search"
+          phx-change="search"
           value={@search}
         />
       </div>

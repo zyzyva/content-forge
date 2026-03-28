@@ -218,7 +218,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Schedule.Live do
               </tr>
             </thead>
             <tbody>
-              <tr :for={post <- Enum.sort_by(@posts, & &1.posted_at, {:desc, nil})}>
+              <tr :for={post <- Enum.sort_by(@posts, & &1.posted_at, {:desc, DateTime})}>
                 <td>{Components.format_datetime(post.posted_at)}</td>
                 <td>
                   <span class="badge badge-sm badge-outline">{post.platform}</span>

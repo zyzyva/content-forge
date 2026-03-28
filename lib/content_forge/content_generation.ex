@@ -120,6 +120,13 @@ defmodule ContentForge.ContentGeneration do
     |> Repo.all()
   end
 
+  def list_drafts_by_status(nil, status) do
+    Draft
+    |> where(status: ^status)
+    |> order_by(desc: :inserted_at)
+    |> Repo.all()
+  end
+
   def list_drafts_by_status(product_id, status) do
     Draft
     |> where(product_id: ^product_id, status: ^status)
@@ -190,6 +197,13 @@ defmodule ContentForge.ContentGeneration do
   end
 
   # Approved drafts ready for scheduling
+  def list_approved_drafts(nil) do
+    Draft
+    |> where(status: "approved")
+    |> order_by(desc: :inserted_at)
+    |> Repo.all()
+  end
+
   def list_approved_drafts(product_id) do
     Draft
     |> where(product_id: ^product_id, status: "approved")
