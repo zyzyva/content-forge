@@ -59,3 +59,11 @@ Commit: 9784bbb
 - [stable] Publisher job calls correct platform connector, records published post
 - [stable] PublishingScheduler schedules approved drafts respecting per-platform cadence from product config
 - [stable] Schedule API endpoints work
+
+## Feature 5: Blog Publishing
+Files: lib/content_forge/publishing/webhook_delivery.ex, lib/content_forge/jobs/blog_publisher.ex, priv/repo/migrations/20250327230011_create_webhook_deliveries.exs
+Commit: dc466a7
+
+- [stable] WebhookDelivery schema: product_id, blog_webhook_id, draft_id, status (pending/success/failed), delivered_at, error, timestamps
+- [stable] BlogPublisher Oban job (max_attempts: 3): stores markdown in R2 with stable URL (`blogs/{product_slug}/{draft_id}.md`), POSTs to each active webhook, HMAC-signs when secret present, records delivery status
+- [stable] Context functions for WebhookDelivery CRUD exist in ContentForge.Publishing

@@ -15,8 +15,8 @@
 Dependencies: Feature 1 [stable] (BlogWebhook schema), Feature 3 [stable] (Draft schema)
 Files to create: lib/content_forge/jobs/blog_publisher.ex, priv/repo/migrations/*_create_webhook_deliveries.exs, lib/content_forge/products/webhook_delivery.ex
 
-- [ ] WebhookDelivery schema: product_id, blog_webhook_id, draft_id, status (pending/success/failed), delivered_at, error
-- [ ] BlogPublisher Oban job: on draft approval for blog type, store markdown in R2, POST to each active webhook with title/r2_url/product_slug/timestamp, HMAC-sign when secret present, record delivery status, retry on failure
+- [built] WebhookDelivery schema: product_id, blog_webhook_id, draft_id, status (pending/success/failed), delivered_at, error
+- [built] BlogPublisher Oban job: on draft approval for blog type, store markdown in R2, POST to each active webhook with title/r2_url/product_slug/timestamp, HMAC-sign when secret present, record delivery status, retry on failure
 
 ---
 
