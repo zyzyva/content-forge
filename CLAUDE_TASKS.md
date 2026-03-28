@@ -98,7 +98,7 @@ Commit: 701c3a7
 
 ## Feature 9: LiveView Dashboard
 Files: lib/content_forge_web/live/*.ex
-Commit: 1a71ef9
+Commit: ab4f77c
 
 - [stable] Products list LiveView with quick-add form
 - [stable] Per-product detail LiveView: snapshot status, brief, draft queue, publishing history
