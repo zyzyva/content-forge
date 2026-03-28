@@ -152,6 +152,25 @@ defmodule ContentForge.Metrics do
     end)
   end
 
+  @doc """
+  Approve a clip flag for short-form clip production.
+  This marks the segment as approved and could trigger a generation job.
+  """
+  def approve_clip_flag(%ClipFlag{} = flag) do
+    flag
+    |> Ecto.Changeset.change(%{
+      engagement_spike_data:
+        Map.merge(
+          flag.engagement_spike_data || %{},
+          %{
+            approved_for_production: true,
+            approved_at: DateTime.utc_now()
+          }
+        )
+    })
+    |> Repo.update()
+  end
+
   # ============================================
   # Analytics & Aggregation
   # ============================================
