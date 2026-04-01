@@ -1,0 +1,98 @@
+# Content Forge
+
+> Content Forge is an AI-powered content operations platform for software products — it ingests your codebase and website, monitors competitors, generates multi-platform content drafts, scores them with three AI models simultaneously, and publishes to Twitter, LinkedIn, Reddit, Facebook, Instagram, and YouTube on an automated schedule.
+
+## What makes Content Forge unique
+
+Content Forge closes the loop between content creation and real performance data. Most content tools stop at generation — Content Forge tracks every published post's actual engagement, compares it to what three AI models predicted, and recalibrates its scoring models over time so ranked drafts get more accurate with each publish cycle. When content underperforms, it automatically rewrites the content strategy brief and regenerates fresh drafts.
+
+The platform ingests your product's GitHub repository and website automatically, so every piece of generated content reflects what your product actually does — not a generic description. Competitive intelligence is scraped and synthesized in the same pipeline, so content angles are informed by what's winning in your market right now.
+
+## Key features
+
+### Content Ingestion
+- Crawl your product website (up to 10 pages by default) and extract text, titles, and metadata
+- Clone your GitHub repository and ingest README, docs, and source files (up to 50,000 tokens)
+- Store snapshots in Cloudflare R2 as the grounding context for all content generation
+
+### Competitor Intelligence
+- Track competitor social accounts across Twitter, LinkedIn, Instagram, YouTube, Reddit, and Facebook
+- Scrape competitor posts automatically via Apify
+- Score each post relative to that competitor's average engagement
+- Synthesize trending topics, winning formats, and effective hooks with AI
+
+### AI Content Generation
+- Generate content briefs from your product context + competitor intel
+- Create drafts for 7 platforms: Twitter, LinkedIn, Reddit, Facebook, Instagram, blog, and YouTube
+- Support 9 content angles: educational, entertaining, problem-aware, social proof, humor, testimonial, case study, how-to, listicle
+- Generate blog posts, social posts, and video scripts from a single brief
+
+### Multi-Model Scoring
+- Score every draft with Claude, Gemini, and xAI simultaneously
+- Three scoring dimensions per model: accuracy, SEO, and entertainment-education value (EEV)
+- Composite score is an average across all models and dimensions
+- Calibration adjusts scores based on each model's historical prediction bias per platform and angle
+
+### Publishing
+- Publish to Twitter (with image attachment via 3-step media upload), LinkedIn (profile or org), Facebook, Instagram, Reddit, and YouTube
+- Deliver blog content via signed webhooks to any blog platform
+- Optimal posting windows calculated from your historical engagement data by hour-of-day and day-of-week
+
+### Performance Feedback Loop
+- Track predicted vs actual engagement for every published post on a scoreboard
+- Classify posts as winners (over-performed) or losers (under-performed) based on delta
+- Identify hot content and posts needing replies across all platforms
+- Detect when content strategy needs a refresh and auto-trigger brief rewrites
+
+### Video Production
+- Full video pipeline: script approval → voiceover → screen recording → avatar → assembly → YouTube upload
+- Automatic YouTube retention curve analysis to identify high-engagement segments
+- Clip flagging: detect spikes where engagement is more than 20% above the video average
+
+### LiveView Dashboard
+- 7 real-time dashboard pages: overview, products, drafts review, schedule, video status, performance analytics, clip queue
+- Approve and reject drafts from the browser
+- Monitor video pipeline status and approve flagged clips
+
+### REST API
+- Full REST API for all features under `/api/v1/`
+- Bearer token authentication with multiple API keys per account
+- Endpoints for products, competitors, drafts, publishing, metrics, and video
+
+## Use cases
+
+- SaaS founders who want a steady stream of platform-native content without hiring a content team
+- Developer tools companies that need technical content generated from their actual codebase and docs
+- Indie hackers launching on Product Hunt who need LinkedIn, Twitter, and Reddit content ready before launch day
+- Marketing teams at bootstrapped companies who want AI-scored drafts rather than blindly publishing everything the AI produces
+
+## Frequently asked questions
+
+- **Does Content Forge write content specific to my product, or is it generic?**
+  Content Forge clones your GitHub repo and crawls your website before generating anything. Every draft is grounded in your actual product documentation, feature set, and voice profile — not a generic product description.
+
+- **How does the three-model scoring work?**
+  Every draft is scored by Claude, Gemini, and xAI across three dimensions: accuracy (does the content reflect your product truthfully), SEO (search and discoverability value), and EEV (entertainment and educational value). The composite score is averaged across all nine scores. Over time, the system tracks which model's predictions match actual engagement and adjusts weights accordingly.
+
+- **What happens when content underperforms?**
+  The scoreboard tracks predicted vs actual engagement for every published post. When the system detects a pattern of underperformance, it triggers an automatic content brief rewrite that incorporates the performance data, so the next batch of drafts targets different angles or formats.
+
+- **Can I use my existing blog platform?**
+  Yes. Blog content is delivered via signed HMAC webhooks to any URL you configure. The platform tracks delivery status and retries failures automatically.
+
+- **What social platforms does Content Forge publish to?**
+  Twitter/X, LinkedIn (personal profiles and organization pages), Facebook pages, Instagram business accounts, Reddit subreddits, and YouTube. Blog content is delivered via webhook.
+
+- **How does video production work?**
+  For approved video scripts, Content Forge orchestrates a multi-step production pipeline: voiceover generation, screen recording, avatar generation, video assembly, and YouTube upload. Each step's output is stored in R2 so you can review or re-run any stage.
+
+- **Can I review content before it gets published?**
+  Yes. Every generated draft goes through a review queue where you can approve or reject it from the LiveView dashboard or via the API. Only approved drafts enter the publishing queue.
+
+- **What is clip flagging?**
+  After a video is published to YouTube, Content Forge fetches the retention curve and automatically detects segments where engagement spiked more than 20% above average. These segments are flagged as potential short-form clips for TikTok, Reels, or YouTube Shorts.
+
+## Links
+
+- Dashboard: /dashboard
+- API: /api/v1/
