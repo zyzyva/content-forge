@@ -140,6 +140,46 @@ defmodule ContentForge.Publishing.Twitter do
     end
   end
 
+  @doc """
+  Fetch engagement metrics for a published tweet.
+  """
+  @spec fetch_metrics(String.t(), map()) :: {:ok, map()} | {:error, String.t()}
+  def fetch_metrics(tweet_id, %{twitter_access_token: _token} = credentials) do
+    case twitter_request(:get, "/tweets/#{tweet_id}?tweet.fields=public_metrics", credentials) do
+      {:ok, %{"data" => %{"public_metrics" => m}}} ->
+        {:ok, %{
+          "likes" => m["like_count"] || 0,
+          "retweets" => m["retweet_count"] || 0,
+          "replies" => m["reply_count"] || 0,
+          "quotes" => m["quote_count"] || 0
+        }}
+
+      {:ok, body} ->
+        Logger.error("Twitter metrics unexpected response: #{inspect(body)}")
+        {:error, "unexpected response"}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp twitter_request(:get, path, credentials) do
+    url = @base_url <> path
+    headers = [{"Authorization", "Bearer #{credentials.twitter_access_token}"}]
+
+    case Req.get(url, headers: headers) do
+      {:ok, %{status: status, body: body}} when status in 200..299 ->
+        {:ok, body}
+
+      {:ok, %{status: status, body: body}} ->
+        Logger.error("Twitter API error: #{status} - #{inspect(body)}")
+        {:error, body}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp twitter_request(method, path, credentials, body) do
     url = @base_url <> path
 

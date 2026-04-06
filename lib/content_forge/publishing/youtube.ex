@@ -7,6 +7,8 @@ defmodule ContentForge.Publishing.YouTube do
   require Logger
 
   @upload_url "https://www.googleapis.com/upload/youtube/v3"
+  @data_url "https://www.googleapis.com/youtube/v3"
+  @analytics_url "https://youtubeanalytics.googleapis.com/v2"
   @max_retries 3
   @retry_delay 5000
 
@@ -196,6 +198,88 @@ defmodule ContentForge.Publishing.YouTube do
       _ -> "application/octet-stream"
     end
   end
+
+  # ============================================
+  # Metrics Fetching
+  # ============================================
+
+  @doc """
+  Fetch engagement metrics and retention curve for a published YouTube video.
+  Returns views, likes, comments from the Data API, plus a retention curve
+  from the Analytics API (empty list if Analytics call fails or returns no data).
+  """
+  @spec fetch_metrics(String.t(), map()) :: {:ok, map()} | {:error, String.t()}
+  def fetch_metrics(video_id, %{youtube_access_token: token} = _credentials) do
+    headers = [{"Authorization", "Bearer #{token}"}]
+
+    with {:ok, stats} <- fetch_video_stats(video_id, headers),
+         {:ok, retention} <- fetch_retention_curve(video_id, headers) do
+      {:ok, Map.put(stats, "retention_curve", retention)}
+    end
+  end
+
+  defp fetch_video_stats(video_id, headers) do
+    url = "#{@data_url}/videos"
+
+    case Req.get(url, headers: headers, params: [part: "statistics", id: video_id]) do
+      {:ok, %{status: status, body: body}} when status in 200..299 ->
+        stats = get_in(body, ["items", Access.at(0), "statistics"]) || %{}
+
+        {:ok,
+         %{
+           "views" => parse_stat(stats["viewCount"]),
+           "likes" => parse_stat(stats["likeCount"]),
+           "comments" => parse_stat(stats["commentCount"])
+         }}
+
+      {:ok, %{status: status, body: body}} ->
+        Logger.error("YouTube stats error #{status}: #{inspect(body)}")
+        {:error, "Stats API error #{status}"}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp fetch_retention_curve(video_id, headers) do
+    today = Date.utc_today()
+    start_date = today |> Date.add(-30) |> Date.to_string()
+    end_date = Date.to_string(today)
+
+    url = "#{@analytics_url}/reports"
+
+    params = [
+      ids: "channel==MINE",
+      startDate: start_date,
+      endDate: end_date,
+      dimensions: "elapsedVideoTimeRatio",
+      metrics: "audienceWatchRatio,relativeRetentionPerformance",
+      filters: "video==#{video_id}"
+    ]
+
+    case Req.get(url, headers: headers, params: params) do
+      {:ok, %{status: status, body: body}} when status in 200..299 ->
+        rows = body["rows"] || []
+
+        curve =
+          Enum.map(rows, fn [ratio, watch_ratio, retention] ->
+            %{"ratio" => ratio, "watch_ratio" => watch_ratio, "retention" => retention}
+          end)
+
+        {:ok, curve}
+
+      {:ok, %{status: status}} ->
+        Logger.warning("YouTube Analytics retention call returned #{status} for #{video_id}")
+        {:ok, []}
+
+      {:error, _reason} ->
+        {:ok, []}
+    end
+  end
+
+  defp parse_stat(nil), do: 0
+  defp parse_stat(s) when is_binary(s), do: String.to_integer(s)
+  defp parse_stat(n) when is_integer(n), do: n
 
   # ============================================
   # OAuth2 Token Management

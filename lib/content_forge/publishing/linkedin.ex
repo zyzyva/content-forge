@@ -268,6 +268,41 @@ defmodule ContentForge.Publishing.LinkedIn do
     end
   end
 
+  @doc """
+  Fetch engagement metrics for a published LinkedIn post.
+  post_id should be the ugcPost URN numeric portion or full URN.
+  """
+  @spec fetch_metrics(String.t(), map()) :: {:ok, map()} | {:error, String.t()}
+  def fetch_metrics(post_id, %{linkedin_access_token: token} = _credentials) do
+    urn = if String.starts_with?(post_id, "urn:"), do: post_id, else: "urn:li:ugcPost:#{post_id}"
+    url = "#{@base_url}/shareStatistics?q=ugcPost&ugcPost=#{URI.encode(urn)}"
+
+    headers = [
+      {"Authorization", "Bearer #{token}"},
+      {"X-Restli-Protocol-Version", "2.0.0"}
+    ]
+
+    case Req.get(url, headers: headers) do
+      {:ok, %{status: status, body: body}} when status in 200..299 ->
+        stats = get_in(body, ["elements", Access.at(0), "totalShareStatistics"]) || %{}
+
+        {:ok,
+         %{
+           "likes" => stats["likeCount"] || 0,
+           "comments" => stats["commentCount"] || 0,
+           "shares" => stats["shareCount"] || 0,
+           "impressions" => stats["impressionCount"] || 0
+         }}
+
+      {:ok, %{status: status, body: body}} ->
+        Logger.error("LinkedIn metrics error #{status}: #{inspect(body)}")
+        {:error, "API error #{status}"}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp linkedin_request(method, path, credentials, body) do
     url = @base_url <> path
 

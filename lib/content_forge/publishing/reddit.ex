@@ -74,6 +74,50 @@ defmodule ContentForge.Publishing.Reddit do
     end
   end
 
+  @doc """
+  Fetch engagement metrics for a published Reddit post.
+  post_id is the Reddit post ID (without the t3_ prefix).
+  """
+  @spec fetch_metrics(String.t(), map()) :: {:ok, map()} | {:error, String.t()}
+  def fetch_metrics(post_id, %{reddit_access_token: _token} = credentials) do
+    case reddit_request(:get, "/api/info.json?id=t3_#{post_id}", credentials) do
+      {:ok, body} ->
+        post_data = get_in(body, ["data", "children", Access.at(0), "data"]) || %{}
+
+        {:ok,
+         %{
+           "upvotes" => post_data["ups"] || 0,
+           "downvotes" => post_data["downs"] || 0,
+           "comments" => post_data["num_comments"] || 0,
+           "score" => post_data["score"] || 0
+         }}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp reddit_request(:get, path, credentials) do
+    url = @base_url <> path
+
+    headers = [
+      {"Authorization", "Bearer #{credentials.reddit_access_token}"},
+      {"User-Agent", "ContentForge/1.0"}
+    ]
+
+    case Req.get(url, headers: headers) do
+      {:ok, %{status: status, body: body}} when status in 200..299 ->
+        {:ok, body}
+
+      {:ok, %{status: status, body: body}} ->
+        Logger.error("Reddit API error: #{status} - #{inspect(body)}")
+        {:error, body}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp reddit_request(method, path, credentials, body) do
     url = @base_url <> path
 

@@ -151,6 +151,54 @@ defmodule ContentForge.Publishing.Facebook do
     end
   end
 
+  @doc """
+  Fetch engagement metrics for a published Facebook post.
+  """
+  @spec fetch_metrics(String.t(), map()) :: {:ok, map()} | {:error, String.t()}
+  def fetch_metrics(post_id, %{facebook_access_token: token} = _credentials) do
+    url = "#{@base_url}/#{post_id}"
+    params = [access_token: token, fields: "reactions.summary(true),comments.summary(true),shares"]
+
+    case Req.get(url, params: params) do
+      {:ok, %{status: status, body: body}} when status in 200..299 ->
+        likes = get_in(body, ["reactions", "summary", "total_count"]) || 0
+        comments = get_in(body, ["comments", "summary", "total_count"]) || 0
+        shares = get_in(body, ["shares", "count"]) || 0
+        {:ok, %{"likes" => likes, "comments" => comments, "shares" => shares}}
+
+      {:ok, %{status: status, body: body}} ->
+        Logger.error("Facebook metrics error #{status}: #{inspect(body)}")
+        {:error, "API error #{status}"}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Fetch engagement metrics for a published Instagram post.
+  """
+  @spec fetch_instagram_metrics(String.t(), map()) :: {:ok, map()} | {:error, String.t()}
+  def fetch_instagram_metrics(media_id, %{facebook_access_token: token} = _credentials) do
+    url = "#{@base_url}/#{media_id}"
+    params = [access_token: token, fields: "like_count,comments_count"]
+
+    case Req.get(url, params: params) do
+      {:ok, %{status: status, body: body}} when status in 200..299 ->
+        {:ok, %{
+          "likes" => body["like_count"] || 0,
+          "comments" => body["comments_count"] || 0
+        }}
+
+      {:ok, %{status: status, body: body}} ->
+        Logger.error("Instagram metrics error #{status}: #{inspect(body)}")
+        {:error, "API error #{status}"}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp facebook_request(method, path, credentials, body) do
     url = @base_url <> path
 
