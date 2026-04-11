@@ -228,3 +228,18 @@ Acceptance criteria:
 - [ ] Clip queue: flagged video segments with timestamp range, suggested title, approve to produce short-form clip
 - [ ] All views are mobile-responsive and accessible (WCAG AA)
 
+---
+
+### Feature 10: SEO Quality Pipeline (inspired by seo-agi)
+
+**Purpose:** Add SEO-optimized content generation features including AI Summary Nuggets for LLM citation, quality checklists, and GEO optimization.
+
+Acceptance criteria:
+- [ ] AI Summary Nugget: Every generated content (blog posts, social posts) includes a 200-character fact-dense block at the top designed for LLM citation (Perplexity, ChatGPT, Gemini)
+- [ ] 28-Point Quality Checklist: Generated content is validated against a checklist including: information gain over top 10 Google results, core answer in first 150 words, fast-scan summary in first 200 words, JSON-LD schema matching page type, FAQ section with PAA questions, single H1 tag, title tag <60 chars, meta description <155 chars
+- [ ] Original Research Block: Option to include a data experiment or first-hand observation section for E-E-A-T (Experience) signals
+- [ ] Geo/LLM Optimization: Content includes entity-rich writing, RAG targeting for zero-volume long-tail queries, FAQ patterns optimized for AI citation
+- [ ] Recursive Fact-Checking: Claims in generated content are validated against 2+ sources for entity consensus (optional, can be toggled per product)
+- [ ] Quality Score Display: Each draft shows its quality checklist score (X/28) in the dashboard and API
+- [ ] "Not For You" Block: Generated content includes an optional honest section telling readers when the product/service is a bad fit (trust signal)
+
