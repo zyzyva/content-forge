@@ -35,3 +35,9 @@ content_forge-*.tar
 npm-debug.log
 /assets/node_modules/
 
+# Swarmforge runtime state and per-role worktrees (managed by swarmforge.sh)
+.swarmforge/
+.worktrees/
+swarmtools/
+logs/
+agent_context/
