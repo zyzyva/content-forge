@@ -143,8 +143,8 @@ defmodule ContentForge.Jobs.SmsReplyDispatcherTest do
 
     test "when AgentGateway returns text, Twilio sends that text instead of the fallback",
          %{product: product, inbound_event: inbound_event} do
-      stub_agent_shell(fn _binary, _args, _opts ->
-        {~s|{"payloads":[{"text":"Hi there, how can I help?"}],"model":"claude-stub"}|, 0}
+      stub_agent_shell(fn _binary, _args ->
+        {~s|{"payloads":[{"text":"Hi there, how can I help?"}],"model":"claude-stub"}|, "", 0}
       end)
 
       Req.Test.stub(@twilio_stub, fn conn ->
@@ -168,9 +168,9 @@ defmodule ContentForge.Jobs.SmsReplyDispatcherTest do
       Application.put_env(:content_forge, :open_claw_agent,
         binary_path: "/nonexistent/path",
         default_agent_id: "agent-test",
-        shell_impl: fn _binary, _args, _opts ->
+        shell_impl: fn _binary, _args ->
           send(shell_pid, :unexpected_shell)
-          {"", 0}
+          {"", "", 0}
         end
       )
 
@@ -187,7 +187,7 @@ defmodule ContentForge.Jobs.SmsReplyDispatcherTest do
 
     test "malformed JSON from the agent falls back (permanent error, no Oban retry)",
          %{product: product, inbound_event: inbound_event} do
-      stub_agent_shell(fn _binary, _args, _opts -> {"not json at all", 0} end)
+      stub_agent_shell(fn _binary, _args -> {"not json at all", "", 0} end)
 
       Req.Test.stub(@twilio_stub, fn conn ->
         Req.Test.json(conn, twilio_sms_response("SMfallback_malformed", "queued"))
@@ -201,9 +201,11 @@ defmodule ContentForge.Jobs.SmsReplyDispatcherTest do
       assert outbound.body == @default_fallback
     end
 
-    test "non-zero exit code from the agent returns a transient error for retry",
+    test "non-zero exit code from the agent returns a transient error for retry with stderr",
          %{inbound_event: inbound_event} do
-      stub_agent_shell(fn _binary, _args, _opts -> {"boom", 1} end)
+      stub_agent_shell(fn _binary, _args ->
+        {"partial stdout", "boom: binary died\n", 1}
+      end)
 
       # Shouldn't hit Twilio since the transient error propagates
       # before we get that far.
@@ -211,18 +213,20 @@ defmodule ContentForge.Jobs.SmsReplyDispatcherTest do
         raise "Twilio should not be called on transient agent error"
       end)
 
-      assert {:error, {:transient, :exit_code, 1}} =
+      assert {:error, {:transient, :exit_code, %{code: 1, stderr: stderr}}} =
                capture_log(fn -> run_dispatch(inbound_event.id) end)
                |> then(fn _ -> run_dispatch(inbound_event.id) end)
+
+      assert stderr =~ "boom"
     end
 
     test "passes session_id that threads product + phone across messages",
          %{inbound_event: inbound_event} do
       test_pid = self()
 
-      stub_agent_shell(fn _binary, args, _opts ->
+      stub_agent_shell(fn _binary, args ->
         send(test_pid, {:shell_args, args})
-        {~s|{"payloads":[{"text":"ok"}]}|, 0}
+        {~s|{"payloads":[{"text":"ok"}]}|, "", 0}
       end)
 
       Req.Test.stub(@twilio_stub, fn conn ->
@@ -241,8 +245,9 @@ defmodule ContentForge.Jobs.SmsReplyDispatcherTest do
 
     # Configures the OpenClaw AgentGateway with a real-on-disk
     # binary path (/bin/sh) so File.exists?/1 passes, but swaps
-    # the actual System.cmd call with `fun` via the :shell_impl
-    # test seam.
+    # the actual shell-out with `fun` via the :shell_impl seam.
+    # The stub is a 2-arity function `(binary, args)` returning
+    # `{stdout, stderr, exit_code}`.
     defp stub_agent_shell(fun) do
       Application.put_env(:content_forge, :open_claw_agent,
         binary_path: "/bin/sh",
@@ -250,6 +255,91 @@ defmodule ContentForge.Jobs.SmsReplyDispatcherTest do
         default_timeout_seconds: 5,
         shell_impl: fun
       )
+    end
+  end
+
+  describe "OpenClaw agent-turn hardening (14.2c-H)" do
+    setup do
+      original = Application.get_env(:content_forge, :open_claw_agent, [])
+
+      on_exit(fn ->
+        Application.put_env(:content_forge, :open_claw_agent, original)
+      end)
+
+      :ok
+    end
+
+    test "timeout wrapper kills the hung subprocess and returns a transient tuple",
+         %{inbound_event: inbound_event} do
+      Application.put_env(:content_forge, :open_claw_agent,
+        binary_path: "/bin/sh",
+        default_agent_id: "agent-test",
+        # 1-second budget; the stub hangs past it.
+        default_timeout_seconds: 1,
+        shell_impl: fn _binary, _args ->
+          # Simulate a hung subprocess that the Task.async wrapper
+          # must brutal-kill on expiry.
+          Process.sleep(5_000)
+          {"never reached", "", 0}
+        end
+      )
+
+      Req.Test.stub(@twilio_stub, fn _conn ->
+        raise "Twilio should not be called on agent timeout"
+      end)
+
+      assert {:error, {:transient, :timeout, 1}} =
+               capture_log(fn -> run_dispatch(inbound_event.id) end)
+               |> then(fn _ -> run_dispatch(inbound_event.id) end)
+    end
+
+    test "stderr and stdout are split: chatty stderr does not corrupt JSON parse",
+         %{product: product, inbound_event: inbound_event} do
+      Application.put_env(:content_forge, :open_claw_agent,
+        binary_path: "/bin/sh",
+        default_agent_id: "agent-test",
+        default_timeout_seconds: 5,
+        shell_impl: fn _binary, _args ->
+          {~s|{"payloads":[{"text":"Hello from agent"}],"model":"claude-stub"}|,
+           "WARN: deprecation notice on stderr\nINFO: noisy stderr line 2\n", 0}
+        end
+      )
+
+      Req.Test.stub(@twilio_stub, fn conn ->
+        Req.Test.json(conn, twilio_sms_response("SMsplit", "queued"))
+      end)
+
+      assert {:ok, :unavailable_fallback} =
+               capture_log(fn -> run_dispatch(inbound_event.id) end)
+               |> then(fn _ -> run_dispatch(inbound_event.id) end)
+
+      outbound = Sms.list_events(product.id, direction: "outbound") |> List.first()
+      assert outbound.body == "Hello from agent"
+    end
+
+    test "non-zero exit bubbles stderr into the error reason for operator diagnosis",
+         %{inbound_event: inbound_event} do
+      stderr_text = "FATAL: agent config parse error at line 42\n"
+
+      Application.put_env(:content_forge, :open_claw_agent,
+        binary_path: "/bin/sh",
+        default_agent_id: "agent-test",
+        default_timeout_seconds: 5,
+        shell_impl: fn _binary, _args ->
+          {"partial stdout", stderr_text, 2}
+        end
+      )
+
+      Req.Test.stub(@twilio_stub, fn _conn ->
+        raise "Twilio should not be called on transient agent error"
+      end)
+
+      assert {:error, {:transient, :exit_code, %{code: 2, stderr: stderr}}} =
+               capture_log(fn -> run_dispatch(inbound_event.id) end)
+               |> then(fn _ -> run_dispatch(inbound_event.id) end)
+
+      assert stderr =~ "FATAL"
+      assert stderr =~ "line 42"
     end
   end
 

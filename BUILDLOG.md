@@ -82,6 +82,44 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 14.2c-H: Agent gateway hardening
+
+Status: DONE
+Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `f8ef2a9`. Gate: compile --warnings-as-errors clean, format clean (ran LAST), full test 783/0, credo baseline-diff empty + per-touched-file clean.
+Note: Addresses both non-blocking items the reviewer flagged on 14.2c: the dead `try/catch :exit :timeout` around `System.cmd` is replaced with a real Task.async timeout wrapper, and stderr is now captured separately from stdout via tempfile redirect so chatty stderr can no longer corrupt the JSON parse.
+
+**Real timeout (Task.async/yield/shutdown)**:
+- Subprocess runs inside `Task.async(fn -> shell_impl().(binary, args) end)`. `Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill)` enforces the configured `:default_timeout_seconds` budget.
+- `:brutal_kill` on the task closes the owning Port, which propagates SIGTERM to the OS subprocess. No orphaned children after a timeout.
+- Returns `{:error, {:transient, :timeout, timeout_seconds}}` as before; SMS dispatcher already routes this to Oban retry via the existing `{:transient, _, _}` handler.
+- Extra branch for `{:exit, reason}` from `Task.shutdown` (rare, but defensive): classified as `{:transient, :exit_code, %{code: -1, stderr: inspect(reason)}}`.
+
+**Split streams (tempfile-stderr)**:
+- New `default_shell/2` runs `System.shell("<binary> <args> 2><tempfile>")`, reads the tempfile back as stderr, deletes it in an `after` block. Returns `{stdout, stderr, exit_code}`.
+- Args are shell-escaped (`'...'` quoting with inner `'` escaped as `'\''`) so argument content cannot be interpreted by `/bin/sh`. The previous `System.cmd` took an args list that sh never touched; this preserves safety by escaping before the shell sees anything.
+- stdout continues to carry ONLY the JSON payload. Chatty stderr (warnings, deprecation notices, debug prints from `openclaw`) cannot corrupt the parse anymore.
+- stderr is `Logger.debug/1` logged at every call (so operators watching at debug level see it live) and, on non-zero exit, surfaced in the error reason: `{:error, {:transient, :exit_code, %{code: n, stderr: s}}}`.
+- Empty / nil stderr is a no-op for the log call.
+
+**Contract changes**:
+- `:shell_impl` test seam is now 2-arity `(binary, args) -> {stdout, stderr, exit_code}` (was 3-arity `(binary, args, opts)` returning `{stdout, exit_code}`).
+- `:exit_code` error detail moved from a bare integer to `%{code: integer, stderr: binary}`. Richer payload for operator diagnosis; the dispatcher's `{:transient, _, _}` pattern-match still threads it through unchanged.
+- Both changes caught by the 14.2c tests, which were updated to the new contract.
+
+**Tests** (3 new in `test/content_forge/jobs/sms_reply_dispatcher_test.exs` under `"OpenClaw agent-turn hardening (14.2c-H)"`):
+- Timeout wrapper: stub sleeps 5s with a 1s budget. Assert `{:error, {:transient, :timeout, 1}}` and that Twilio is never called (Req.Test stub raises if touched). The actual `Task.shutdown(:brutal_kill)` fires at the 1s mark so the test itself runs in ~1s even though the stub would've slept 5s - confirms the kill actually works.
+- Split streams: stub returns valid JSON on stdout AND chatty stderr (`"WARN: deprecation\nINFO: noisy\n"`). Assert the dispatcher sends the JSON-extracted text, not the stderr text, to Twilio. Confirms the parse happens against pure stdout.
+- Stderr in error reason: stub returns non-zero exit with `"FATAL: agent config parse error at line 42\n"` on stderr. Assert the dispatcher returns `{:transient, :exit_code, %{code: 2, stderr: s}}` where `s =~ "FATAL"` and `s =~ "line 42"`.
+- Existing 14.2c tests updated to the new 2-arity seam + 3-tuple return shape; error-assertion on the non-zero-exit test updated to match the new map shape.
+
+**What was explicitly NOT changed** (kept out of scope):
+- No port-based implementation. The tempfile-stderr approach via `System.shell` is one extra `sh -c` per call (~1ms) but insulates the gateway from Port-protocol details. If call cost ever matters, swap to `Port.open` with a custom protocol.
+- No configurable stderr retention. Tempfile is always deleted after read. If operator wants a persistent stderr log for post-mortem, that's a follow-up slice.
+- No separate stdout tempfile. Stdout still streams back through the Erlang VM's Port into memory; openclaw's JSON payload is small (~1-10 KB typical) so no memory pressure concern.
+- No backpressure / semaphore on concurrent shell-outs. The SMS dispatcher is single-request per Oban job; concurrency is bounded by the `:default` Oban queue size. If we ever call the gateway from a fan-out worker, we'll need one.
+
+**Gate**: compile --warnings-as-errors clean, format clean (ran LAST after credo + test), full test 783/0 (3 new, 4 existing updated to new contract), credo --strict baseline-diff empty + per-touched-file clean. Rebased cleanly on master @ `f8ef2a9`.
+
 ### Phase 14.2c + 11.2L: OpenClaw-unblocked slices
 
 Status: DONE

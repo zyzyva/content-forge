@@ -5,8 +5,9 @@ defmodule ContentForge.OpenClaw.AgentGateway do
 
       <binary_path> agent --json --agent <id> --session-id <key> --message <text>
 
-  via `System.cmd/3`, expecting stdout to carry a JSON payload of
-  the shape
+  via a `Task.async`-wrapped `System.shell/2` call that
+  redirects stderr to a tempfile so the two streams stay
+  separate. Stdout carries the JSON payload of the shape
 
       %{"payloads" => [%{"text" => "..."}, ...], ...}
 
@@ -14,6 +15,22 @@ defmodule ContentForge.OpenClaw.AgentGateway do
   classified error tuple on any failure mode. No synthetic reply
   is ever fabricated - callers get a deterministic error they
   can fall through on.
+
+  ## Timeout + child-kill (14.2c-H)
+
+  The subprocess runs inside a `Task.async`. After
+  `timeout_seconds`, `Task.shutdown(task, :brutal_kill)` tears
+  down the task process, which in turn closes the underlying
+  Port and sends SIGTERM to the OS subprocess. Timeout returns
+  `{:error, {:transient, :timeout, seconds}}`.
+
+  ## stderr handling (14.2c-H)
+
+  stderr is captured in a tempfile via a shell `2>` redirect,
+  read back, logged at `:debug` level, and - on non-zero exit
+  only - surfaced in the error reason for operator diagnosis:
+
+      {:error, {:transient, :exit_code, %{code: 1, stderr: "..."}}}
 
   Config (`config :content_forge, :open_claw_agent`):
 
@@ -23,11 +40,11 @@ defmodule ContentForge.OpenClaw.AgentGateway do
       override. No sensible default - when unset the gateway
       returns `{:error, :not_configured}`.
     * `:default_timeout_seconds` - subprocess timeout in
-      seconds (default 120).
-    * `:shell_impl` - test seam. When set, replaces the
-      `System.cmd/3` invocation with a 3-arity function that
-      returns `{stdout_binary, exit_code_integer}`. Default is
-      `&System.cmd/3`.
+      seconds (default 120). Enforced by the Task.async wrapper.
+    * `:shell_impl` - test seam. When set, replaces the real
+      shell-out with a 2-arity function `(binary, args)` that
+      returns `{stdout_binary, stderr_binary, exit_code}`.
+      Default uses `System.shell/2` with tempfile-stderr.
 
   `agent_turn/2` classifies failures consistently with the rest
   of the codebase's adapter taxonomy:
@@ -35,8 +52,9 @@ defmodule ContentForge.OpenClaw.AgentGateway do
     * `{:error, :not_configured}` - binary path or agent id is
       unset, or the binary file is missing on disk
     * `{:error, {:transient, :timeout, timeout_seconds}}` -
-      subprocess exited via timeout
-    * `{:error, {:transient, :exit_code, code}}` - non-zero exit
+      subprocess killed after timeout
+    * `{:error, {:transient, :exit_code, %{code: n, stderr: s}}}`
+      - non-zero exit; stderr included for operator diagnosis
     * `{:error, {:permanent, :malformed_json}}` - stdout was not
       parseable JSON or lacked the expected shape
   """
@@ -58,7 +76,7 @@ defmodule ContentForge.OpenClaw.AgentGateway do
   @type error_result ::
           {:error, :not_configured}
           | {:error, {:transient, :timeout, pos_integer()}}
-          | {:error, {:transient, :exit_code, integer()}}
+          | {:error, {:transient, :exit_code, %{code: integer(), stderr: String.t()}}}
           | {:error, {:permanent, :malformed_json}}
 
   @doc """
@@ -120,16 +138,41 @@ defmodule ContentForge.OpenClaw.AgentGateway do
 
   defp run_shell(message, config) do
     args = build_args(message, config)
+    timeout_ms = config.timeout_seconds * 1000
 
-    try do
-      case shell_impl().(config.binary, args, stderr_to_stdout: true) do
-        {stdout, 0} -> parse_stdout(stdout, config.agent_id)
-        {_stdout, code} -> {:error, {:transient, :exit_code, code}}
-      end
-    catch
-      :exit, {:timeout, _} ->
+    task = Task.async(fn -> shell_impl().(config.binary, args) end)
+
+    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {stdout, stderr, 0}} ->
+        log_stderr(stderr)
+        parse_stdout(stdout, config.agent_id)
+
+      {:ok, {_stdout, stderr, code}} ->
+        log_stderr(stderr)
+
+        {:error, {:transient, :exit_code, %{code: code, stderr: String.trim(stderr || "")}}}
+
+      nil ->
+        Logger.warning(
+          "OpenClaw.AgentGateway: subprocess killed after timeout (#{config.timeout_seconds}s)"
+        )
+
         {:error, {:transient, :timeout, config.timeout_seconds}}
+
+      # Task shutdown returned a different shape (e.g., exit
+      # reason). Treat as a transient failure so Oban retries.
+      {:exit, reason} ->
+        Logger.warning("OpenClaw.AgentGateway: task exited unexpectedly: #{inspect(reason)}")
+
+        {:error, {:transient, :exit_code, %{code: -1, stderr: inspect(reason)}}}
     end
+  end
+
+  defp log_stderr(""), do: :ok
+  defp log_stderr(nil), do: :ok
+
+  defp log_stderr(stderr) when is_binary(stderr) do
+    Logger.debug(["OpenClaw.AgentGateway stderr: ", stderr])
   end
 
   defp build_args(message, config) do
@@ -185,7 +228,38 @@ defmodule ContentForge.OpenClaw.AgentGateway do
   defp binary_path, do: config_key(:binary_path, @default_binary)
   defp default_agent_id, do: config_key(:default_agent_id)
   defp timeout_seconds, do: config_key(:default_timeout_seconds, @default_timeout_seconds)
-  defp shell_impl, do: config_key(:shell_impl, &System.cmd/3)
+  defp shell_impl, do: config_key(:shell_impl, &__MODULE__.default_shell/2)
+
+  @doc false
+  # Default shell-out: runs `binary args 2>tempfile`, reads the
+  # tempfile back as stderr, deletes it, returns the 3-tuple.
+  # Exposed as a public function (under @doc false) so the
+  # default function reference `&__MODULE__.default_shell/2`
+  # stays cheap to look up.
+  def default_shell(binary, args) do
+    stderr_path =
+      Path.join(
+        System.tmp_dir!(),
+        "openclaw_stderr_#{:erlang.unique_integer([:positive])}.log"
+      )
+
+    escaped_args = Enum.map_join(args, " ", &shell_escape/1)
+
+    shell_cmd =
+      shell_escape(binary) <> " " <> escaped_args <> " 2>" <> shell_escape(stderr_path)
+
+    try do
+      {stdout, exit_code} = System.shell(shell_cmd)
+      stderr = File.read!(stderr_path)
+      {stdout, stderr, exit_code}
+    after
+      _ = File.rm(stderr_path)
+    end
+  end
+
+  defp shell_escape(arg) when is_binary(arg) do
+    "'" <> String.replace(arg, "'", "'\\''") <> "'"
+  end
 
   defp config_key(key, default \\ nil) do
     @config_app
