@@ -53,7 +53,8 @@ config :content_forge, :apify,
 if config_env() == :prod do
   config :content_forge,
     apify_token: System.get_env("APIFY_TOKEN"),
-    scraper_adapter: ContentForge.CompetitorScraper.ApifyAdapter
+    scraper_adapter: ContentForge.CompetitorScraper.ApifyAdapter,
+    intel_model: ContentForge.CompetitorIntelSynthesizer.LLMAdapter
 end
 
 config :content_forge, :llm,
