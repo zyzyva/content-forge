@@ -82,6 +82,46 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 12.2c: SEO checklist semantic checks
+
+Status: DONE
+Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `6423cb1`. Gate: compile --warnings-as-errors clean, format clean, full test 744/0, credo baseline-diff empty, coverage 59.06% (up from 58.44%). All 28 SEO checks now implemented.
+
+Note: Fills in the remaining 10 stub slots. Six are mechanical-semantic heuristics that can be evaluated from content alone (entity density, reading level via Flesch, citation presence, image count, schema article, E-E-A-T signal markers, Not-For-You block detection). Three depend on LLM or SERP data and follow the `:not_applicable` contract when upstreams are unavailable.
+
+**Mechanical-semantic checks (7)** - real pass/fail logic from the draft body alone:
+
+- `EntityDensity` - counts entity-style tokens (proper nouns + numeric) with the same multi-cap / hyphenated / not-a-common-opener heuristic as the Phase 12.1 nugget validator. Floor is one entity per 30 words.
+- `ReadingLevel` - computes Flesch Reading Ease via `206.835 - 1.015*(words/sentences) - 84.6*(syllables/words)`. Vowel-group heuristic for syllable count (good enough for directional feedback). Pass band 50..80; below is "too dense", above is "too simple". Under 30 words is `:not_applicable`.
+- `CitationPresence` - counts numeric claims (percentages, prices, years, multi-digit numbers) and external citations (absolute-scheme hrefs, markdown external links, `<cite>` tags, footnote markers). Pass when citations >= ceil(claims / 3). Zero-claim drafts return `:not_applicable` (pure opinion pieces don't need citations).
+- `ImageCount` - at least one image present (`<img>` or markdown `![]()`).
+- `SchemaArticle` - narrower counterpart to `JsonLdSchema`: matches `"@type":"Article"`, `"BlogPosting"`, or `"NewsArticle"` specifically.
+- `EeatSignals` - three-marker gate (author byline / publish-or-update date / expertise signal); reports which markers are missing in the fail note. Detection is regex across markdown frontmatter, HTML tags, and prose variants.
+- `NotForYouBlock` - heading detection for "Not For You", "Who This Is Not For", "When Not To", "If You Should Skip". Implements the honest-audience-fit section from `CONTENT_FORGE_SPEC.md` Feature 10.
+
+**LLM / SERP-dependent checks (3)** - honor the `:not_applicable` contract:
+
+- `InformationGain` - requires both `LLM.Anthropic` (for comparison) AND `ApifyAdapter` (for SERP data). When either is `:not_configured`, returns `:not_applicable` with a note naming the missing upstream. When both are configured, still returns `:not_applicable` with a "SERP ingestion pipeline not wired yet" note - the actual SERP ingestion is a future Phase 12.5 slice. No synthetic pass/fail.
+- `PaaCoverage` - requires Apify for People-Also-Asked question extraction. Same pattern: `:not_applicable` when unavailable, `:not_applicable` with a deferred-pipeline note when configured.
+- `OutboundLinkAuthority` - opinionated fallback: when Apify is unavailable, runs a lightweight HTTPS-only check (pass when every external link is HTTPS, fail otherwise) with a "weak fallback" note so operators know the strict check hasn't actually run. When Apify is configured, returns `:not_applicable` with a deferred note. Drafts with zero external links return `:not_applicable` regardless of Apify status.
+
+**Runner test tightened**: the 12.2a/b "implemented vs stub" split was replaced by a single assertion that every one of the 28 check results carries a non-stub note. No stubs remain; the test stays honest if a future slice adds a new check by filing it under `@checks` but forgetting to implement.
+
+**Tests** (`test/content_forge/content_generation/seo_checklist/semantic_checks_test.exs`, new, 30 tests):
+- Per-check coverage: 2-4 cases each. Pass, typical fail mode, `:not_applicable` boundary, and format variants where applicable.
+- Upstream-config stubbing via `Application.put_env(:content_forge, :llm, anthropic: [api_key: ...])` and `:apify, token: ...`. Not `System.put_env` - the adapters read from Application env, not process env directly. Helpers `set_anthropic_key/1` and `set_apify_token/1` mutate the keyword structure in place; `clear_upstream_config/1` saves + restores under `on_exit`. `async: false` at the module level because Application env is shared state.
+- Reading-level tests calibrated with deliberately crafted prose: a moderately-complex "local bakeries" paragraph lands in the 50..80 band; a polysyllabic academic paragraph lands below 50 ("too dense"). Needed 3 iterations to find content the Flesch heuristic scores correctly given the module's syllable-counting approach.
+
+**Regex-interpolation footgun avoided**: the 12.2b BUILDLOG flagged that `~r/#{1,6}/` compiles as a broken interpolation. `not_for_you_block` needed the same pattern for its markdown heading detection; used `\#{1,6}` from the start. Also intentionally used `#{type}` interpolation in `schema_article` where it IS a variable reference (looping over `["Article", "BlogPosting", "NewsArticle"]`), which is what the Elixir sigil is designed for.
+
+**What was explicitly NOT changed** (kept out of scope):
+- No actual SERP ingestion pipeline. `InformationGain` / `PaaCoverage` / `OutboundLinkAuthority` carry deferred-pipeline notes when their upstreams exist but the ingestion hasn't been built. Building that is a Phase 12.5 slice (or later); the checks are wired to consume it the moment it lands.
+- No LLM calls in this slice. `InformationGain` was slated to call Anthropic but the call needs a SERP-summary payload to compare against, which we don't have yet. Wiring Anthropic without real input would invent synthetic judgment, violating the "no synthetic pass/fail" rule.
+- E-E-A-T detection is regex-level. Author identity verification, author-page backlinks, and expertise-credential lookups are all LLM / external-data territory for a future tranche.
+- Syllable counter is a vowel-group heuristic, not phonetic. Accurate enough to classify but will misfire on a handful of irregular English words. Swapping to a proper pronunciation dictionary is a separate concern.
+
+**Gate**: compile --warnings-as-errors clean, format clean, full test 744/0 (30 new), credo --strict baseline-diff empty, `mix test --cover` overall 59.06% (up from 58.44%) above threshold 10. Rebased cleanly on master @ `6423cb1`.
+
 ### Phase 12.2b: SEO checklist mechanical checks
 
 Status: DONE

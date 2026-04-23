@@ -87,63 +87,16 @@ defmodule ContentForge.ContentGeneration.SeoChecklist.RunnerTest do
       end)
     end
 
-    test "the implemented checks produce non-stub notes on the good content",
+    test "every check carries a non-stub note - all 28 implemented",
          %{draft: draft} do
       checklist = Runner.get_for_draft(draft.id)
 
-      for name <- implemented_check_names() do
-        value = checklist.results[name]
-
+      Enum.each(checklist.results, fn {name, value} ->
         refute value["note"] == "check not implemented yet",
                "expected #{name} to be implemented, got stub note"
 
         assert value["status"] in ["pass", "fail", "not_applicable"]
-      end
-    end
-
-    test "the remaining stub checks return :not_applicable with the stub note",
-         %{draft: draft} do
-      checklist = Runner.get_for_draft(draft.id)
-
-      stubs = Map.drop(checklist.results, implemented_check_names())
-
-      # 28 total - 18 implemented (4 from 12.2a + 14 from 12.2b) = 10 stubs.
-      assert map_size(stubs) == 10
-
-      Enum.each(stubs, fn {name, value} ->
-        assert value["status"] == "not_applicable",
-               "expected #{name} to be not_applicable, got #{value["status"]}"
-
-        assert value["note"] == "check not implemented yet"
       end)
     end
-  end
-
-  # The union of 12.2a (4 checks) and 12.2b (14 checks). When
-  # 12.2c lands, either extend this helper or flip the test to
-  # an all-implemented assertion.
-  defp implemented_check_names do
-    [
-      # 12.2a
-      "title_length",
-      "meta_description_length",
-      "single_h1",
-      "core_answer_in_first_150_words",
-      # 12.2b
-      "heading_hierarchy",
-      "faq_present",
-      "json_ld_schema",
-      "image_alt_coverage",
-      "internal_links",
-      "external_link_count",
-      "keyword_density_title",
-      "slug_length",
-      "toc_long_articles",
-      "reading_time_estimate",
-      "fast_scan_summary_first_200",
-      "banned_phrases",
-      "minimum_word_count",
-      "keyword_in_first_paragraph"
-    ]
   end
 end
