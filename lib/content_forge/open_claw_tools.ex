@@ -21,12 +21,19 @@ defmodule ContentForge.OpenClawTools do
   `:session_id`, `:channel` (`"sms" | "cli" | ...`), and
   `:sender_identity` (phone number, operator id, etc.).
 
-  Phase 16.1 ships the first tool: `create_upload_link`. The
-  16.2+ slices add read-only tools, light writes, heavy writes
-  with confirmation, escalation, and full audit surfacing.
+  Phase 16.1 ships the first tool: `create_upload_link`. Phase
+  16.2 adds four read-only tools (`list_recent_assets`,
+  `draft_status`, `upcoming_schedule`,
+  `competitor_intel_summary`). The 16.3+ slices add light writes,
+  heavy writes with confirmation, escalation, and full audit
+  surfacing.
   """
 
+  alias ContentForge.OpenClawTools.CompetitorIntelSummary
   alias ContentForge.OpenClawTools.CreateUploadLink
+  alias ContentForge.OpenClawTools.DraftStatus
+  alias ContentForge.OpenClawTools.ListRecentAssets
+  alias ContentForge.OpenClawTools.UpcomingSchedule
 
   @type ctx :: %{
           optional(:session_id) => String.t(),
@@ -37,7 +44,11 @@ defmodule ContentForge.OpenClawTools do
   @type result :: {:ok, map()} | {:error, :unknown_tool | term()}
 
   @tools %{
-    "create_upload_link" => CreateUploadLink
+    "create_upload_link" => CreateUploadLink,
+    "list_recent_assets" => ListRecentAssets,
+    "draft_status" => DraftStatus,
+    "upcoming_schedule" => UpcomingSchedule,
+    "competitor_intel_summary" => CompetitorIntelSummary
   }
 
   @doc """

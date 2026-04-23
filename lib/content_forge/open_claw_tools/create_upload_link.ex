@@ -3,12 +3,15 @@ defmodule ContentForge.OpenClawTools.CreateUploadLink do
   OpenClaw tool: generates a presigned upload URL the operator
   (or any channel user) can PUT an asset to directly.
 
-  Params (required):
+  Params (optional when the channel can supply a product context,
+  required otherwise):
 
     * `"product"` - product name OR product id. Both paths work;
       name is the usual agent-facing shape (`"create an upload
-      link for Acme"`). Falls back to fuzzy match on
-      `String.contains?` so agents can pass a partial name.
+      link for Acme"`). Falls back to case-insensitive substring
+      match so agents can pass a partial name. When omitted, the
+      SMS channel resolves the product via the sender's
+      registered `ProductPhone`.
 
   Params (optional):
 
@@ -20,24 +23,25 @@ defmodule ContentForge.OpenClawTools.CreateUploadLink do
   expires_in_seconds, product_id, product_name}}` on success or
   `{:error, reason}` classified as:
 
+    * `:missing_product_context` - no explicit `product` supplied
+      and the channel could not derive one from the sender.
     * `:product_not_found` - no product matches the supplied
-      name or id
+      name or id.
     * `:ambiguous_product` - multiple products match the
-      supplied name
+      supplied name.
     * `{:presign_failed, reason}` - storage adapter rejected
-      the presign call
+      the presign call.
   """
 
-  alias ContentForge.Products
-  alias ContentForge.Products.Product
+  alias ContentForge.OpenClawTools.ProductResolver
 
   @default_filename "upload.bin"
   @default_content_type "application/octet-stream"
   @default_expires_in_seconds 900
 
   @spec call(map(), map()) :: {:ok, map()} | {:error, term()}
-  def call(_ctx, params) when is_map(params) do
-    with {:ok, product} <- resolve_product(Map.get(params, "product")),
+  def call(ctx, params) when is_map(params) do
+    with {:ok, product} <- ProductResolver.resolve(ctx, params),
          filename <- Map.get(params, "filename", @default_filename),
          content_type <- Map.get(params, "content_type", @default_content_type),
          expires_in <- fetch_expires_in(params),
@@ -55,40 +59,6 @@ defmodule ContentForge.OpenClawTools.CreateUploadLink do
          product_name: product.name
        }}
     end
-  end
-
-  # --- product resolution ---------------------------------------------------
-
-  defp resolve_product(nil), do: {:error, :product_not_found}
-  defp resolve_product(""), do: {:error, :product_not_found}
-
-  defp resolve_product(id_or_name) when is_binary(id_or_name) do
-    case Products.get_product(id_or_name) do
-      %Product{} = product ->
-        {:ok, product}
-
-      nil ->
-        resolve_by_name(id_or_name)
-    end
-  rescue
-    Ecto.Query.CastError -> resolve_by_name(id_or_name)
-  end
-
-  defp resolve_by_name(name) do
-    case fuzzy_match(name) do
-      [product] -> {:ok, product}
-      [] -> {:error, :product_not_found}
-      [_ | _] -> {:error, :ambiguous_product}
-    end
-  end
-
-  defp fuzzy_match(needle) do
-    lowered = String.downcase(needle)
-
-    Products.list_products()
-    |> Enum.filter(fn %Product{name: name} ->
-      String.contains?(String.downcase(name), lowered)
-    end)
   end
 
   # --- presign --------------------------------------------------------------
