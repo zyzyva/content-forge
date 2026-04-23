@@ -122,6 +122,58 @@ defmodule ContentForge.Jobs.CompetitorScraperTest do
     end
   end
 
+  describe "perform/1 when storage fails" do
+    defmodule InvalidAdapter do
+      @moduledoc false
+      def fetch_posts(_account) do
+        valid_post = %{
+          post_id: "ok-1",
+          content: "valid post",
+          post_url: "https://example.com/1",
+          likes_count: 5,
+          comments_count: 1,
+          shares_count: 0,
+          posted_at: DateTime.utc_now()
+        }
+
+        invalid_post = %{
+          post_id: "bad-1",
+          content: nil,
+          post_url: "https://example.com/2",
+          likes_count: 5,
+          comments_count: 1,
+          shares_count: 0,
+          posted_at: DateTime.utc_now()
+        }
+
+        {:ok, [valid_post, invalid_post]}
+      end
+    end
+
+    test "logs each persistence failure and counts only stored posts", %{product: product} do
+      Application.put_env(:content_forge, :apify_token, "test-token")
+      Application.put_env(:content_forge, :scraper_adapter, InvalidAdapter)
+
+      {:ok, account} =
+        Products.create_competitor_account(%{
+          product_id: product.id,
+          platform: "twitter",
+          handle: "dup",
+          url: "https://twitter.com/dup",
+          active: true
+        })
+
+      log =
+        capture_log(fn ->
+          assert :ok = perform_job(CompetitorScraper, %{"product_id" => product.id})
+        end)
+
+      assert log =~ "Failed to store post"
+      stored = Products.list_competitor_posts_for_account(account.id)
+      assert length(stored) == 1
+    end
+  end
+
   describe "perform/1 when adapter errors" do
     setup do
       Application.put_env(:content_forge, :apify_token, "test-token")

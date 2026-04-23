@@ -52,7 +52,7 @@ defmodule ContentForge.Jobs.CompetitorScraper do
 
       _ ->
         results = Enum.map(accounts, &scrape_account(&1, adapter))
-        successful = Enum.count(results, &match?({:ok, _}, &1))
+        successful = Enum.count(results, &produced_data?/1)
 
         Logger.info(
           "Competitor scraping completed for product #{product_id}, scraped #{successful} accounts"
@@ -64,6 +64,10 @@ defmodule ContentForge.Jobs.CompetitorScraper do
     end
   end
 
+  defp produced_data?({:ok, _}), do: true
+  defp produced_data?({:partial, _, _}), do: true
+  defp produced_data?(_), do: false
+
   defp scrape_account(%CompetitorAccount{} = account, adapter) do
     Logger.info("Scraping #{account.platform} account: #{account.handle}")
 
@@ -71,12 +75,27 @@ defmodule ContentForge.Jobs.CompetitorScraper do
       {:ok, posts} ->
         avg_engagement = calculate_average_engagement(posts)
 
-        Enum.each(posts, fn post ->
-          score = calculate_relative_score(post, avg_engagement)
-          store_post(account, post, score)
-        end)
+        {stored, failed} =
+          Enum.reduce(posts, {0, 0}, fn post, {ok_count, fail_count} ->
+            score = calculate_relative_score(post, avg_engagement)
 
-        {:ok, length(posts)}
+            case store_post(account, post, score) do
+              {:ok, _} ->
+                {ok_count + 1, fail_count}
+
+              {:error, changeset} ->
+                Logger.error(
+                  "Failed to store post #{inspect(post.post_id)} for #{account.handle}: #{inspect(changeset.errors)}"
+                )
+
+                {ok_count, fail_count + 1}
+            end
+          end)
+
+        case failed do
+          0 -> {:ok, stored}
+          _ -> {:partial, stored, failed}
+        end
 
       {:error, reason} ->
         Logger.error("Failed to scrape #{account.handle}: #{inspect(reason)}")
