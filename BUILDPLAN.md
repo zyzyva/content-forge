@@ -41,11 +41,16 @@ Both items below landed 2026-04-22 before any Phase 10 work. Retained here as a 
 
 **Why first:** Media Forge shipped 2026-04-22. Every slice in this phase replaces stubbed or home-rolled media work with calls into the running service at `http://192.168.1.37:5001`. Delivers functioning end-to-end flows for existing features.
 
-- **10.1 Media Forge HTTP client module**
+- **10.1 Media Forge HTTP client module** ✅ Shipped `ba3c3ee`.
   - One named module that wraps base URL, `X-MediaForge-Secret` header, JSON body handling, retries, and error classification (transient vs permanent).
   - Exposes functions for the endpoints we actually call: probe, normalize, render, trim, batch render, image process, image render, generation (images and compare), job status, job cancel.
   - Configured by env vars. Missing secret downgrades the client to `status: :unavailable`, which upstream callers surface in the UI.
   - Ships with `Req.Test` stub usage baked into the test suite.
+
+- **10.1.1 MediaForge.classify/1 exhaustiveness for 3xx**
+  - `classify/1` currently pattern-matches 2xx, 4xx, 5xx, timeout, transport/network, and catch-all `{:error, reason}`. An `{:ok, %Req.Response{status: 300..399}}` would raise `FunctionClauseError`. 304 Not Modified is the realistic case if a future caller enables conditional caching; other 3xx are also theoretically reachable if redirect-following is disabled per request.
+  - Add a head that pattern-matches `status in 300..399` and returns `{:error, {:unexpected_status, status, body}}`. Add a failing test asserting this tuple is returned when the stub responds with 304.
+  - Engineering rule requires exhaustive pattern matches; this closes the gap.
 
 - **10.2 Swap image generation onto Media Forge**
   - Remove local stub from the image generation entry point.

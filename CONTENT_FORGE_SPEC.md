@@ -315,8 +315,8 @@ Acceptance criteria:
 **Why this matters:** Media Forge is the ecosystem's media service. Without a shared client, every caller repeats authentication, drifts in retry behavior, and gets inconsistent at classifying transient versus permanent errors. A single stubbable client also means tests never hit the live service, which matters because the dev instance runs on a different machine on the LAN and is not reliably reachable from CI. This slice delivers the client and its tests only. Swapping existing Content Forge callers (the image generator, the video pipeline, image pre-processing, platform renditions) over to this client is tracked under Phase 10.2 and later slices in `BUILDPLAN.md`.
 
 **Module location and shape:**
-- [ ] The public client module is `ContentForge.MediaForge` located under `lib/content_forge/media_forge/`. Internal supporting modules may be introduced as siblings if they keep the public surface narrow, for example an inner HTTP client module and a configuration reader module. Callers outside this directory only ever reference the public module.
-- [ ] The module exposes exactly the call functions listed below. It does not expose raw HTTP helpers, raw Req wrappers, or the underlying adapter configuration.
+- [x] The public client module is `ContentForge.MediaForge` and lives at `lib/content_forge/media_forge.ex` while it remains a single file. If future slices add helper modules they move under a `lib/content_forge/media_forge/` subdirectory at that point. Callers outside the module only ever reference the public module.
+- [x] The module exposes exactly the call functions listed below. It does not expose raw HTTP helpers, raw Req wrappers, or the underlying adapter configuration.
 
 **Configuration:**
 - [ ] The base URL is read from application configuration at the key `:base_url` under `:media_forge` within the `:content_forge` application. When no value is configured, the default is `http://192.168.1.37:5001`, matching the current dev instance.
@@ -335,10 +335,11 @@ Acceptance criteria:
 - [ ] A job cancellation function that posts to `/api/v1/jobs/:id/cancel` and returns a cancellation acknowledgement map or a classified error.
 
 **Error classification (applies to every call above):**
-- [ ] A 5xx response from Media Forge, or a timeout from the HTTP layer, is returned as a transient error tuple whose second element is the reason. Callers may retry transient errors through their Oban backoff policy.
-- [ ] A 4xx response is returned as a permanent error tuple whose elements are the HTTP status code and the response body. Callers must not retry a permanent error without changing the input.
-- [ ] A connection refusal or other network-layer failure (DNS failure, refused socket) is returned as a transient error tuple whose reason is network. Callers may retry.
-- [ ] Any other unexpected condition is returned as a plain error tuple with enough detail in the reason to diagnose from logs. The client does not rescue-and-swallow these conditions silently.
+- [x] A 5xx response from Media Forge, or a timeout from the HTTP layer, is returned as a transient error tuple whose second element is the reason. Callers may retry transient errors through their Oban backoff policy.
+- [x] A 4xx response is returned as a permanent error tuple whose elements are the HTTP status code and the response body. Callers must not retry a permanent error without changing the input.
+- [x] A connection refusal or other network-layer failure (DNS failure, refused socket) is returned as a transient error tuple whose reason is network. Callers may retry.
+- [ ] A 3xx response that reaches the classifier (for example 304 Not Modified when a caller enabled conditional caching, or a 307/308 that is not auto-followed) is returned as an unexpected-status error tuple carrying the status code and the response body. This is the catch-all that keeps `classify/1` exhaustive; it ships in Phase 10.1.1, not 10.1.
+- [x] Any other unexpected condition is returned as a plain error tuple with enough detail in the reason to diagnose from logs. The client does not rescue-and-swallow these conditions silently.
 
 **Test stance:**
 - [ ] The `Req.Test` stub adapter is wired into this module from the first commit. The test suite uses stubbed responses for every code path and never reaches a live Media Forge instance. Live smoke testing is a separate manual runbook documented in the handoff notes, not a CI concern.
