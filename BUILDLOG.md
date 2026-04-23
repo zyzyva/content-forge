@@ -84,8 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 14.2b: Auto-reply orchestrator with OpenClaw gating
 
-Status: READY FOR REVIEW
-Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates; one formatter re-pass on the `resolve_fallback_text` Products.Product pattern-match that overflowed a single line), mix test 486/0 (475 prior + 11 new dispatcher tests; also added `assert_enqueued` + `refute_enqueued` assertions to the three relevant 14.1b webhook tests). Credo by content unchanged vs post-14.2a: zero new findings.
+Status: DONE
+Merged: master @ `ecfdc12` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 486-0; credo unchanged. Pattern-match-first dispatch. `count_recent_outbound` single aggregate over 24h. OpenClaw-configured-still-ships-fallback invariant pinned by test. Webhook's active head is only enqueue site. 11 dispatcher tests + enqueue assertions added to 14.1b webhook tests.
 Note: New Oban worker `ContentForge.Jobs.SmsReplyDispatcher` at `lib/content_forge/jobs/sms_reply_dispatcher.ex` (queue `:default`, max_attempts 3) per BUILDPLAN 14.2b. Flow:
 
 1. `load_event/1` fetches the `SmsEvent` by id. `guard_event/1` three-head filters: `%{direction: "inbound", product_id: binary}` → `{:ok, event}`; inbound without product_id → `:no_product_on_event` (rejected-unknown rows never get replies); outbound or other → `:not_inbound_event`. `dispatch_or_skip/1` function-head then maps every `{:error, reason}` tuple to a distinct `{:cancel, ...}` with a human-readable reason so the Oban queue record is greppable.

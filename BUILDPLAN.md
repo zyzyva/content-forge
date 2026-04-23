@@ -427,7 +427,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 12. Twilio + OpenClaw integration.
   - Media: `send_sms/3` accepts a `:media_urls` opt; when present, appends `MediaUrl` params so Twilio delivers MMS. The client is the only code that touches Twilio's URL-encoded form body shape.
   - `Req.Test` stubbed from day one; tests cover happy-path SMS send, happy-path MMS with media_urls, 429 transient, 500 transient, 400 permanent, missing-config no-HTTP downgrade.
 
-- **14.2b Auto-reply orchestrator with OpenClaw gating**
+- **14.2b Auto-reply orchestrator with OpenClaw gating** ✅ Shipped `ecfdc12`.
   - After the inbound webhook records an `SmsEvent` for a whitelisted phone, enqueue `ContentForge.Jobs.SmsReplyDispatcher` (new Oban worker in queue `:default`, max_attempts 3) with the inbound event id.
   - The worker loads the event, its associated `ConversationSession`, and checks whether OpenClaw is configured via `Application.get_env(:content_forge, :open_claw, :base_url)` (already shipped in 11.2 infra). Two branches:
     - OpenClaw unavailable: send a fallback reply via `Twilio.send_sms/3` with a fixed message ("Thanks — your assistant is temporarily unavailable. We will get back to you shortly.") The worker records the outbound `SmsEvent` and exits `{:ok, :unavailable_fallback}`. The fallback text is configurable per product under `publishing_targets[\"sms\"][\"unavailable_fallback\"]` with the above as default.
@@ -438,6 +438,13 @@ Per `CONTENT_FORGE_SPEC.md` Feature 12. Twilio + OpenClaw integration.
 
 - **14.3 Upload flow via SMS**
   - Contact can MMS a photo; Content Forge routes the media through Media Forge (EXIF, rendition) and attaches the asset to the related product or draft.
+  - Additional requirements surfaced during 14.1/14.2:
+    - Inbound MMS media URLs are already captured on `SmsEvent.media_urls` by 14.1b. This slice fills in the ingestion path: download each media URL from Twilio, upload to R2, create a `ProductAsset` record, and enqueue the matching `AssetImageProcessor` or `AssetVideoProcessor` (13.1d/13.1e) so the asset goes through the same Media Forge processing pipeline as a dashboard upload.
+    - Extend `ContentForge.Twilio` with `download_media/1` that performs a GET on the Twilio media URL with the same HTTP Basic auth the outbound sender uses, follows Twilio's 307 redirect to the signed S3-backed download, and returns `{:ok, %{content_type, binary}}` or a classified error. Do not cache the download in memory longer than necessary; stream to a tempfile if the body exceeds a configurable cap (default 100MB).
+    - New Oban worker `ContentForge.Jobs.SmsMediaIngestor` (queue `:content_generation`, max_attempts 3) that takes an `SmsEvent` id, loads the event, enforces that direction is inbound and product_id is set, iterates each media URL, calls `Twilio.download_media/1`, rejects unsupported MIME types with an audit row (status `"unsupported_media"`), otherwise uploads the bytes to R2 under `products/<product_id>/assets/<uuid>/sms_<event_id>_<index>.<ext>` and creates the `ProductAsset` with `uploader` set to the sender's phone number. The worker then enqueues `AssetImageProcessor` or `AssetVideoProcessor` per media_type, just like the dashboard-upload register endpoint does.
+    - The webhook controller at 14.1b enqueues this ingestor when an inbound event has non-empty media URLs. No synchronous download happens in the webhook request; Twilio gets its TwiML response in milliseconds regardless of media size.
+    - Error handling: Twilio `:not_configured` on download logs and records a failed-ingestion audit row, then returns `{:ok, :skipped}` so Oban does not retry a permanently broken configuration. Transient download errors propagate for retry. Permanent download errors (4xx from Twilio, for example a deleted message) record a failed-ingestion audit and cancel.
+    - Tests: happy-path inbound MMS with a JPEG ends up as a processed ProductAsset with the image processor enqueued; MMS with a disallowed MIME records the audit row and skips; download failure retries transiently then cancels permanently; Twilio `:not_configured` returns skipped without creating assets.
 
 - **14.4 Reminders**
   - Scheduled outbound reminders (content review deadlines, publish approvals).
