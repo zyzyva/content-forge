@@ -14,6 +14,7 @@ defmodule ContentForge.Jobs.WinnerRepurposingEngine do
 
   alias ContentForge.ContentGeneration
   alias ContentForge.ContentGeneration.Draft
+  alias ContentForge.Jobs.MultiModelRanker
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"draft_id" => draft_id}}) do
@@ -129,12 +130,10 @@ defmodule ContentForge.Jobs.WinnerRepurposingEngine do
         )
 
         # Enqueue this new draft for ranking (go through normal pipeline)
-        Oban.insert(%Oban.Job{
-          queue: :content_generation,
-          worker: "ContentForge.Jobs.MultiModelRanker",
-          args: %{"product_id" => original.product_id},
-          max_attempts: 3
-        })
+        {:ok, _} =
+          %{"product_id" => original.product_id}
+          |> MultiModelRanker.new()
+          |> Oban.insert()
 
         {:ok, new_draft}
 

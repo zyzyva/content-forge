@@ -82,6 +82,33 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 15.3.1: E2E happy-path integration test
+
+Status: READY FOR REVIEW
+Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates), mix test 605/0 (604 prior + 1 new). Credo by content unchanged vs post-15.1c: zero new findings.
+Note: Single deterministic integration test walking the pipeline + shared Req.Test stub helpers per BUILDPLAN 15.3.1.
+
+**Shared stubs** at `test/support/e2e_stubs.ex` (`ContentForge.Test.E2EStubs`):
+- `setup_llm_stubs/0` installs Anthropic + Gemini config with `Req.Test` plugs, using the same shape the individual LLM tests established. `ExUnit.Callbacks.on_exit/1` restores the original env so nothing bleeds across tests.
+- `stub_anthropic_text/1` + `stub_gemini_text/1` install a `Req.Test.stub` returning a plain-text completion. The LLM-provider-shape JSON wrappers live inside the helper so callers only think about the text payload.
+- Additional seams are wired in (`setup_media_forge_stubs/0`, `setup_twilio_stubs/0`, `setup_open_claw_stubs/0`, `setup_apify_stubs/0`) even though this slice does not use them — they're the harness 15.3.2+ slices will plug into.
+- Known gap documented in the moduledoc: platform publisher clients (`Publishing.Twitter` / `Publishing.LinkedIn`) call `Req.get` / `Req.post` directly without a `req_options` seam, so they can't be stubbed through config today. Refactoring those clients is 15.3.2 territory.
+
+**E2E test** at `test/content_forge/e2e/happy_path_test.exs`: a single `test` block walking:
+
+1. **Brief generation** - `ContentBriefGenerator.perform/1` with `stub_anthropic_text/1` + `stub_gemini_text/1` installed (BriefSynthesizer calls both providers when both are configured, then synthesizes). Asserts the brief row exists with the exact LLM text + model prefix "anthropic" + version 1 + zero duplicate briefs.
+2. **Variants** - hand-created (spec allows; `OpenClawBulkGenerator` is skipped per the 11.2M decision).
+3. **Multi-model ranking** - both providers stubbed with structured JSON scores (accuracy=8.5, seo=8.0, eev=7.5). `MultiModelRanker.perform/1` creates 6 `DraftScore` rows (3 drafts × 2 models) and promotes all 3 to `"ranked"`.
+4. **Promote + publish** - `ContentGeneration.mark_draft_approved/1` flips the winner to `"approved"`. `Publishing.create_published_post/1` writes the row directly (platform clients don't support Req.Test yet), then `update_draft_status(winner, "published")`. Asserts the draft is `"published"` and exactly one `PublishedPost` exists.
+5. **Metrics spike** - seeds a winning `ScoreboardEntry` (delta=3.5, outcome="winner") directly, then calls `MetricsPoller.maybe_trigger_spike/2` — the exact code path the full poller invokes when it detects a winner. `assert_enqueued(worker: WinnerRepurposingEngine, args: %{"draft_id" => winner.id})`.
+6. **Repurposing** - `perform_job(WinnerRepurposingEngine, %{"draft_id" => winner.id})` returns `{:ok, %{variants_created: 3}}`. Asserts three new `Draft` rows with `repurposed_from_id: winner.id` + `generating_model: "repurposing_engine"` (no fake LLM label) + `status: "draft"` + `content_brief_id` carried forward + cross-platform targets `["blog", "linkedin", "reddit"]`.
+
+No sleeps, no live HTTP, no synthetic data leaks (every content string is either the explicit stub text or the `"repurposing_engine"` marker).
+
+**Latent bug fix (bundled)**: `WinnerRepurposingEngine.create_repurposed_variant/4` was calling `Oban.insert(%Oban.Job{...})` with a raw struct, which `Oban.insert/1,2,3` does not accept. Before this slice the code silently broke whenever `WinnerRepurposingEngine.perform/1` reached that branch; no existing test exercised the path. Fixed by switching to `MultiModelRanker.new(args) |> Oban.insert()` (the same pattern every other worker in the repo uses). Without this fix the E2E test couldn't complete stage 6.
+
+Touched files: `test/support/e2e_stubs.ex` (new), `test/content_forge/e2e/happy_path_test.exs` (new), `lib/content_forge/jobs/winner_repurposing_engine.ex` (fix Oban.insert call + add MultiModelRanker alias), `BUILDLOG.md`.
+
 ### Phase 15.1c: Schedule calendar visualization
 
 Status: DONE
