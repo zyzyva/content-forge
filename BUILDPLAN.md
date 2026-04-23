@@ -275,7 +275,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 10. Goal: produce content that is AI-retriev
   - "Not For You" block presence (from spec): honest section telling readers when the product is a bad fit.
   - These checks either consume the Apify scraper for SERP data or call an LLM with the draft content. If neither is configured, the check returns `:not_applicable` with a clear note; no synthetic data.
 
-- **12.3 Original Research block**
+- **12.3 Original Research block** ✅ Shipped `2aeab78`.
   - Pipeline step that sources original data (survey, scrape, or competitor delta) and injects a research block into the draft.
   - If no research can be sourced for a topic, flag rather than fabricate.
   - Additional requirements:
@@ -290,6 +290,13 @@ Per `CONTENT_FORGE_SPEC.md` Feature 10. Goal: produce content that is AI-retriev
 
 - **12.4 Dashboard surfacing**
   - Drafts page shows checklist status per item and blocks publishing on red checks unless manually overridden.
+  - Additional requirements:
+    - Per-check drawer + SEO score column already shipped under 12.2a. 12.4 adds the publish-gate logic plus an override path, plus a ResearchEnricher status indicator using the fields from 12.3.
+    - **Publish gate on blog drafts:** a blog draft with `seo_score` below a configurable threshold (new `:content_forge, :seo, :publish_threshold` config, default 18 out of 28) or with `research_status` in `~w(lost_data_point)` cannot be moved to `"approved"` via the normal approve action. The approve path calls a new `ContentGeneration.approve_blog_draft/2` that checks these gates and returns `{:error, :seo_below_threshold, failing_checks}` or `{:error, :research_lost_data}` as appropriate. Non-blog drafts bypass the SEO gate entirely.
+    - **Override path:** a separate LiveView action `override_approve` is available only to operators with a verified override reason. Clicking the Approve button on a draft that fails the gate opens a confirmation modal requiring a free-text reason (≥ 20 chars); submitting calls `ContentGeneration.approve_blog_draft_with_override/3` which records `approved_via_override` (boolean), `override_reason` (text), `override_score_at_approval` (integer), and `override_research_status_at_approval` (string) on the Draft, then transitions to `"approved"`.
+    - **Dashboard surfacing:** the drafts review row renders the SEO score with a color-coded badge (green ≥ 24, amber 18-23, red < 18), a separate Research badge (`Enriched` / `No data` / `Missing citation` for lost_data_point / `—` for none), and an `Approved via override` badge when `approved_via_override` is true with a tooltip of the reason. The per-draft drawer shows the full check list (already shipped) plus the research source label and override history if present.
+    - **Review API:** the existing `POST /api/v1/drafts/:id/approve` endpoint returns 422 with a structured error body listing the failing checks when the gate blocks approval; a separate `POST /api/v1/drafts/:id/approve_override` endpoint requires a `reason` field in the body and applies the override path. Both require bearer auth; the override endpoint requires the same bearer (no extra role yet — single-tenant operator model today).
+    - Tests: blog draft with score 25 approves normally; blog draft with score 15 blocked by gate (422 + UI error banner); same draft approved via override with a 30-char reason captures all four override fields; research_status=lost_data_point blocks even if SEO score is above threshold; non-blog drafts pass through the gate untouched; API returns the structured failing-checks payload.
 
 Phase exit criteria: every long-form draft passes the nugget check and the 28-point checklist before hitting publish; research block presence is visible in the dashboard; integration tests cover "draft missing nugget" and "checklist red" paths.
 

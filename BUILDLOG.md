@@ -85,7 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 12.3: ResearchEnricher (Original Research block)
 
 Status: DONE
-Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `fb04efc`. Gate: compile --warnings-as-errors clean, format clean, full test 751/0, credo baseline-diff empty, coverage 59.47% (up from 59.06%). Format check landed LAST per the 12.2c reject lesson.
+Merged: master @ `2aeab78` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 751-0; coverage 59.47% (+0.41). Anti-hallucination: verbatim `String.contains?` check on LLM response vs exact data_point; miss flips draft to `needs_review` + `research_status=lost_data_point` without mutating content. Pattern-match-first dispatch. Source priority ScoreboardEntry → CompetitorIntel → ProductSnapshot (first-hit-wins). Hook after SEO checklist so checks see un-enriched shape. Format-last discipline held.
 
 Note: Post-generation hook for blog drafts that injects an Original Research block sourced from real data. Tries three sources in priority order, first hit wins; hallucination guard flips draft to `needs_review` if the LLM drops the data point; returns cleanly when no source has data or the LLM is unconfigured. Never fabricates.
 
