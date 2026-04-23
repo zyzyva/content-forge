@@ -85,6 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 16.4a: Confirmation envelope infra
 
 Status: DONE
+Merged: master @ `c30bd23` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 938-0, credo 26 vs 44 baseline (zero new in slice-touched files). Coverage Confirmation 96%, PendingConfirmation 100%. Zero emdashes. Two noted deviations accepted: (1) the composite-index predicate omits `expires_at > NOW()` because Postgres partial indexes require `IMMUTABLE` predicates; a query-time `expires_at` filter is functionally equivalent and keeps the idempotent lookup covered. (2) The wordlist generator retries once on collision and then falls through to a flat-random draw; at ~64k phrase combinations two collisions in the same active window signals programmer error rather than collision risk, so a richer fallback can land later if ever needed. The atomic UPDATE ... WHERE consumed_at IS NULL compare-and-swap is exercised by a real two-Task race test that asserts exactly one `:ok` and one `:confirmation_not_found`.
 Note: Prerequisite for every heavy-write tool in 16.4. No tool changes in this slice; the helper is plumbing. Consumers land next as 16.4b (`approve_draft`), 16.4c (`schedule_reminder_change`), and 16.4d (`generate_drafts_from_bundle`).
 
 **Schema + migration** (`priv/repo/migrations/20260509120000_create_pending_confirmations.exs` + `lib/content_forge/open_claw_tools/pending_confirmation.ex`):
