@@ -306,3 +306,51 @@ Acceptance criteria:
 - [ ] REST API for dashboard control: endpoints to list phones associated with a product, add or remove a phone from the whitelist, view the conversation history for a phone or product, manually send an outbound message, pause reminders for a product, and export the opt-in log for compliance purposes
 - [ ] Cost tracking: per-product SMS volume (inbound and outbound) is tracked and surfaced in the dashboard so agencies can see what each client is costing them in messaging fees
 
+---
+
+### Integration 1: Media Forge HTTP Client
+
+**Purpose:** Provide a single named client module that every Content Forge caller uses to talk to the Media Forge service. The module centralizes the base URL, the shared secret header, retry semantics, and transient-versus-permanent error classification so individual features (image generation, final video encoding, image processing, platform renditions) do not each reinvent them. Every future Media Forge call in the codebase goes through this module; nothing else touches the underlying HTTP layer for Media Forge URLs.
+
+**Why this matters:** Media Forge is the ecosystem's media service. Without a shared client, every caller repeats authentication, drifts in retry behavior, and gets inconsistent at classifying transient versus permanent errors. A single stubbable client also means tests never hit the live service, which matters because the dev instance runs on a different machine on the LAN and is not reliably reachable from CI. This slice delivers the client and its tests only. Swapping existing Content Forge callers (the image generator, the video pipeline, image pre-processing, platform renditions) over to this client is tracked under Phase 10.2 and later slices in `BUILDPLAN.md`.
+
+**Module location and shape:**
+- [ ] The public client module is `ContentForge.MediaForge` located under `lib/content_forge/media_forge/`. Internal supporting modules may be introduced as siblings if they keep the public surface narrow, for example an inner HTTP client module and a configuration reader module. Callers outside this directory only ever reference the public module.
+- [ ] The module exposes exactly the call functions listed below. It does not expose raw HTTP helpers, raw Req wrappers, or the underlying adapter configuration.
+
+**Configuration:**
+- [ ] The base URL is read from application configuration at the key `:base_url` under `:media_forge` within the `:content_forge` application. When no value is configured, the default is `http://192.168.1.37:5001`, matching the current dev instance.
+- [ ] The shared secret is read from application configuration at the key `:secret` under `:media_forge` within the `:content_forge` application. In production the secret is sourced from an environment variable at runtime through `config/runtime.exs`. In the test environment the secret is left unset by default so missing-secret behavior is observable; individual tests may configure a secret when they need to exercise the authenticated path.
+- [ ] When the secret is missing at runtime, the module reports its status as unavailable and every call function returns an error tagged as not configured, immediately, without issuing any network request. Upstream callers (image generator, video pipeline, asset processing) are expected to surface "Media Forge unavailable" in the dashboard and skip the dependent feature rather than crashing the containing request or job.
+
+**Authentication header:**
+- [ ] Every outbound request automatically sets the header named `X-MediaForge-Secret` with the configured secret value. Callers cannot omit or override this header. The header is set inside the client, not at the call site.
+
+**Endpoints the client exposes:**
+- [ ] A synchronous probe function that posts to `/api/v1/video/probe` and returns the video metadata map on success, or a classified error. This is used to inspect a source file before committing to a full render.
+- [ ] Four asynchronous video enqueue functions covering normalization, render, trim, and batch, each posting to `/api/v1/video/normalize`, `/render`, `/trim`, and `/batch` respectively. Each returns a success result carrying the new job identifier on acceptance, or a classified error. Callers then either poll job status or await the signed webhook once Phase 10.5 lands.
+- [ ] Three asynchronous image enqueue functions covering image processing, image render, and batch image operations, posting to `/api/v1/image/process`, `/render`, and `/batch`. Each returns the same success-with-job-id shape as the video enqueue functions.
+- [ ] A generation function that posts to `/api/v1/generation/images`, and a comparison function that posts to `/api/v1/generation/compare`. Each returns a success map that either contains a synchronous result or a job identifier depending on the provider that Media Forge selects internally. Callers inspect the returned map and branch on the presence of a job identifier.
+- [ ] A job status function that performs a GET against `/api/v1/jobs/:id` and returns the status map or a classified error.
+- [ ] A job cancellation function that posts to `/api/v1/jobs/:id/cancel` and returns a cancellation acknowledgement map or a classified error.
+
+**Error classification (applies to every call above):**
+- [ ] A 5xx response from Media Forge, or a timeout from the HTTP layer, is returned as a transient error tuple whose second element is the reason. Callers may retry transient errors through their Oban backoff policy.
+- [ ] A 4xx response is returned as a permanent error tuple whose elements are the HTTP status code and the response body. Callers must not retry a permanent error without changing the input.
+- [ ] A connection refusal or other network-layer failure (DNS failure, refused socket) is returned as a transient error tuple whose reason is network. Callers may retry.
+- [ ] Any other unexpected condition is returned as a plain error tuple with enough detail in the reason to diagnose from logs. The client does not rescue-and-swallow these conditions silently.
+
+**Test stance:**
+- [ ] The `Req.Test` stub adapter is wired into this module from the first commit. The test suite uses stubbed responses for every code path and never reaches a live Media Forge instance. Live smoke testing is a separate manual runbook documented in the handoff notes, not a CI concern.
+- [ ] Minimum required tests at the end of this slice:
+  - [ ] At least one error-classification test per branch: one transient case (a 5xx or a timeout) and one permanent case (a 4xx), each asserting the exact returned tuple shape and that no retry is attempted inside the client.
+  - [ ] One missing-secret test asserting that a call returns the not-configured error without any HTTP request being recorded by the stub adapter.
+  - [ ] One asynchronous enqueue happy path (either video or image) that asserts the success tuple carries the expected job identifier when the stub responds with one.
+  - [ ] One job-status happy path asserting the status map is returned verbatim from a stubbed GET on `/api/v1/jobs/:id`.
+  - [ ] One job-cancellation happy path asserting the acknowledgement is returned from a stubbed POST to `/api/v1/jobs/:id/cancel`.
+
+**Out of scope for this slice:**
+- [ ] Replacing existing image generation, video pipeline, image processing, and rendition callers with calls into this client is tracked under Phase 10.2 through 10.4 and is not part of this slice.
+- [ ] The signed-webhook receiver for asynchronous job completion is Phase 10.5. The client's async enqueue functions return a job identifier that can be either polled via the job status function or resolved by a webhook once the receiver lands; this slice does not build the receiver.
+- [ ] No dashboard or LiveView surface changes in this slice. "Media Forge unavailable" messaging is a caller-side concern handled when each existing feature is swapped over.
+
