@@ -47,7 +47,10 @@ defmodule ContentForge.ContentGeneration.SeoChecklist.Checks.EeatSignals do
     String.contains?(lowered, "published:") or
       String.contains?(lowered, "updated:") or
       Regex.match?(~r/<time[^>]*datetime\s*=/i, content) or
-      Regex.match?(~r/\b(published|updated)\s+(on\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i, content)
+      Regex.match?(
+        ~r/\b(published|updated)\s+(on\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i,
+        content
+      )
   end
 
   defp expertise_present?(lowered) do

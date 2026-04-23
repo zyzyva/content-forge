@@ -27,11 +27,9 @@ defmodule ContentForge.ContentGeneration.SeoChecklist.Checks.OutboundLinkAuthori
         non_https = Enum.count(links, &(not String.starts_with?(&1, "https://")))
 
         if non_https == 0 do
-          {:pass,
-           "Apify unavailable; #{length(links)} external links all HTTPS (weak fallback)"}
+          {:pass, "Apify unavailable; #{length(links)} external links all HTTPS (weak fallback)"}
         else
-          {:fail,
-           "Apify unavailable; #{non_https}/#{length(links)} external links are not HTTPS"}
+          {:fail, "Apify unavailable; #{non_https}/#{length(links)} external links are not HTTPS"}
         end
 
       {:ok, _} ->
@@ -50,9 +48,7 @@ defmodule ContentForge.ContentGeneration.SeoChecklist.Checks.OutboundLinkAuthori
       |> Enum.map(fn [href] -> href end)
 
     md =
-      Regex.scan(~r/(?<!\!)\[[^\]]+\]\(([a-z]+:\/\/[^)\s]+)\)/, content,
-        capture: :all_but_first
-      )
+      Regex.scan(~r/(?<!\!)\[[^\]]+\]\(([a-z]+:\/\/[^)\s]+)\)/, content, capture: :all_but_first)
       |> Enum.map(fn [href] -> href end)
 
     html ++ md

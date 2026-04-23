@@ -28,8 +28,7 @@ defmodule ContentForge.ContentGeneration.SeoChecklist.Checks.CitationPresence do
         if citations >= required do
           {:pass, "#{citations} citations for #{claims} numeric claim(s)"}
         else
-          {:fail,
-           "#{citations} citations for #{claims} numeric claim(s) (need >= #{required})"}
+          {:fail, "#{citations} citations for #{claims} numeric claim(s) (need >= #{required})"}
         end
     end
   end

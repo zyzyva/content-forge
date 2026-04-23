@@ -27,8 +27,7 @@ defmodule ContentForge.ContentGeneration.SeoChecklist.Checks.EntityDensity do
       if entities >= required do
         {:pass, "#{entities} entities in #{word_count} words (>=1 per #{@words_per_entity})"}
       else
-        {:fail,
-         "#{entities} entities in #{word_count} words (need >= #{required})"}
+        {:fail, "#{entities} entities in #{word_count} words (need >= #{required})"}
       end
     end
   end
