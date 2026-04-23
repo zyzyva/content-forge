@@ -503,7 +503,7 @@ Pick up after the feature waves clear. Any of these can be inserted earlier if i
   - Tests: each state renders the correct badge; missing credentials show `Unavailable`; credentials present with no traffic show `Configured`; credentials present with a successful event in the last hour show `Available`; three transient errors in the window flip to `Degraded`.
   - The hub card summarizes: count of `Unavailable` + `Degraded` providers; links to the full panel. When all are `Available` or `Configured`, the card shows a compact green state.
 
-- **15.1b Script-gate threshold view on video page**
+- **15.1b Script-gate threshold view on video page** ✅ Shipped `416eb1a`.
   - Add a view on the existing video status page that shows each candidate script's composite score alongside the current gate threshold, with a clear Promote/Override control. A script with score below threshold can still be manually promoted, with the override recorded on the `VideoJob` and surfaced in the status board.
 
 - **15.1c Schedule calendar visualization**

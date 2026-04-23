@@ -84,8 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 15.1b: Script-gate threshold view on video page
 
-Status: READY FOR REVIEW
-Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates; one formatter re-pass on a long header line), mix test 598/0 (585 prior + 13 new: 7 context + 6 LiveView). Credo by content unchanged vs post-15.1a: would-be new "Nested modules could be aliased" finding for `ContentForge.Jobs.VideoProducer` fixed inline by hoisting the alias to the top; zero net-new findings.
+Status: DONE
+Merged: master @ `416eb1a` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 598-0; credo unchanged. Promote transaction wraps update+create atomically; `maybe_enqueue_producer` fires outside tx. Override audit captures full decision; OVERRIDE badge on status board. Coder caught a latent `status_order` module-attr-in-HEEx bug while touching the file. 13 tests.
 Note: Script-gate threshold view + manual promote/override control on the existing video page per BUILDPLAN 15.1b.
 
 **Schema**: migration `20260502120000_add_promoted_via_override_to_video_jobs.exs` alters `video_jobs` to add three columns:
