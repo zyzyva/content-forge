@@ -436,7 +436,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 12. Twilio + OpenClaw integration.
   - Rate limiting: at most 10 outbound SMS per phone per calendar day. Exceeding the cap records a `rejected_rate_limit` event and does not call Twilio. Cap configurable per product.
   - Tests: whitelisted inbound triggers a dispatcher job, dispatcher sends the fallback via a stubbed Twilio client, outbound event is recorded, session state updates, rate-limit cap short-circuits at the 11th send in a day, missing-config Twilio (`:not_configured` from the client) records the outbound event with status `"failed"` and a reason note, does not crash the worker.
 
-- **14.3 Upload flow via SMS**
+- **14.3 Upload flow via SMS** ✅ Shipped `7d3aadf`.
   - Contact can MMS a photo; Content Forge routes the media through Media Forge (EXIF, rendition) and attaches the asset to the related product or draft.
   - Additional requirements surfaced during 14.1/14.2:
     - Inbound MMS media URLs are already captured on `SmsEvent.media_urls` by 14.1b. This slice fills in the ingestion path: download each media URL from Twilio, upload to R2, create a `ProductAsset` record, and enqueue the matching `AssetImageProcessor` or `AssetVideoProcessor` (13.1d/13.1e) so the asset goes through the same Media Forge processing pipeline as a dashboard upload.
@@ -449,6 +449,25 @@ Per `CONTENT_FORGE_SPEC.md` Feature 12. Twilio + OpenClaw integration.
 - **14.4 Reminders**
   - Scheduled outbound reminders (content review deadlines, publish approvals).
   - Oban-driven, idempotent, respects quiet hours.
+  - **Slicing note:** Reminder configuration schema + STOP opt-out handling (14.4a) first, then the cron scheduler + dispatcher worker (14.4b). OpenClaw gating follows the 14.2b pattern: fallback reminder text today, real AI-crafted text when OpenClaw's conversational endpoint lands.
+
+- **14.4a ReminderConfig schema + STOP opt-out**
+  - New schema `ContentForge.Sms.ReminderConfig` at `lib/content_forge/sms/reminder_config.ex` with fields: `product_id` (fk, unique), `enabled` (boolean default true), `cadence_days` (integer default 7 — how often a quiet client gets a reminder), `quiet_hours_start` (integer 0-23 default 20 — no outbound after this local hour), `quiet_hours_end` (integer 0-23 default 8 — no outbound before this local hour), `timezone` (string default "UTC"), `backoff_after_ignored` (integer default 2 — how many unanswered reminders before tone shifts), `stop_after_ignored` (integer default 4 — stop sending after this many total unanswered), plus timestamps.
+  - Migration creates `sms_reminder_configs` with binary_id PK, fk to products with `on_delete: :delete_all`, unique index on `product_id`.
+  - Extend `ContentForge.Sms.ProductPhone` with a new `reminders_paused_until` field (utc_datetime_usec, nullable). Any outbound send skips phones where `reminders_paused_until` is in the future.
+  - Context: `ContentForge.Sms.get_reminder_config/1` (returns default struct if absent), `upsert_reminder_config/2`, `pause_phone_reminders/2` (sets `reminders_paused_until` to `now + pause_days * 86_400` seconds), `resume_phone_reminders/1` (sets nil).
+  - STOP handling in the webhook controller 14.1b: before dispatching the normal auto-reply, check if the inbound body is `"STOP"` (or configurable aliases `"STOPALL"`, `"UNSUBSCRIBE"`, `"CANCEL"`, `"END"`, `"QUIT"`) case-insensitive after trim. On match: call `pause_phone_reminders(phone, default_pause_days)` (default 7 days), record an `SmsEvent` with status `"stop_received"`, and return a TwiML acknowledging opt-out ("You've been unsubscribed from reminders for 7 days. Reply START anytime to resume earlier."). Do not enqueue the normal auto-reply on STOP.
+  - Symmetric START handling: inbound body `"START"` or `"UNSTOP"` calls `resume_phone_reminders/1`, records `"start_received"`, returns a TwiML confirmation. Normal auto-reply still runs afterward so the conversation continues naturally.
+  - Tests cover: default config returned when absent; upsert round-trips; pause computes the timestamp correctly; resume clears it; STOP aliases case-insensitive; START resumes and continues; STOP from unknown phone still takes the generic rejection path (does not leak existence).
+
+- **14.4b ReminderScheduler cron + ReminderDispatcher worker**
+  - New cron-like Oban worker `ContentForge.Jobs.ReminderScheduler` at queue `:default`, scheduled hourly (either via Oban.Plugins.Cron or by its own self-rescheduling pattern — the coder picks whichever is consistent with the project). Each run iterates every product with an active `ReminderConfig`, loads the most recent inbound `SmsEvent` per whitelisted active phone for the product, and for each phone where `now - last_inbound >= cadence_days` AND `reminders_paused_until` is nil-or-past AND the current hour in the product's timezone is within the quiet window, enqueues a `ReminderDispatcher` for that phone.
+  - New worker `ContentForge.Jobs.ReminderDispatcher` at queue `:default`, max_attempts 3. Takes a phone id + product id. Composes the reminder text:
+    - Count recent unanswered outbound reminders since last inbound. If the count exceeds `backoff_after_ignored`, use a gentler tone template ("checking in, everything okay?"). If it exceeds `stop_after_ignored`, skip the send entirely and fire a dashboard notification that the client has gone dormant.
+    - OpenClaw is gated the same way as 14.2b: if configured the branch is wired but still uses the fallback template until 14.2c lands real OpenClaw reply-generation. If unconfigured, use the fallback template directly.
+    - Send via `ContentForge.Twilio.send_sms/3`, record an `SmsEvent` with status `"sent"` on success.
+  - Idempotency: each dispatcher job is enqueued with Oban `unique:` over `[:args, :worker]` for a one-hour window so a scheduler re-run does not double-fire.
+  - Tests cover: scheduler enqueues a dispatcher for a product with a stale last-inbound and no pause; scheduler skips when cadence not reached; scheduler skips when paused; scheduler skips outside quiet hours; dispatcher composes the friendly template by default and the gentler template after backoff; dispatcher fires the dashboard-dormant notification after stop threshold and does not send; idempotency prevents double-enqueue.
 
 - **14.5 Escalation**
   - If OpenClaw cannot confidently answer within a session, escalate to a human operator by creating a dashboard notification and pausing autoresponse.
