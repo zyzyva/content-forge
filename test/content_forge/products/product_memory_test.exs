@@ -77,9 +77,7 @@ defmodule ContentForge.Products.ProductMemoryTest do
 
     test "rejects tags over 40 chars", %{product: product} do
       assert {:error, cs} =
-               Products.create_memory(
-                 memory_attrs(product, %{tags: [String.duplicate("y", 41)]})
-               )
+               Products.create_memory(memory_attrs(product, %{tags: [String.duplicate("y", 41)]}))
 
       assert errors_on(cs)[:tags]
     end

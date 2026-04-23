@@ -669,7 +669,7 @@ Phase exit criteria: a marketer can text a photo in, get it tagged into a produc
 - **16.4 Heavy-write tools + safety controls**
   - Decomposed into four sub-slices mirroring the 16.3 pattern. 16.4a is the prerequisite confirmation infra; 16.4b is the smallest consumer and proves the envelope end-to-end; 16.4c and 16.4d add the remaining heavy writes. 16.4b, 16.4c, and 16.4d are parallel-safe once 16.4a ships.
 
-- **16.4a Confirmation envelope infra**
+- **16.4a Confirmation envelope infra** *(DONE - see `BUILDLOG.md` Phase 16.4a)*
   - Blocks: 16.4b, 16.4c, 16.4d. Blocked by: none (16.3 wave complete).
   - Ship `ContentForge.OpenClawTools.PendingConfirmation` schema at `lib/content_forge/open_claw_tools/pending_confirmation.ex` with fields `session_id` (string, required), `tool_name` (string, required), `params_hash` (string, required, SHA-256 hex of canonical-ordered params JSON), `echo_phrase` (string, required, three words from a curated wordlist joined by `-`, for example `"crimson-otter-harbor"`), `preview` (map, default `%{}`, stored as `:map` so the second-turn confirm path can replay the preview the agent read back), `expires_at` (utc_datetime_usec, required), `consumed_at` (utc_datetime_usec, nullable), plus timestamps. Migration adds the table, a partial unique index on `(session_id, echo_phrase) WHERE consumed_at IS NULL`, and a composite index on `(session_id, tool_name, params_hash) WHERE consumed_at IS NULL AND expires_at > NOW()` for the idempotent request lookup.
   - Ship `ContentForge.OpenClawTools.Confirmation` context module at `lib/content_forge/open_claw_tools/confirmation.ex` with two public functions.
