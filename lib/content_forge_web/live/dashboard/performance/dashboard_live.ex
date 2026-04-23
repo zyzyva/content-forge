@@ -101,28 +101,33 @@ defmodule ContentForgeWeb.Live.Dashboard.Performance.DashboardLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="space-y-6">
-      <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+    <main id="main-content" aria-labelledby="page-title" class="space-y-6">
+      <header class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h1 class="text-2xl font-bold">Performance Dashboard</h1>
+          <h1 id="page-title" class="text-2xl font-bold">Performance Dashboard</h1>
           <p class="text-base-content/70">Engagement trends, retention curves, and clips</p>
         </div>
-        <select
-          class="select select-bordered"
-          name="product"
-          phx-change="filter_product"
-        >
-          <option value="">All Products</option>
-          <option :for={product <- @products} value={product.id}>
-            {product.name}
-          </option>
-        </select>
-      </div>
-      
-    <!-- Tabs -->
-      <div role="tablist" class="tabs tabs-boxed">
+        <label class="form-control">
+          <span class="label-text sr-only">Filter by product</span>
+          <select
+            class="select select-bordered"
+            name="product"
+            aria-label="Filter by product"
+            phx-change="filter_product"
+          >
+            <option value="">All Products</option>
+            <option :for={product <- @products} value={product.id}>
+              {product.name}
+            </option>
+          </select>
+        </label>
+      </header>
+
+      <div role="tablist" aria-label="Performance view" class="tabs tabs-boxed">
         <button
           role="tab"
+          aria-selected={if @active_tab == "overview", do: "true", else: "false"}
+          tabindex={if @active_tab == "overview", do: "0", else: "-1"}
           class={["tab", @active_tab == "overview" && "tab-active"]}
           phx-click="switch_tab"
           phx-value-tab="overview"
@@ -131,6 +136,8 @@ defmodule ContentForgeWeb.Live.Dashboard.Performance.DashboardLive do
         </button>
         <button
           role="tab"
+          aria-selected={if @active_tab == "trends", do: "true", else: "false"}
+          tabindex={if @active_tab == "trends", do: "0", else: "-1"}
           class={["tab", @active_tab == "trends" && "tab-active"]}
           phx-click="switch_tab"
           phx-value-tab="trends"
@@ -139,11 +146,15 @@ defmodule ContentForgeWeb.Live.Dashboard.Performance.DashboardLive do
         </button>
         <button
           role="tab"
+          aria-selected={if @active_tab == "clips", do: "true", else: "false"}
+          tabindex={if @active_tab == "clips", do: "0", else: "-1"}
           class={["tab", @active_tab == "clips" && "tab-active"]}
           phx-click="switch_tab"
           phx-value-tab="clips"
+          aria-label={"Clips, #{length(@clip_flags)} flagged"}
         >
-          Clips <span class="badge badge-xs badge-primary">{length(@clip_flags)}</span>
+          Clips
+          <span class="badge badge-xs badge-primary" aria-hidden="true">{length(@clip_flags)}</span>
         </button>
       </div>
       
@@ -166,12 +177,12 @@ defmodule ContentForgeWeb.Live.Dashboard.Performance.DashboardLive do
               <table class="table table-sm">
                 <thead>
                   <tr>
-                    <th>Platform</th>
-                    <th>Type</th>
-                    <th>AI Score</th>
-                    <th>Actual</th>
-                    <th>Delta</th>
-                    <th>Outcome</th>
+                    <th scope="col">Platform</th>
+                    <th scope="col">Type</th>
+                    <th scope="col">AI Score</th>
+                    <th scope="col">Actual</th>
+                    <th scope="col">Delta</th>
+                    <th scope="col">Outcome</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -216,10 +227,15 @@ defmodule ContentForgeWeb.Live.Dashboard.Performance.DashboardLive do
                     <span class="capitalize font-medium">{platform}</span>
                     <div class="flex items-center gap-2">
                       <span>{metrics.total_engagement} eng</span>
-                      <div class="w-32 h-2 bg-base-300 rounded overflow-hidden">
+                      <div
+                        class="w-32 h-2 bg-base-300 rounded overflow-hidden"
+                        role="img"
+                        aria-label={"#{platform} total engagement: #{metrics.total_engagement}"}
+                      >
                         <div
                           class="h-full bg-primary"
                           style={"width: #{max(metrics.total_engagement / 1000 * 100, 5)}%"}
+                          aria-hidden="true"
                         >
                         </div>
                       </div>
@@ -242,10 +258,15 @@ defmodule ContentForgeWeb.Live.Dashboard.Performance.DashboardLive do
                       {Float.round(metrics.avg_engagement, 1)}
                     </span>
                   </div>
-                  <div class="w-full h-2 bg-base-300 rounded overflow-hidden mt-1">
+                  <div
+                    class="w-full h-2 bg-base-300 rounded overflow-hidden mt-1"
+                    role="img"
+                    aria-label={"#{platform} average engagement per post: #{Float.round(metrics.avg_engagement, 1)}"}
+                  >
                     <div
                       class={"h-full #{avg_engagement_color(metrics.avg_engagement)}"}
                       style={"width: #{min(metrics.avg_engagement * 10, 100)}%"}
+                      aria-hidden="true"
                     >
                     </div>
                   </div>
@@ -263,14 +284,14 @@ defmodule ContentForgeWeb.Live.Dashboard.Performance.DashboardLive do
               <table class="table table-sm">
                 <thead>
                   <tr>
-                    <th>Platform</th>
-                    <th>Type</th>
-                    <th>Angle</th>
-                    <th>AI Score</th>
-                    <th>Actual</th>
-                    <th>Delta</th>
-                    <th>Date</th>
-                    <th>Outcome</th>
+                    <th scope="col">Platform</th>
+                    <th scope="col">Type</th>
+                    <th scope="col">Angle</th>
+                    <th scope="col">AI Score</th>
+                    <th scope="col">Actual</th>
+                    <th scope="col">Delta</th>
+                    <th scope="col">Date</th>
+                    <th scope="col">Outcome</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -318,14 +339,14 @@ defmodule ContentForgeWeb.Live.Dashboard.Performance.DashboardLive do
               <table class="table table-sm">
                 <thead>
                   <tr>
-                    <th>Video</th>
-                    <th>Platform</th>
-                    <th>Segment</th>
-                    <th>Title</th>
-                    <th>Views</th>
-                    <th>Eng Rate</th>
-                    <th>Status</th>
-                    <th>Actions</th>
+                    <th scope="col">Video</th>
+                    <th scope="col">Platform</th>
+                    <th scope="col">Segment</th>
+                    <th scope="col">Title</th>
+                    <th scope="col">Views</th>
+                    <th scope="col">Eng Rate</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -352,11 +373,18 @@ defmodule ContentForgeWeb.Live.Dashboard.Performance.DashboardLive do
                         class="btn btn-xs btn-primary"
                         phx-click="approve_clip"
                         phx-value-id={flag.id}
+                        aria-label={"Approve clip " <> (flag.suggested_title || flag.video_platform_id || "segment")}
                       >
                         Approve
                       </button>
-                      <span :if={approved?(flag)} class="text-success text-xs">
-                        <.icon name="hero-check" class="size-3" />
+                      <span
+                        :if={approved?(flag)}
+                        class="text-success text-xs"
+                        aria-label="Approved"
+                      >
+                        <span aria-hidden="true">
+                          <.icon name="hero-check" class="size-3" />
+                        </span>
                       </span>
                     </td>
                   </tr>
@@ -369,7 +397,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Performance.DashboardLive do
           </div>
         </div>
       </div>
-    </div>
+    </main>
     """
   end
 

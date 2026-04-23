@@ -361,6 +361,7 @@ defmodule ContentForge.Metrics do
   # ============================================
 
   defp maybe_filter_by_product(query, nil), do: query
+  defp maybe_filter_by_product(query, ""), do: query
   defp maybe_filter_by_product(query, product_id), do: where(query, product_id: ^product_id)
 
   defp maybe_filter_by_platform(query, nil), do: query

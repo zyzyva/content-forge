@@ -219,23 +219,27 @@ defmodule ContentForgeWeb.Live.Dashboard.Video.StatusLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="space-y-6">
-      <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+    <main id="main-content" aria-labelledby="page-title" class="space-y-6">
+      <header class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h1 class="text-2xl font-bold">Video Production</h1>
+          <h1 id="page-title" class="text-2xl font-bold">Video Production</h1>
           <p class="text-base-content/70">Track video creation pipeline</p>
         </div>
-        <select
-          class="select select-bordered"
-          name="product"
-          phx-change="filter_product"
-        >
-          <option value="">All Products</option>
-          <option :for={product <- @products} value={product.id}>
-            {product.name}
-          </option>
-        </select>
-      </div>
+        <label class="form-control">
+          <span class="label-text sr-only">Filter by product</span>
+          <select
+            class="select select-bordered"
+            name="product"
+            aria-label="Filter by product"
+            phx-change="filter_product"
+          >
+            <option value="">All Products</option>
+            <option :for={product <- @products} value={product.id}>
+              {product.name}
+            </option>
+          </select>
+        </label>
+      </header>
       
     <!-- Stats -->
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -347,64 +351,94 @@ defmodule ContentForgeWeb.Live.Dashboard.Video.StatusLive do
       
     <!-- Video Jobs List -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div class="space-y-2">
-          <h2 class="font-semibold">Video Jobs ({length(@video_jobs)})</h2>
-          <div class="overflow-y-auto max-h-[600px] space-y-2">
-            <div
-              :for={job <- @video_jobs}
-              class={"card bg-base-200 hover:bg-base-300 cursor-pointer transition-colors #{if @selected_job && @selected_job.id == job.id, do: "border-2 border-primary"}"}
-              phx-click="select_job"
-              phx-value-id={job.id}
-            >
-              <div class="card-body p-4" data-video-job-id={job.id}>
-                <div class="flex justify-between items-start">
-                  <div>
-                    <div class="flex items-center gap-2">
-                      <Components.status_badge status={job.status} />
-                      <span
-                        :if={job.promoted_via_override}
-                        class="badge badge-warning badge-sm"
-                        data-promoted-override={job.id}
-                      >
-                        OVERRIDE
-                      </span>
+        <section aria-labelledby="video-jobs-heading" class="space-y-2">
+          <h2 id="video-jobs-heading" class="font-semibold">
+            Video Jobs ({length(@video_jobs)})
+          </h2>
+          <ul class="overflow-y-auto max-h-[600px] space-y-2">
+            <li :for={job <- @video_jobs} class="list-none">
+              <button
+                type="button"
+                class={[
+                  "w-full text-left card bg-base-200 hover:bg-base-300 transition-colors focus:outline-none focus:ring focus:ring-primary",
+                  @selected_job && @selected_job.id == job.id && "border-2 border-primary"
+                ]}
+                phx-click="select_job"
+                phx-value-id={job.id}
+                aria-label={"Select video job, status #{job.status}, progress #{job_progress(job)}"}
+                aria-pressed={
+                  if @selected_job && @selected_job.id == job.id, do: "true", else: "false"
+                }
+              >
+                <div class="card-body p-4" data-video-job-id={job.id}>
+                  <div class="flex justify-between items-start">
+                    <div>
+                      <div class="flex items-center gap-2">
+                        <Components.status_badge status={job.status} />
+                        <span
+                          :if={job.promoted_via_override}
+                          class="badge badge-warning badge-sm"
+                          data-promoted-override={job.id}
+                          aria-label="Promoted via manual override"
+                        >
+                          OVERRIDE
+                        </span>
+                      </div>
+                      <p class="text-xs text-base-content/70 mt-1">
+                        Created: {Components.format_datetime(job.inserted_at)}
+                      </p>
                     </div>
-                    <p class="text-xs text-base-content/70 mt-1">
-                      Created: {Components.format_datetime(job.inserted_at)}
-                    </p>
-                  </div>
-                  <div class="text-right">
-                    <div class="text-xs text-base-content/70">Progress</div>
-                    <div class="text-sm font-semibold">
-                      {job_progress(job)}
+                    <div class="text-right">
+                      <div class="text-xs text-base-content/70">Progress</div>
+                      <div class="text-sm font-semibold">
+                        {job_progress(job)}
+                      </div>
                     </div>
                   </div>
-                </div>
-                <div class="mt-2">
-                  <div class="progress progress-primary w-full h-2">
+                  <div class="mt-2">
                     <div
-                      style={"width: #{job_progress_percent(job)}%"}
+                      class="progress progress-primary w-full h-2"
                       role="progressbar"
+                      aria-label={"Pipeline progress #{job_progress(job)}"}
+                      aria-valuenow={round(job_progress_percent(job))}
+                      aria-valuemin="0"
+                      aria-valuemax="100"
                     >
+                      <div style={"width: #{job_progress_percent(job)}%"}></div>
                     </div>
                   </div>
                 </div>
-              </div>
-            </div>
+              </button>
+            </li>
+          </ul>
 
-            <div :if={length(@video_jobs) == 0} class="text-center py-8 text-base-content/70">
-              No video jobs found
-            </div>
-          </div>
-        </div>
+          <p
+            :if={length(@video_jobs) == 0}
+            class="text-center py-8 text-base-content/70"
+            role="status"
+          >
+            No video jobs found
+          </p>
+        </section>
         
     <!-- Detail Panel -->
-        <div :if={@selected_job} class="card bg-base-200 sticky top-4">
+        <aside
+          :if={@selected_job}
+          role="region"
+          aria-labelledby="video-job-details-heading"
+          class="card bg-base-200 sticky top-4"
+        >
           <div class="card-body">
             <div class="flex justify-between items-start">
-              <h2 class="card-title">Job Details</h2>
-              <button phx-click="close_detail" class="btn btn-ghost btn-sm btn-circle">
-                <.icon name="hero-x" class="size-4" />
+              <h2 id="video-job-details-heading" class="card-title">Job Details</h2>
+              <button
+                phx-click="close_detail"
+                class="btn btn-ghost btn-sm btn-circle"
+                aria-label="Close job details"
+              >
+                <span aria-hidden="true">
+                  <.icon name="hero-x" class="size-4" />
+                </span>
               </button>
             </div>
             
@@ -460,9 +494,9 @@ defmodule ContentForgeWeb.Live.Dashboard.Video.StatusLive do
               </button>
             </div>
           </div>
-        </div>
+        </aside>
       </div>
-    </div>
+    </main>
     """
   end
 

@@ -66,11 +66,11 @@ defmodule ContentForgeWeb.Live.Dashboard.Clips.QueueLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="space-y-6">
-      <div>
-        <h1 class="text-2xl font-bold">Clip Queue</h1>
+    <main id="main-content" aria-labelledby="page-title" class="space-y-6">
+      <header>
+        <h1 id="page-title" class="text-2xl font-bold">Clip Queue</h1>
         <p class="text-base-content/70">Approve flagged segments for short-form production</p>
-      </div>
+      </header>
       
     <!-- Stats -->
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -97,62 +97,95 @@ defmodule ContentForgeWeb.Live.Dashboard.Clips.QueueLive do
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <!-- Pending Clips -->
-        <div class="space-y-4">
-          <h2 class="font-semibold">Pending Approval ({length(@pending_clips)})</h2>
-          <div class="space-y-2">
-            <div
-              :for={clip <- @pending_clips}
-              class={"card bg-base-200 hover:bg-base-300 cursor-pointer transition-colors #{if @selected_clip && @selected_clip.id == clip.id, do: "border-2 border-primary"}"}
-              phx-click="select_clip"
-              phx-value-id={clip.id}
-            >
-              <div class="card-body p-4">
-                <div class="flex justify-between items-start">
-                  <div>
-                    <div class="flex items-center gap-2">
-                      <span class="font-semibold">{clip.suggested_title}</span>
-                      <span class="badge badge-sm badge-outline">{clip.platform}</span>
+        <section aria-labelledby="pending-clips-heading" class="space-y-4">
+          <h2 id="pending-clips-heading" class="font-semibold">
+            Pending Approval ({length(@pending_clips)})
+          </h2>
+          <ul class="space-y-2">
+            <li :for={clip <- @pending_clips} class="list-none">
+              <button
+                type="button"
+                class={[
+                  "w-full text-left card bg-base-200 hover:bg-base-300 transition-colors focus:outline-none focus:ring focus:ring-primary",
+                  @selected_clip && @selected_clip.id == clip.id && "border-2 border-primary"
+                ]}
+                phx-click="select_clip"
+                phx-value-id={clip.id}
+                aria-label={"Select clip #{clip.suggested_title} on #{clip.platform}"}
+                aria-pressed={
+                  if @selected_clip && @selected_clip.id == clip.id, do: "true", else: "false"
+                }
+              >
+                <div class="card-body p-4">
+                  <div class="flex justify-between items-start">
+                    <div>
+                      <div class="flex items-center gap-2">
+                        <span class="font-semibold">{clip.suggested_title}</span>
+                        <span class="badge badge-sm badge-outline">{clip.platform}</span>
+                      </div>
+                      <p class="text-xs text-base-content/70 mt-1">
+                        Video: {String.slice(clip.video_platform_id || "", 0, 20)}...
+                      </p>
                     </div>
-                    <p class="text-xs text-base-content/70 mt-1">
-                      Video: {String.slice(clip.video_platform_id || "", 0, 20)}...
-                    </p>
+                    <Components.status_badge status="pending" />
                   </div>
-                  <Components.status_badge status="pending" />
-                </div>
 
-                <div class="flex gap-4 mt-2 text-sm">
-                  <span>
-                    <.icon name="hero-clock" class="size-3 inline" />
-                    {format_time(clip.start_seconds)} - {format_time(clip.end_seconds)}
-                  </span>
-                  <span :if={clip.segment_views}>
-                    <.icon name="hero-eye" class="size-3 inline" />
-                    {clip.segment_views} views
-                  </span>
-                  <span :if={clip.segment_engagement_rate} class="text-success">
-                    <.icon name="hero-chart-bar" class="size-3 inline" />
-                    {Float.round(clip.segment_engagement_rate, 1)}% eng
-                  </span>
+                  <div class="flex gap-4 mt-2 text-sm">
+                    <span>
+                      <span aria-hidden="true">
+                        <.icon name="hero-clock" class="size-3 inline" />
+                      </span>
+                      {format_time(clip.start_seconds)} - {format_time(clip.end_seconds)}
+                    </span>
+                    <span :if={clip.segment_views}>
+                      <span aria-hidden="true">
+                        <.icon name="hero-eye" class="size-3 inline" />
+                      </span>
+                      {clip.segment_views} views
+                    </span>
+                    <span :if={clip.segment_engagement_rate} class="text-success">
+                      <span aria-hidden="true">
+                        <.icon name="hero-chart-bar" class="size-3 inline" />
+                      </span>
+                      {Float.round(clip.segment_engagement_rate, 1)}% eng
+                    </span>
+                  </div>
                 </div>
-              </div>
-            </div>
+              </button>
+            </li>
+          </ul>
 
-            <div :if={length(@pending_clips) == 0} class="text-center py-8 text-base-content/70">
+          <div
+            :if={length(@pending_clips) == 0}
+            class="text-center py-8 text-base-content/70"
+            role="status"
+          >
+            <span aria-hidden="true">
               <.icon name="hero-video-camera" class="size-12 mx-auto mb-4 opacity-50" />
-              <p>No clips pending approval</p>
-            </div>
+            </span>
+            <p>No clips pending approval</p>
           </div>
-        </div>
+        </section>
         
     <!-- Detail / Approved Panel -->
         <div class="space-y-4">
-          <div :if={@selected_clip} class="card bg-base-200 sticky top-4">
+          <aside
+            :if={@selected_clip}
+            role="region"
+            aria-labelledby="clip-details-heading"
+            class="card bg-base-200 sticky top-4"
+          >
             <div class="card-body">
               <div class="flex justify-between items-start">
-                <h2 class="card-title">Clip Details</h2>
-                <button phx-click="close_detail" class="btn btn-ghost btn-sm btn-circle">
-                  <.icon name="hero-x" class="size-4" />
+                <h2 id="clip-details-heading" class="card-title">Clip Details</h2>
+                <button
+                  phx-click="close_detail"
+                  class="btn btn-ghost btn-sm btn-circle"
+                  aria-label="Close clip details"
+                >
+                  <span aria-hidden="true">
+                    <.icon name="hero-x" class="size-4" />
+                  </span>
                 </button>
               </div>
               
@@ -240,40 +273,62 @@ defmodule ContentForgeWeb.Live.Dashboard.Clips.QueueLive do
                   class="btn btn-primary"
                   phx-click="approve_clip"
                   phx-value-id={@selected_clip.id}
+                  aria-label={"Approve clip #{@selected_clip.suggested_title} for production"}
                 >
-                  <.icon name="hero-check" class="size-4" /> Approve for Production
+                  <span aria-hidden="true">
+                    <.icon name="hero-check" class="size-4" />
+                  </span>
+                  Approve for Production
                 </button>
               </div>
             </div>
-          </div>
+          </aside>
           
     <!-- Approved Clips -->
-          <div :if={!@selected_clip} class="space-y-2">
-            <h2 class="font-semibold">Approved for Production ({length(@approved_clips)})</h2>
-            <div :for={clip <- @approved_clips} class="card bg-success/10 border border-success/30">
-              <div class="card-body p-3">
-                <div class="flex justify-between items-center">
-                  <div>
-                    <span class="font-medium">{clip.suggested_title}</span>
-                    <span class="badge badge-sm badge-success ml-2">{clip.platform}</span>
+          <section
+            :if={!@selected_clip}
+            aria-labelledby="approved-clips-heading"
+            class="space-y-2"
+          >
+            <h2 id="approved-clips-heading" class="font-semibold">
+              Approved for Production ({length(@approved_clips)})
+            </h2>
+            <ul class="space-y-2">
+              <li
+                :for={clip <- @approved_clips}
+                class="card bg-success/10 border border-success/30 list-none"
+              >
+                <div class="card-body p-3">
+                  <div class="flex justify-between items-center">
+                    <div>
+                      <span class="font-medium">{clip.suggested_title}</span>
+                      <span class="badge badge-sm badge-success ml-2">{clip.platform}</span>
+                    </div>
+                    <span class="text-xs text-success">
+                      <span aria-hidden="true">
+                        <.icon name="hero-check" class="size-3" />
+                      </span>
+                      Approved
+                    </span>
                   </div>
-                  <span class="text-xs text-success">
-                    <.icon name="hero-check" class="size-3" /> Approved
-                  </span>
+                  <p class="text-xs text-base-content/70 mt-1">
+                    {format_time(clip.start_seconds)} - {format_time(clip.end_seconds)}
+                  </p>
                 </div>
-                <p class="text-xs text-base-content/70 mt-1">
-                  {format_time(clip.start_seconds)} - {format_time(clip.end_seconds)}
-                </p>
-              </div>
-            </div>
+              </li>
+            </ul>
 
-            <div :if={length(@approved_clips) == 0} class="text-center py-4 text-base-content/70">
+            <p
+              :if={length(@approved_clips) == 0}
+              class="text-center py-4 text-base-content/70"
+              role="status"
+            >
               No approved clips yet
-            </div>
-          </div>
+            </p>
+          </section>
         </div>
       </div>
-    </div>
+    </main>
     """
   end
 

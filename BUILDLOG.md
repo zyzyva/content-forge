@@ -82,6 +82,58 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 15.2c: WCAG AA audit on video + performance + clips
+
+Status: DONE
+Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `0a35e33`. Gate: compile --warnings-as-errors clean, format clean, full test 614/0, credo baseline-diff empty (nothing new introduced).
+Note: WCAG AA audit + inline fixes on the three remaining Phase 9 dashboard pages per BUILDPLAN 15.2c. Same checklist as 15.2a/b. Latent bug in `Metrics.maybe_filter_by_product/2` surfaced by the first-ever LiveView test of `/dashboard/performance` — fix folded into this slice.
+
+**Pages touched**:
+- `/dashboard/video` (`Live.Dashboard.Video.StatusLive`)
+- `/dashboard/performance` (`Live.Dashboard.Performance.DashboardLive`)
+- `/dashboard/clips` (`Live.Dashboard.Clips.QueueLive`)
+
+**Findings fixed on /dashboard/video**:
+- No `<main>` landmark. Added `<main id="main-content" aria-labelledby="page-title">` wrapping the whole page + h1 with `id="page-title"` inside a `<header>`.
+- Product-filter `<select>` had no label. Wrapped in `<label>` with `sr-only` label-text + `aria-label="Filter by product"`.
+- Video job list was `<div phx-click>` cards (not keyboard-operable). Promoted to `<section aria-labelledby="video-jobs-heading">` + `<ul>` + `<li class="list-none">` + real `<button type="button">` with `aria-pressed` and dynamic `aria-label={"Select video job, status #{job.status}, progress #{progress}"}`.
+- Progress bars now render with `role="progressbar" aria-label={"Pipeline progress #{progress}"} aria-valuenow={percent} aria-valuemin="0" aria-valuemax="100"` and the filled inner div is `aria-hidden`.
+- OVERRIDE badge got `aria-label="Promoted via manual override"` so screen readers know what the three letters mean.
+- Detail panel promoted from `<div>` to `<aside role="region" aria-labelledby="video-job-details-heading">`. Close button got `aria-label="Close job details"` and its icon wrapped in `<span aria-hidden="true">`.
+- Empty state converted from bare `<div>` to `<p role="status">` so status changes are announced.
+
+**Findings fixed on /dashboard/performance**:
+- No `<main>` landmark. Added the same `<main id="main-content" aria-labelledby="page-title">` wrapper + `<header>` + h1.
+- Product-filter `<select>` had no label. Wrapped in `<label>` with `sr-only` label-text + `aria-label="Filter by product"`.
+- Four view-switcher buttons lived in a plain `<div class="tabs tabs-boxed">` (the same anti-pattern 15.2b fixed on drafts). Replaced with `<div role="tablist" aria-label="Performance view">` containing `<button role="tab" aria-selected tabindex>` per tab; `tabindex="0"` only on the active tab. Clips tab's count pill got `aria-hidden="true"` and the tab itself got `aria-label={"Clips, #{flag_count} flagged"}` so the count is announced as part of the tab name rather than read as a separate number.
+- All three data tables (Winners, Scoreboard, Clips) had bare `<th>` headers. Changed every header cell to `<th scope="col">` so screen readers know which headers describe which columns.
+- Bar charts for "Engagement by Platform" and "Average Engagement Rate" are purely visual `<div style="height">`. Wrapped each bar's container in `role="img" aria-label={"#{platform} total engagement: #{value}"}` (and similarly for "average engagement rate: #{value}%") with the inner decorative fill div marked `aria-hidden="true"`.
+- Per-row "Approve" action buttons in the clip-review table got `aria-label={"Approve clip " <> (flag.suggested_title || flag.video_platform_id || "segment")}`. The ✓/check icon for already-approved rows is wrapped in `<span aria-label="Approved">` with the inner icon `aria-hidden`.
+
+**Findings fixed on /dashboard/clips**:
+- No `<main>` landmark. Added `<main id="main-content" aria-labelledby="page-title">` + `<header>` + h1 pattern.
+- Pending clips list was `<div phx-click>` cards. Promoted to `<section aria-labelledby="pending-clips-heading">` + `<ul>` + `<li class="list-none">` + `<button type="button">` with `aria-pressed` and dynamic `aria-label={"Select clip #{clip.suggested_title} on #{clip.platform}"}`.
+- Decorative hero icons (clock, eye, chart-bar, video-camera) wrapped in `<span aria-hidden="true">` so they don't pollute the accessibility tree.
+- Detail panel promoted to `<aside role="region" aria-labelledby="clip-details-heading">`. Close button got `aria-label="Close clip details"`. Approve-for-production button got `aria-label={"Approve clip #{title} for production"}`; both buttons have icons inside `aria-hidden` spans.
+- Approved clips section converted to `<section aria-labelledby="approved-clips-heading">` + `<ul>` / `<li>`. "Approved" check icon + text pair: icon is `aria-hidden` and the "Approved" text is visible so the status is conveyed through real text, not icon shape.
+- Empty states switched from bare `<div>` to `role="status"` so late-arriving "No clips pending approval" / "No approved clips yet" announcements are picked up.
+
+**Latent bug fix (`lib/content_forge/metrics.ex`)**:
+- `maybe_filter_by_product/2` had only `nil` and `product_id` heads. The new `/dashboard/performance` LiveView test drove the controller path where `params |> Map.get("product", "")` hands an empty string to the query, and Ecto's binary_id cast raised `Ecto.Query.CastError`. Added a pattern-match head `defp maybe_filter_by_product(query, ""), do: query` so empty strings pass through like `nil`. This is a pre-existing bug that no prior test exercised; rolling the fix into this slice because the test surfaced it.
+
+**Tests added** (appended to existing `test/content_forge_web/live/dashboard/a11y_landmarks_test.exs`):
+- 3 new `describe` blocks — `/dashboard/video`, `/dashboard/performance`, `/dashboard/clips` — matching the 15.2a landmark pattern:
+  - exactly one `<h1>`, exactly one `<main>`
+  - `id="main-content"` + `aria-labelledby="page-title"`
+  - page-specific asserts: filter-product aria-label on /video; `aria-label="Performance view"` + `role="tab"` + `aria-selected="true"` + `<th scope="col">` present + `refute html =~ ~r|<th>[A-Z]|` on /performance; `id="pending-clips-heading"` on /clips.
+
+**What was explicitly NOT changed** (kept out of scope):
+- No JS arrow-key handler on the performance tablist. `tabindex="0"` is set on the active tab only (roving state), but actual arrow-key roving behaviour is BUILDPLAN 15.2d territory.
+- No color-contrast or text-resize fixes. That's 15.2d.
+- No global skip-link. Landmarks were added so `#main-content` is a valid target, but the `<a href="#main-content">` element lives with global nav (future slice).
+
+**Gate**: compile --warnings-as-errors clean, format clean, full test 614/0, credo --strict baseline-diff empty (nothing new introduced; the metrics.ex fix adds a function-head clause which doesn't cross any threshold). Rebased cleanly on master @ `0a35e33`.
+
 ### Phase 15.2b: WCAG AA audit on drafts review + schedule
 
 Status: DONE

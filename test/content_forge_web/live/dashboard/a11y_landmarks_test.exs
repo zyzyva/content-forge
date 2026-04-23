@@ -149,4 +149,54 @@ defmodule ContentForgeWeb.Live.Dashboard.A11yLandmarksTest do
       assert html =~ ~s|aria-label="Filter by product"|
     end
   end
+
+  describe "/dashboard/video" do
+    test "has one <h1>, a <main> landmark, labeled filter, and progressbar aria",
+         %{conn: conn} do
+      {_view, html} = live_at(conn, ~p"/dashboard/video")
+
+      assert count_matches(html, ~r|<h1\b|) == 1
+      assert count_matches(html, ~r|<main\b|) == 1
+      assert html =~ ~s|id="main-content"|
+      assert html =~ ~s|aria-labelledby="page-title"|
+      assert html =~ ~s|aria-label="Filter by product"|
+    end
+  end
+
+  describe "/dashboard/performance" do
+    test "has one <h1>, a <main> landmark, role=tablist view switcher, scope=col headers",
+         %{conn: conn} do
+      {_view, html} = live_at(conn, ~p"/dashboard/performance")
+
+      assert count_matches(html, ~r|<h1\b|) == 1
+      assert count_matches(html, ~r|<main\b|) == 1
+      assert html =~ ~s|id="main-content"|
+      assert html =~ ~s|aria-labelledby="page-title"|
+
+      # Tab role wiring.
+      assert html =~ ~s|aria-label="Performance view"|
+      assert html =~ ~s|role="tab"|
+      assert html =~ ~s|aria-selected="true"|
+
+      # Filter select labeled.
+      assert html =~ ~s|aria-label="Filter by product"|
+
+      # Every table header uses scope="col".
+      assert html =~ ~s|<th scope="col">|
+      refute html =~ ~r|<th>[A-Z]|
+    end
+  end
+
+  describe "/dashboard/clips" do
+    test "has one <h1>, a <main> landmark, pending list as role=region",
+         %{conn: conn} do
+      {_view, html} = live_at(conn, ~p"/dashboard/clips")
+
+      assert count_matches(html, ~r|<h1\b|) == 1
+      assert count_matches(html, ~r|<main\b|) == 1
+      assert html =~ ~s|id="main-content"|
+      assert html =~ ~s|aria-labelledby="page-title"|
+      assert html =~ ~s|id="pending-clips-heading"|
+    end
+  end
 end
