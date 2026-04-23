@@ -68,7 +68,7 @@ Both items below landed 2026-04-22 before any Phase 10 work. Retained here as a 
   - The dashboard drafts queue and publishing schedule view surface blocked drafts distinctly so a human can see why nothing published.
   - Tests: one for each platform path showing that a draft without image_url is not published; one for the happy path that does publish when image_url is present; one asserting the drafts queue view labels the blocked draft.
 
-- **10.2c ImageGenerator test coverage fill**
+- **10.2c ImageGenerator test coverage fill** ✅ Shipped `78d4437`.
   - ImageGenerator coverage after 10.2 is around 66%. Uncovered paths include the persist-or-fail case when Media Forge returns a success without a usable URL, the unrecognized-sync-body branch, the polling path that observes a late `:not_configured` status from Media Forge, and the generic error tuple from an otherwise-unclassified response.
   - Add focused tests for each uncovered branch using the existing Req.Test stub pattern. No behavior change; pure coverage fill.
   - Reviewer should see module coverage lift above a target (aim for 90%+) while the overall threshold stays at zero.
@@ -83,6 +83,14 @@ Both items below landed 2026-04-22 before any Phase 10 work. Retained here as a 
   - Video production pipeline currently calls FFmpeg locally in one step. Replace that step with a Media Forge `/api/v1/video/render` (or `/api/v1/video/batch` for multi-platform) call.
   - Remotion is still responsible for the pre-render composition; Media Forge owns final encoding and per-platform rendition.
   - Preserve existing per-step status tracking in the dashboard.
+  - Additional requirements surfaced during investigation:
+    - The current step 5 in the video producer is a simulation ("Would FFmpeg encode", returns a fake R2 key) gated behind a product config flag. There is no real FFmpeg invocation today. Removing the simulation and its config flag is part of this slice; no backwards-compatible "enabled" flag is preserved because the local path is being retired entirely.
+    - Route the single-output render call through `ContentForge.MediaForge.enqueue_render/1`. Batch render for per-platform outputs is deferred until Feature 11 or Phase 15 needs it; do not add batch call sites yet.
+    - Resolution is poll-based: once the enqueue returns a job id, the worker polls job status until done or failed, with a capped retry count and a configurable interval, mirroring the ImageGenerator pattern from 10.2. Webhook resolution waits for 10.5.
+    - On a done status, persist the Media Forge R2 key under the final-encode step in the video job's per-step storage map, transition the video job from `assembled` to `encoded`, and let the existing YouTube upload step pick it up from there.
+    - On `{:error, :not_configured}`, the step logs "Media Forge unavailable" and leaves the video job at `assembled`. The existing dashboard video status board should show the pause reason; that surfacing lives in 10.3 so the slice ships a visible state transition rather than silent stalling.
+    - On transient errors, the worker returns so Oban retries. On permanent errors (4xx/cancel/unexpected-status), mark the video job `failed` with the error recorded on the `error` field.
+    - Tests use `Req.Test` stubs for Media Forge responses and cover: sync success with immediate R2 key, async success resolved by polling, `:not_configured` leaves the job at `assembled`, permanent error fails the job, transient error triggers retry. No live Media Forge calls from the suite.
 
 - **10.4 Swap image processing (EXIF, crops, platform renditions) onto Media Forge**
   - Any place Content Forge manipulates uploaded images (autorotate, EXIF strip, platform crops) moves to Media Forge's `/api/v1/image/*`.

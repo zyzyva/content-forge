@@ -137,7 +137,7 @@ Acceptance criteria:
 
 **Purpose:** Produce demo and talking-head videos for YouTube from ranked scripts — with a gate at script selection to avoid spending on weak content.
 
-**Stack:** ElevenLabs (voiceover audio), HeyGen (AI avatar talking head), Playwright (screen recording of live site), Remotion + Node.js sidecar (programmatic video composition), FFmpeg (final assembly/encoding).
+**Stack:** ElevenLabs (voiceover audio), HeyGen (AI avatar talking head), Playwright (screen recording of live site), Remotion + Node.js sidecar (programmatic video composition). Final encoding and format normalization are delegated to Media Forge via the HTTP client (Integration 1); there is no local FFmpeg invocation inside Content Forge.
 
 **Script-first design:** Scripts are generated and ranked in Feature 3 before any video production begins. Video production only triggers for scripts that pass the ranking threshold. Multiple script variants may be produced as separate videos if budget allows, or only the top 1-2 proceed.
 
@@ -148,7 +148,7 @@ Acceptance criteria:
 - [ ] Playwright screen recorder: headless browser navigates the live site, records walkthrough as video, stored in R2
 - [ ] HeyGen talking head: script + configured avatar submitted to HeyGen API, result polled and stored in R2
 - [ ] Remotion sidecar assembles final video: intro slate, screen recording segments, talking head segments, outro, with voiceover laid over
-- [ ] FFmpeg handles final encoding and format normalization
+- [ ] Final encoding and format normalization are performed by Media Forge via the `ContentForge.MediaForge` HTTP client (Integration 1). The Remotion-assembled video is handed off to Media Forge's video-render endpoint (single-output render for the YouTube path today; batch render is reserved for when per-platform renditions are added under Feature 11 or Phase 15). Media Forge may respond synchronously with a finished R2 key or asynchronously with a job identifier that Content Forge resolves by polling job status (webhook resolution arrives under Phase 10.5). The returned R2 key is recorded on the video job's per-step storage map under the final-encode step, and the video job transitions from `assembled` to `encoded`. If Media Forge is not configured on this deployment, the step logs "Media Forge unavailable" and the video job pauses at `assembled` with a dashboard-visible note rather than advancing to YouTube upload. No local FFmpeg invocation occurs inside Content Forge.
 - [ ] Final video uploaded to YouTube with AI-generated title, description, tags, and thumbnail (from screenshot)
 - [ ] YouTube OAuth tokens are encrypted in PostgreSQL; app refreshes automatically
 - [ ] Each video job tracks per-step status in DB (script_approved / voiceover_done / recording_done / avatar_done / assembled / uploaded)
