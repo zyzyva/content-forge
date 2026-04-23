@@ -82,6 +82,25 @@ defmodule ContentForge.Sms do
     |> Repo.update()
   end
 
+  @doc """
+  Finds a `%ProductPhone{}` row by `phone_number` across all products,
+  preferring an active row. Returns `nil` when no row exists.
+
+  Intended for webhook paths that receive a sender phone without a
+  product scope; the caller uses `row.active` and `row.product_id` to
+  decide between accept / inactive-reject / unknown-reject.
+  """
+  @spec lookup_phone_by_number(String.t()) :: ProductPhone.t() | nil
+  def lookup_phone_by_number(phone_number) when is_binary(phone_number) do
+    Repo.one(
+      from(p in ProductPhone,
+        where: p.phone_number == ^phone_number,
+        order_by: [desc: p.active, asc: p.inserted_at],
+        limit: 1
+      )
+    )
+  end
+
   # ---- SMS events (audit log) --------------------------------------------
 
   @doc "Inserts an audit row for an inbound or outbound message."

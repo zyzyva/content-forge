@@ -29,6 +29,8 @@ config :content_forge, :media_forge,
   webhook_secret:
     System.get_env("MEDIA_FORGE_WEBHOOK_SECRET") || System.get_env("MEDIA_FORGE_SECRET")
 
+config :content_forge, :twilio, auth_token: System.get_env("TWILIO_AUTH_TOKEN")
+
 config :content_forge, :open_claw,
   base_url: System.get_env("OPENCLAW_BASE_URL"),
   api_key: System.get_env("OPENCLAW_API_KEY"),

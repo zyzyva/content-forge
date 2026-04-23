@@ -23,9 +23,19 @@ defmodule ContentForgeWeb.Router do
     plug ContentForgeWeb.Plugs.MediaForgeWebhookVerifier
   end
 
+  pipeline :twilio_webhook do
+    plug :accepts, ["xml", "html"]
+    plug ContentForgeWeb.Plugs.TwilioSignatureVerifier
+  end
+
   scope "/webhooks", ContentForgeWeb do
     pipe_through :media_forge_webhook
     post "/media_forge", MediaForgeWebhookController, :handle
+  end
+
+  scope "/webhooks", ContentForgeWeb do
+    pipe_through :twilio_webhook
+    post "/twilio/sms", TwilioWebhookController, :receive
   end
 
   scope "/", ContentForgeWeb do

@@ -82,6 +82,46 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 14.1b: Twilio inbound webhook receiver
+
+Status: READY FOR REVIEW
+Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates; one formatter re-pass on `config/runtime.exs` because the new single-key `:twilio` config fit on one line), mix test 459/0 (451 prior + 8 new). Credo by content unchanged vs post-14.1a: zero new findings; same nine baseline findings net-removed.
+Note: `POST /webhooks/twilio/sms` outside `/api/v1` per BUILDPLAN 14.1b. New plug `ContentForgeWeb.Plugs.TwilioSignatureVerifier` at `lib/content_forge_web/plugs/twilio_signature_verifier.ex`:
+
+- Reads `x-twilio-signature` header (400 if missing).
+- Auth token from `:content_forge, :twilio, :auth_token` via `fetch_auth_token/0` two-head (nil | "" → fail closed with 403 "twilio auth not configured"; binary → proceed).
+- Reconstructs the URL via `webhook_url/1` (scheme + host + port-unless-standard + path; `port_suffix/2` function-head pattern-matches `:http, 80` and `:https, 443` → "", anything else → `":#{port}"`).
+- `sorted_param_blob/1` walks `conn.body_params`, rejects non-binary values defensively, sorts by key, and `Enum.map_join`s `key <> value` with no separator - matching Twilio's spec exactly.
+- HMAC-SHA1 keyed by auth token, base64-encoded, compared via `Plug.Crypto.secure_compare/2`. Mismatch → 403 "invalid signature". The offending signature is never echoed to the response body.
+
+New controller `ContentForgeWeb.TwilioWebhookController` with action `receive/2`. Two `receive/2` heads: one matches `%{"From" => from}` when `from` is a non-empty binary; the catch-all head returns 400 "missing From parameter" and logs "malformed payload (missing From)" without recording an event. The accept head extracts `Body`, `MessageSid`, and `MediaUrl0..N` (walked via `extract_media_urls/1` iterating `0..(NumMedia-1)` with `parse_int/1` three-head on integer/binary/other), then delegates to a `dispatch/6` function-head-dispatched on the `Sms.lookup_phone_by_number/1` result:
+
+- `%ProductPhone{active: true}` → records inbound/received event with product_id + media_urls + twilio_sid, calls `Sms.get_or_start_session/2`, returns empty TwiML 200 (Twilio does not auto-reply).
+- `%ProductPhone{active: false}` → records inbound/rejected_unknown_number with product_id preserved for audit, returns gated TwiML 200 with `<Message>` body asking the sender to contact the agency. No session.
+- `nil` (unknown number) → records inbound/rejected_unknown_number with product_id nil, returns the same gated TwiML. No session.
+
+New `Sms.lookup_phone_by_number/1` helper added to `ContentForge.Sms` (outside the 14.1a spec surface but required by this slice). Returns the first `%ProductPhone{}` across any product with `order_by: [desc: p.active, asc: p.inserted_at]`, limit 1, so an active row always wins over an inactive row when the same phone is whitelisted multiple times; used by the controller to distinguish "unknown" (nil) from "inactive" (row.active=false) in the audit log.
+
+Router gets a new `:twilio_webhook` pipeline (`plug :accepts, ["xml", "html"]` + the signature verifier) and a second `scope "/webhooks"` block mounting `post "/twilio/sms", TwilioWebhookController, :receive`. The Media Forge webhook pipeline and scope are untouched. `BodyReader` is not extended because Twilio's signature covers sorted form params, not the raw body; the spec's "reused" note was a forward-compatibility acknowledgment rather than a requirement for this slice.
+
+Runtime env wiring in `config/runtime.exs`: `config :content_forge, :twilio, auth_token: System.get_env("TWILIO_AUTH_TOKEN")`. Unset token → plug fail-closed rejection path.
+
+8 new tests in `test/content_forge_web/controllers/twilio_webhook_controller_test.exs` (async: false):
+- signed inbound from whitelisted active phone → 200 empty TwiML, inbound/received event persisted with product_id + Twilio SID + body, session started (state "idle")
+- `MediaUrl0..N` captured into `event.media_urls` in index order
+- signed inbound from unknown phone → 200 gated TwiML `<Message>`, inbound/rejected_unknown_number event with product_id nil, no session
+- signed inbound from known inactive phone → 200 gated TwiML, rejected event with product_id preserved, no session
+- invalid signature → 403, zero events
+- missing `x-twilio-signature` header → 400, zero events
+- unset auth_token → 403 on every request (fail closed), zero events
+- missing `From` param on a signed request → 400 "missing From", zero events
+
+Twilio's signature algorithm is recomputed in the test via a `sign/3` helper (HMAC-SHA1 keyed by token, over URL + `Enum.map_join` of sorted `key<>value` pairs, base64), mirroring the plug exactly. This means a copy-bug in either direction surfaces as a failing test rather than silent mis-verification.
+
+Downstream routing (OpenClaw auto-acknowledgement) is explicitly out of scope and lands under 14.2.
+
+Touched files: `lib/content_forge/sms.ex` (new `lookup_phone_by_number/1`), `lib/content_forge_web/plugs/twilio_signature_verifier.ex` (new), `lib/content_forge_web/controllers/twilio_webhook_controller.ex` (new), `lib/content_forge_web/router.ex` (new pipeline + scope), `config/runtime.exs` (auth_token env wiring), `test/content_forge_web/controllers/twilio_webhook_controller_test.exs` (new), `BUILDLOG.md`.
+
 ### Phase 14.1a: SMS schemas + context
 
 Status: DONE
