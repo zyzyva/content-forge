@@ -185,6 +185,13 @@ The plugin ships these tools. Each corresponds to a module under
   the approval. Blog drafts that fail the gate need an
   `override_reason` (20+ chars) on both turns; otherwise the
   second turn returns `publish_gate_blocks`.
+- **`schedule_reminder_change`** - change a product's SMS
+  reminder cadence or flip reminders on/off (Phase 16.4c).
+  Requires `:owner`. Cadence is an integer 1..30 days. No-op
+  requests (same cadence + same enabled) short-circuit with
+  `changed: false` and skip the confirmation envelope
+  entirely; actual changes run the full two-turn flow with a
+  before/after diff preview.
 
 ## Future tools (ship pattern)
 
