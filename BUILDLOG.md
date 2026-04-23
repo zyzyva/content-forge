@@ -82,6 +82,62 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 15.3a: coverage uplift triage + initial floor
+
+Status: DONE
+Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `65b4aa6`. Gate: compile --warnings-as-errors clean, format clean, full test 637/0, credo baseline-diff empty, `mix test --cover` summary total 56.41%.
+Note: First tranche of the coverage-uplift wave. Inventoried every 0%-coverage module from `mix test --cover`, categorized each as `exclude` / `add-smoke` / `defer`, and set `test_coverage: [summary: [threshold: 10], ignore_modules: [...]]` in `mix.exs`. Further tranches toward 50% and 90% are separate slices.
+
+**Final overall coverage**: 56.41% (up from 55.73% baseline on master @ `65b4aa6`).
+**Overall summary threshold**: `10`. Well above the floor; the gate fails only if overall coverage regresses below 10%, which catches sudden large deletions of test coverage rather than nitpicking individual modules.
+
+**Excluded modules (`ignore_modules` in `mix.exs`)** — truly unreachable or framework boilerplate; one-line justification each:
+
+- `ContentForge.Application` — OTP supervisor. The child-list is framework-prescribed boilerplate; unit-testing it would test `Supervisor.start_link/2` itself.
+- `ContentForge.DataCase` — test-support helper (`use ContentForge.DataCase`); not a source module.
+- `ContentForge.Mailer` — `use Swoosh.Mailer, otp_app: :content_forge` boilerplate; the module body is a library macro.
+- `ContentForge.Repo` — `use Ecto.Repo, otp_app: :content_forge` boilerplate; module body is the Ecto library macro.
+- `ContentForgeWeb` — router/channel/controller helper macros; `def controller, do: ...` style body.
+- `ContentForgeWeb.ConnCase` — test-support helper; not a source module.
+- `ContentForgeWeb.Endpoint` — `use Phoenix.Endpoint, otp_app: :content_forge` boilerplate; plug stack is the Phoenix library macro.
+- `ContentForgeWeb.ErrorHTML` — delegates to `Phoenix.Controller.status_message_from_template/1`; no meaningful branches.
+- `ContentForgeWeb.Gettext` — `use Gettext.Backend, otp_app: :content_forge` boilerplate.
+- `ContentForgeWeb.Layouts` — Phoenix layout shell; layout templates are exercised indirectly via every LiveView + controller test.
+- `ContentForgeWeb.PageHTML` — 10-line `embed_templates "page_html/*"` boilerplate; no code to test.
+- `ContentForgeWeb.Telemetry` — `use Supervisor` with a metrics-definition child list; framework boilerplate.
+
+**Add-smoke (brought above 10% via new tests)**:
+
+- `ContentForge.Publishing.WebhookDelivery` (`test/content_forge/publishing/webhook_delivery_test.exs`, new, 2 tests) - changeset validation smoke: valid attrs produce a valid changeset, `status: "bogus"` fails `validate_inclusion`, and required fields trigger missing-assoc errors. Plus assertion on the three canonical status constants (`pending_status/0`, `success_status/0`, `failed_status/0`). Module went from 0% to high coverage in two tests.
+- `ContentForgeWeb.MetricsJSON` (`test/content_forge_web/controllers/metrics_json_test.exs`, new, 3 tests) - render-shape smoke for the three most-used JSON views: `scoreboard/1`, `calibration/1`, `retention/1`. Asserts the wrapping `%{data: %{...}}` shape + key fields flow through; inline struct literals mean no DB setup needed. Module went from 0% to meaningful coverage.
+
+**Deferred (worth covering later, not in this slice)** — each is a real module with logic that needs real tests; tracked as future-tranche work:
+
+- `ContentForge.Jobs.BlogPublisher` (0%, 183 lines) - blog publishing Oban worker. Defer: depends on WebhookDelivery + Twilio/BlogWebhook HMAC flow; covered by 15.3 E2E happy path indirectly but not unit-tested.
+- `ContentForge.Jobs.OpenClawBulkGenerator` (0%, 318 lines) - bulk variant generation worker. Defer: OpenClaw HTTP client stub setup is substantial; wants its own slice.
+- `ContentForge.Jobs.PublishingScheduler` (0%, 183 lines) - scheduler that picks optimal windows. Defer: needs full Publishing + engagement metrics fixtures.
+- `ContentForge.Jobs.RepoIngestion` (0%, 189 lines) - git-clone-and-ingest worker. Defer: needs a local git fixture repo or a shell-stub; heavy setup.
+- `ContentForge.Publishing.Facebook` (0%, 234 lines) - Facebook Graph API client. Defer: Req.Test stubs per endpoint; full coverage wants its own slice matching the Twitter (80%) pattern.
+- `ContentForge.Publishing.LinkedIn` (0%, 340 lines) - LinkedIn API client. Same pattern as Facebook/Twitter; defer.
+- `ContentForge.Publishing.Reddit` (0%, 148 lines) - Reddit API client. Defer; smaller than the other two but same shape.
+- `ContentForge.Publishing.Twitter` (0%, 217 lines) - Twitter API client. Currently at 0% despite being the reference pattern; the existing tests exercise it indirectly via Publisher but `test --cover` isn't counting transitive calls through the `Req.Test` stub indirection. Defer until we can figure out why transitive coverage isn't being counted here (other adapters show it fine).
+- `ContentForge.Publishing.YouTube` (0%, 343 lines) - YouTube Data API client. Defer; same pattern as Facebook/LinkedIn.
+- `ContentForgeWeb.MetricsController` (0%, 207 lines) - Review API metrics endpoints. Defer: needs integration tests against the six endpoints; the JSON view is now covered, the controller is not.
+- `ContentForge.Storage` (5.88%, 68 lines) - S3/R2 storage client. Defer: Req.Test stubs for the upload path need scripting; the 5% is one trivial accessor.
+- `ContentForge.Jobs.SiteCrawler` (7.69%, 192 lines) - site crawl worker. Defer: HTML fixtures + Req.Test setup.
+- `ContentForge.Jobs.MetricsPoller` (9.40%, 463 lines) - multi-platform metrics poller; the biggest module in the defer bucket. Defer: needs cross-platform fixture suite; would be a substantial coverage slice on its own.
+- `ContentForge.Publishing.EngagementMetric` (12.50%, 52 lines) - Ecto schema. Already over the 10% threshold via indirect exercise; not worth a smoke test when it's already passing.
+- `ContentForgeWeb.ProductController` (17.39%, 76 lines) - partially tested; the remaining gaps are edge cases (not-found, update, delete). Defer until a dedicated ProductController test slice.
+- `ContentForgeWeb.CoreComponents` (17.65%, 498 lines) - Phoenix component library. HEEx render-path coverage is notoriously hard for `test --cover` to attribute; most of this module is exercised every time a LiveView renders. Defer; a future slice can either add component-unit tests or accept the under-reporting.
+
+**What was explicitly NOT changed** (kept out of scope):
+
+- No new tests for deferred modules. Each deferred bullet is a candidate for its own follow-up tranche.
+- Did not change the per-module threshold default. Elixir's default is 90%, but that would fail loudly today; raising it in tranches (as the architect specced) is a follow-up.
+- Did not add any `@coveralls`-style file-level ignores. The `ignore_modules` list in `mix.exs` is the single source of truth for exclusions; adding a second mechanism would just drift.
+
+**Gate**: compile --warnings-as-errors clean, format clean, full test 637/0 (5 new in 2 smoke-test files), credo --strict baseline-diff empty, `mix test --cover` overall 56.41% with threshold 10 passing. Rebased cleanly on master @ `65b4aa6`.
+
 ### Phase 15.4.3: ScriptGate return shape + Draft archived status
 
 Status: DONE

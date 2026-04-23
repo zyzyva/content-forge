@@ -12,7 +12,33 @@ defmodule ContentForge.MixProject do
       deps: deps(),
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
       listeners: [Phoenix.CodeReloader],
-      test_coverage: [summary: [threshold: 0]]
+      test_coverage: [
+        summary: [threshold: 10],
+        ignore_modules: ignored_coverage_modules()
+      ]
+    ]
+  end
+
+  # Modules excluded from coverage reporting and the summary
+  # threshold. Triaged in phase 15.3a; see BUILDLOG for the
+  # per-module justification. Each entry is one of: Phoenix
+  # framework boilerplate (embed_templates, Gettext, Mailer,
+  # Telemetry, Endpoint, Router macros), supervisor /
+  # application boilerplate, or test-support shims.
+  defp ignored_coverage_modules do
+    [
+      ContentForge.Application,
+      ContentForge.DataCase,
+      ContentForge.Mailer,
+      ContentForge.Repo,
+      ContentForgeWeb,
+      ContentForgeWeb.ConnCase,
+      ContentForgeWeb.Endpoint,
+      ContentForgeWeb.ErrorHTML,
+      ContentForgeWeb.Gettext,
+      ContentForgeWeb.Layouts,
+      ContentForgeWeb.PageHTML,
+      ContentForgeWeb.Telemetry
     ]
   end
 
