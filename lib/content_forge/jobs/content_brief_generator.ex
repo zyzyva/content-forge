@@ -20,7 +20,8 @@ defmodule ContentForge.Jobs.ContentBriefGenerator do
   use Oban.Worker, queue: :content_generation, max_attempts: 3
   require Logger
 
-  alias ContentForge.{ContentGeneration, LLM, Products}
+  alias ContentForge.{ContentGeneration, Products}
+  alias ContentForge.LLM.BriefSynthesizer
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"product_id" => product_id, "force_rewrite" => force_rewrite}}) do
@@ -44,21 +45,28 @@ defmodule ContentForge.Jobs.ContentBriefGenerator do
 
     existing_brief = ContentGeneration.get_latest_content_brief_for_product(product.id)
 
-    cond do
-      existing_brief && !force_rewrite ->
-        Logger.info(
-          "Content brief already exists for product #{product.id}, skipping initial generation"
-        )
-
-        {:ok, existing_brief}
-
-      existing_brief ->
-        rewrite_brief_with_performance(product, existing_brief, snapshot, competitor_intel)
-
-      true ->
-        generate_initial_brief(product, snapshot, competitor_intel)
-    end
+    existing_brief
+    |> route(force_rewrite)
+    |> run(product, snapshot, competitor_intel, existing_brief)
   end
+
+  defp route(nil, _force), do: :initial
+  defp route(_brief, true), do: :rewrite
+  defp route(_brief, _force), do: :short_circuit
+
+  defp run(:short_circuit, product, _snapshot, _intel, existing_brief) do
+    Logger.info(
+      "Content brief already exists for product #{product.id}, skipping initial generation"
+    )
+
+    {:ok, existing_brief}
+  end
+
+  defp run(:initial, product, snapshot, competitor_intel, _existing),
+    do: generate_initial_brief(product, snapshot, competitor_intel)
+
+  defp run(:rewrite, product, snapshot, competitor_intel, existing_brief),
+    do: rewrite_brief_with_performance(product, existing_brief, snapshot, competitor_intel)
 
   defp generate_initial_brief(product, snapshot, competitor_intel) do
     context = build_brief_context(product, snapshot, competitor_intel, nil)
@@ -168,10 +176,7 @@ defmodule ContentForge.Jobs.ContentBriefGenerator do
   # --- LLM call wrapper -----------------------------------------------------
 
   defp call_llm(user_prompt, system_prompt) do
-    case LLM.Anthropic.complete(user_prompt, system: system_prompt) do
-      {:ok, %{text: text, model: model}} -> {:ok, text, model}
-      {:error, reason} -> {:error, reason}
-    end
+    BriefSynthesizer.generate(user_prompt, system_prompt)
   end
 
   # --- context + prompts ----------------------------------------------------

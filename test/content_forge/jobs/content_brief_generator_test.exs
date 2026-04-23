@@ -83,7 +83,7 @@ defmodule ContentForge.Jobs.ContentBriefGeneratorTest do
                perform_job(ContentBriefGenerator, %{"product_id" => product.id})
 
       assert brief.content == "# Real content brief body"
-      assert brief.model_used == "claude-sonnet-4-6-20250929"
+      assert brief.model_used == "anthropic:claude-sonnet-4-6-20250929"
       assert brief.version == 1
       assert brief.product_id == product.id
       refute brief.content =~ "[To be determined"
@@ -147,7 +147,7 @@ defmodule ContentForge.Jobs.ContentBriefGeneratorTest do
                })
 
       assert new_brief.content == "# Rewritten brief body"
-      assert new_brief.model_used == "claude-opus-4-7"
+      assert new_brief.model_used == "anthropic:claude-opus-4-7"
       assert new_brief.version == 2
     end
   end
