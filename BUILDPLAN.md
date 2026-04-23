@@ -616,10 +616,55 @@ Phase exit criteria: a marketer can text a photo in, get it tagged into a produc
     - No per-draft `scheduled_at` field in the Draft schema. If a future slice introduces true scheduling, `upcoming_schedule` extends its result shape then.
 
 - **16.3 Light-write tools + role-based authorization framework**
-  - Add tool modules for writes that change product state but are reversible: `create_asset_bundle`, `record_memory` (persist a conversation note into a new `ProductMemory` schema scoped to the product), and `add_tag_to_asset`.
-  - Carried over from 16.1 reviewer notes (non-blocking forward-looking items that fit the auth framework work): (a) extract a shared `ContentForge.ProductAssets.AcceptedContentTypes` allow-list and apply it to `create_upload_link` as defense-in-depth (13.1b controller already validates before presigning; the tool path currently does not), (b) clamp `expires_in_seconds` on `create_upload_link` to a configurable ceiling (default 3600 = 1 hour) so a malformed agent turn cannot request a forever-link even though S3 caps at 7 days.
-  - Introduce the authorization framework: a shared `ContentForge.OpenClawTools.Authorization.require/2` helper that takes the session context and the required role (`:owner | :submitter | :viewer`), resolves the sender's role via `ProductPhone` for phone-based channels or via a new `OperatorIdentity` record for CLI/other channels, and returns `:ok` or `{:error, :forbidden}`. Light writes require `:submitter` or higher.
-  - Tests: viewer role forbidden on any light write; submitter role allowed; unknown sender identity forbidden; CLI-origin invocations without a registered OperatorIdentity forbidden by default (explicit allow-list required).
+  - Decomposed into four sub-slices. 16.3a is the prerequisite infra; 16.3b hardens an already-shipped tool as the first consumer of the helper; 16.3c and 16.3d add the three new light-write tools. 16.3c and 16.3d are independent of each other and parallel-safe once 16.3a is shipped.
+
+- **16.3a Authorization framework (infra)**
+  - Blocks: 16.3b, 16.3c, 16.3d, 16.4 (heavy writes), 16.5 (audit). Blocked by: none.
+  - Ship `ContentForge.OpenClawTools.Authorization` at `lib/content_forge/open_claw_tools/authorization.ex` with a single public `require(ctx, required_role)` function implementing the Feature 13 authorization contract. Role hierarchy constant inside the module, channel resolution pattern-matched on `ctx.channel`, fail-closed catch-all.
+  - Ship `ContentForge.Operators.OperatorIdentity` schema at `lib/content_forge/operators/operator_identity.ex` with fields `product_id` (binary_id fk, required), `identity` (string, required; the channel-specific identifier such as `"cli:ops"`), `role` (string, required, inclusion in `~w(owner submitter viewer)`), `active` (boolean, default true), plus inserted_at / updated_at. Migration adds the table and a partial unique index on `(product_id, identity) WHERE active = true` so a re-seed after deactivation works cleanly. Context module `ContentForge.Operators` at `lib/content_forge/operators.ex` with `create_identity/1`, `lookup_active_identity(identity, product_id)`, and `list_identities_for_product/1`.
+  - Role resolution behavior:
+    - `channel == "sms"`: call `ContentForge.Sms.lookup_phone(sender_identity, product.id)`. Active row returns `{:ok, role}` (role atom derived from the string column). Inactive or missing: `{:error, :forbidden}`.
+    - `channel == "cli"` or any other non-phone channel: call `Operators.lookup_active_identity(sender_identity, product.id)`. Active row returns `{:ok, role}`. Inactive, missing, or different-product: `{:error, :forbidden}`.
+    - Missing `sender_identity` on ctx, or `product` lookup argument is nil: `{:error, :forbidden}` immediately with zero DB I/O.
+  - Helper signature: `require(ctx, required_role)` where `ctx` carries `:channel`, `:sender_identity`, and `:product` (tools pass their already-resolved product). Returns `:ok` when the resolved role satisfies the hierarchy, `{:error, :forbidden}` otherwise. No intermediate return values, no role echoing.
+  - Tests (`test/content_forge/open_claw_tools/authorization_test.exs` plus `test/content_forge/operators_test.exs` for the schema/context):
+    - Hierarchy: owner satisfies viewer / submitter / owner requirements; submitter satisfies viewer / submitter but not owner; viewer satisfies only viewer.
+    - SMS path: active `ProductPhone` with `"submitter"` role + `:submitter` required = `:ok`; viewer role + `:submitter` required = `:forbidden`; inactive row = `:forbidden`; unknown phone = `:forbidden`; phone registered to a different product than the one passed = `:forbidden`.
+    - CLI path: seeded active `OperatorIdentity` with `"owner"` role + `:submitter` required = `:ok`; missing identity = `:forbidden`; inactive identity = `:forbidden`; identity registered under another product = `:forbidden`.
+    - Unknown channel (`"telegram"`): `:forbidden` fail-closed with zero DB I/O.
+    - Missing `sender_identity` on ctx: `:forbidden` with zero DB I/O.
+    - Missing `product` in ctx: `:forbidden` with zero DB I/O.
+    - Schema: inclusion validation on role, required-field checks, partial-unique on `(product_id, identity) WHERE active`, `lookup_active_identity` excludes inactive rows.
+  - No tools change in this slice. The helper is plumbing. 16.3b is the first consumer.
+
+- **16.3b CreateUploadLink hardening (first consumer of the helper)**
+  - Blocks: none. Blocked by: 16.3a.
+  - Apply the authorization helper to `create_upload_link`: the tool now requires `:submitter` before presigning. This closes the forward-looking gap the 16.1 reviewer flagged: agent-authorized callers can no longer presign upload URLs without an explicit role on the caller.
+  - Extract a shared `ContentForge.ProductAssets.AcceptedContentTypes` module listing the image + video MIME types `ProductAssetController` already enforces (image/jpeg, image/png, image/webp, image/heic, video/mp4, video/quicktime, video/x-m4v). The 13.1b controller and the tool path both import the list; zero divergence. The tool returns `:unsupported_content_type` when the requested content-type is not on the list.
+  - Clamp `expires_in_seconds` to a configurable ceiling sourced from `:content_forge, :open_claw_tools, :max_upload_expires_seconds` (default 3600 = one hour). Values above the ceiling are clamped down silently; values below 1 are replaced with the default. The clamp lives inside the tool; no user-visible error for exceeding the ceiling.
+  - Existing happy-path tests continue to pass. New tests cover: viewer role on ProductPhone = `:forbidden`; submitter role = `:ok`; CLI without OperatorIdentity = `:forbidden`; unsupported content-type = `:unsupported_content_type`; `expires_in_seconds: 99999` is clamped to 3600; `expires_in_seconds: 0` replaced with default. Update the Node plugin's `registerTool` description to reflect the 1-hour default cap so the agent does not ask for longer links.
+
+- **16.3c Light writes on existing schemas: create_asset_bundle + add_tag_to_asset**
+  - Blocks: none. Blocked by: 16.3a. Independent of 16.3d.
+  - Ship `ContentForge.OpenClawTools.CreateAssetBundle`: params are `"name"` (required, 1..120 chars, trimmed), `"context"` (optional text), `"product"` (optional; resolves via `ProductResolver`). Requires `:submitter`. Calls `ProductAssets.create_bundle/1` and returns `%{bundle_id, product_id, product_name, name, status, created_at}`.
+  - Ship `ContentForge.OpenClawTools.AddTagToAsset`: params are `"asset_id"` (required UUID) and `"tag"` (required, 1..40 chars, trimmed, lowercased) plus the usual `"product"` resolver passthrough. Requires `:submitter`. The tool looks up the asset scoped to the resolved product; a cross-product `asset_id` returns `:not_found`. Calls `ProductAssets.add_tag/2` and returns `%{asset_id, tags: [...]}` reflecting the merged set (the existing context helper deduplicates).
+  - Register both tools in `ContentForge.OpenClawTools.@tools` and add `registerTool` blocks in the Node plugin with clear descriptions (when the agent should call each, required params, one-line result formatting).
+  - Tests (one file per tool under `test/content_forge/open_claw_tools/`):
+    - `create_asset_bundle`: happy path (submitter), viewer role = `:forbidden`, invalid name length = validation error surfaced as a classified reason, ambiguous product resolution.
+    - `add_tag_to_asset`: happy path merges tag into existing list, duplicate tag is a no-op returning the unchanged set, unknown asset id = `:not_found`, asset from a different product = `:not_found`, viewer role = `:forbidden`, invalid tag length / empty tag = validation error.
+    - Controller: one end-to-end per tool exercising the full HTTP pipeline to lock the serialization shape (atom-keyed maps and DateTime fields).
+
+- **16.3d New schema: ProductMemory + record_memory tool**
+  - Blocks: none. Blocked by: 16.3a. Independent of 16.3c.
+  - Ship `ContentForge.Products.ProductMemory` schema at `lib/content_forge/products/product_memory.ex`. Fields: `product_id` (binary_id fk, required), `session_id` (string, required), `channel` (string, required), `sender_identity` (string, nullable), `content` (text, required, 1..2000 chars), `tags` (array of strings, default empty), `inserted_at` + `updated_at`. Migration adds an index on `product_id` and a composite on `(product_id, inserted_at desc)` for recent-memory queries. Context functions `create_memory/1` and `list_recent_memories(product_id, limit \\ 10)` live on `ContentForge.Products`.
+  - Ship `ContentForge.OpenClawTools.RecordMemory`: params are `"content"` (required) and optional `"tags"` (list of strings, each 1..40 chars, lowercased) plus the `"product"` resolver passthrough. Requires `:submitter`. Builds the memory row from ctx (session_id, channel, sender_identity) plus the supplied content/tags, inserts, returns `%{memory_id, product_id, session_id, recorded_at}`.
+  - Content validation: refuse empty / whitespace-only content with `:empty_content`; refuse content above 2000 chars with `:content_too_long` so the agent knows to summarize. Refuse tags above 40 chars each.
+  - No PII handling rules in this slice; sensitive-content flagging is called out in the Feature 12 spec but is deferred to a future slice because it requires a classifier.
+  - Register in the Elixir dispatch map and the Node plugin. The plugin description explicitly names use cases (persisting a client preference, a seasonal pattern the user mentioned, a notable past job) so the agent calls it judiciously rather than auto-logging every turn.
+  - Tests (`test/content_forge/products/product_memory_test.exs` for the schema + `test/content_forge/open_claw_tools/record_memory_test.exs` for the tool):
+    - Schema: required fields, content length bounds, tag length bounds, default empty tags, ordering.
+    - Tool: happy path writes a row with the ctx-sourced session/channel/sender, viewer role = `:forbidden`, empty content = `:empty_content`, oversized content = `:content_too_long`, oversized tag = classified validation error, ambiguous product resolution.
+    - Controller: one end-to-end exercise through the full HTTP pipeline.
 
 - **16.4 Heavy-write tools + safety controls**
   - Add tool modules for writes that are expensive or hard to reverse: `generate_drafts_from_bundle` (triggers `AssetBundleDraftGenerator`), `schedule_reminder_change` (modifies `ReminderConfig` cadence), and `approve_draft` (the blog publish-gate endpoint from 12.4 — tool version respects the same gate + override rules).

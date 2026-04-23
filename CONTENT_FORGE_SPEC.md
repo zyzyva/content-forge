@@ -356,6 +356,18 @@ Acceptance criteria:
 - [ ] Tool semantics do not branch on channel. A tool returns the same payload whether called from SMS, CLI, or a future Telegram surface; the channel only changes how the reply is rendered to the user. Tools that need channel-aware authorization delegate to a helper (introduced in 16.3) rather than inlining channel checks.
 - [ ] The tool surface never fabricates data when a downstream dependency is unavailable. Missing credentials on any downstream (Media Forge, LLM, Twilio) surface through the standard `:not_configured` -> `:missing_*_context` pattern rather than silently synthesizing a plausible result.
 
+**Authorization contract (introduced in 16.3):**
+- [ ] Three roles exist in a strict hierarchy: `:owner > :submitter > :viewer`. A caller with a higher role satisfies any tool that requires a lower role. Required role is a property of the tool, not the channel.
+- [ ] Read-only tools (16.2) require no role check; the shared-secret gate plus product resolution is sufficient.
+- [ ] Light-write tools (16.3) require `:submitter` or higher. Heavy-write tools (16.4) require `:owner`.
+- [ ] Role resolution is channel-aware and pluggable per channel, but the lookup contract is uniform: given `(ctx, product)`, return `{:ok, role}` or `{:error, :forbidden}`.
+  - [ ] `"sms"` channel: resolve by looking up the `(sender_identity, product.id)` pair in `ProductPhone`. Active rows return their `role` field. Inactive or missing rows return `:forbidden`.
+  - [ ] `"cli"` and other non-phone channels: resolve by looking up `sender_identity` in a new `OperatorIdentity` schema (`product_id`, `identity`, `role`, `active`, timestamps). Active rows return their `role` field. Inactive, missing, or wrong-product rows return `:forbidden`. There is no implicit allow-list; every CLI caller that should write must have a seed row.
+  - [ ] Unknown channel: `:forbidden`. New channels are onboarded by adding a resolver rather than by tools branching inline.
+- [ ] The shared helper `ContentForge.OpenClawTools.Authorization.require(ctx, required_role)` takes the invocation ctx and the role the calling tool demands. It resolves the caller's role through the channel-specific lookup, compares against the hierarchy, and returns `:ok` on success or `{:error, :forbidden}`. Tools that require authorization call this helper as the first step of `call/2` and short-circuit before touching any data on failure. Pattern: a single helper call up top so the "who can do this" rule is obvious at a glance.
+- [ ] Missing `sender_identity` on a ctx always resolves to `:forbidden`. Missing the resolver's configuration (for example, no `OperatorIdentity` table seeded in dev) also resolves to `:forbidden` rather than granting by default. Fail-closed is the invariant across the whole authorization surface.
+- [ ] Authorization failures never leak role information. The tool-level error is uniformly `:forbidden`; the controller maps it to the standard 422 response. Logs may record the sender identity and attempted tool for audit purposes but never echo the resolved or required role in the reply body.
+
 **Acceptance criteria (phase-level, refined per slice in `BUILDPLAN.md`):**
 - [x] `create_upload_link` ships end-to-end on SMS and CLI (16.1).
 - [ ] `list_recent_assets`, `draft_status`, `upcoming_schedule`, `competitor_intel_summary` ship as read-only tools (16.2) so the agent can answer status and reconnaissance questions.
