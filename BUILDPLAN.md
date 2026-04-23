@@ -401,7 +401,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 12. Twilio + OpenClaw integration.
   - New context module `ContentForge.Sms` at `lib/content_forge/sms.ex` with: `lookup_phone/2` (by phone + product, returns nil if not whitelisted), `list_phones_for_product/2` (with active filter), `create_phone/1`, `update_phone/2`, `deactivate_phone/1`, `record_event/1` (inserts an SmsEvent row), `list_events/2` (with filters on product_id, phone_number, direction, status), `get_or_start_session/2` (idempotent lookup by phone+product; creates if missing; refreshes last_message_at), `set_session_state/2`, `expire_stale_sessions/1` (marks sessions past their inactive window).
   - Tests cover: CRUD on all three schemas; `lookup_phone` returns nil for unknown numbers; `record_event` persists inbound and outbound shapes; `get_or_start_session` creates once, reuses on second call, refreshes timestamps; cascade semantics on product delete.
 
-- **14.1b Twilio inbound webhook receiver**
+- **14.1b Twilio inbound webhook receiver** ✅ Shipped `53602d0`.
   - New controller `ContentForgeWeb.TwilioWebhookController` at `lib/content_forge_web/controllers/twilio_webhook_controller.ex` with action `receive/2` mounted at `POST /webhooks/twilio/sms` outside the `/api/v1` pipeline. No bearer-token auth; instead a dedicated Twilio signature plug.
   - New plug `ContentForgeWeb.Plugs.TwilioSignatureVerifier` at `lib/content_forge_web/plugs/twilio_signature_verifier.ex`. Reads `x-twilio-signature` header, reconstructs the expected signature (HMAC-SHA1 of the full request URL plus sorted POST param concatenation, keyed by Twilio auth token, base64-encoded), compares via `Plug.Crypto.secure_compare/2`. Mismatch returns 403; missing header returns 400. Twilio auth token sourced from `:content_forge, :twilio, :auth_token` with env-var runtime wiring; if unset the plug rejects every request (fail closed).
   - The body-reader plug from the Media Forge webhook (10.5) is reused so raw body capture is available for any future signing variants; for Twilio the signature is over sorted form params, not raw body, so the shared reader does not interfere.
@@ -417,6 +417,24 @@ Per `CONTENT_FORGE_SPEC.md` Feature 12. Twilio + OpenClaw integration.
   - Session schema that holds conversation state across messages.
   - OpenClaw reply generation with session context.
   - Outbound send via Twilio with retry on transient failure.
+  - **Slicing note:** Session schema already shipped under 14.1a. Split remaining work into Twilio outbound client (14.2a) and the auto-reply orchestrator with OpenClaw gating (14.2b). OpenClaw is currently unavailable (see 11.2 caller decision), so 14.2b ships with a graceful-unavailable path so inbound messages get a polite auto-reply today and real replies when OpenClaw comes online.
+
+- **14.2a Twilio outbound client module**
+  - Ship a named client at `ContentForge.Twilio` under `lib/content_forge/twilio.ex` that wraps Twilio's Messages API (`POST /2010-04-01/Accounts/{AccountSid}/Messages.json`). Public function `send_sms(to, body, opts)` returns `{:ok, %{sid, status}}` or a classified error tuple.
+  - Config namespace at `:content_forge, :twilio` with `:account_sid`, `:auth_token`, `:from_number`, `:default_messaging_service_sid` (optional — preferred over `from_number` when set). Runtime wiring sources all four from env vars. Missing any required field returns `{:error, :not_configured}` with zero HTTP.
+  - Auth is HTTP Basic with the account SID as username and the auth token as password. The client attaches this inside its Req pipeline, never at the call site.
+  - Error classification matches the established pattern: 5xx + 429 transient; 4xx permanent; timeout + connection refusal transient-network; 3xx unexpected-status; catch-all pass-through.
+  - Media: `send_sms/3` accepts a `:media_urls` opt; when present, appends `MediaUrl` params so Twilio delivers MMS. The client is the only code that touches Twilio's URL-encoded form body shape.
+  - `Req.Test` stubbed from day one; tests cover happy-path SMS send, happy-path MMS with media_urls, 429 transient, 500 transient, 400 permanent, missing-config no-HTTP downgrade.
+
+- **14.2b Auto-reply orchestrator with OpenClaw gating**
+  - After the inbound webhook records an `SmsEvent` for a whitelisted phone, enqueue `ContentForge.Jobs.SmsReplyDispatcher` (new Oban worker in queue `:default`, max_attempts 3) with the inbound event id.
+  - The worker loads the event, its associated `ConversationSession`, and checks whether OpenClaw is configured via `Application.get_env(:content_forge, :open_claw, :base_url)` (already shipped in 11.2 infra). Two branches:
+    - OpenClaw unavailable: send a fallback reply via `Twilio.send_sms/3` with a fixed message ("Thanks — your assistant is temporarily unavailable. We will get back to you shortly.") The worker records the outbound `SmsEvent` and exits `{:ok, :unavailable_fallback}`. The fallback text is configurable per product under `publishing_targets[\"sms\"][\"unavailable_fallback\"]` with the above as default.
+    - OpenClaw configured: for this slice, still send the unavailable fallback — the real OpenClaw reply-generation call is deferred to 14.2c once OpenClaw's conversational endpoint is confirmed. The branch is wired but shipping fallback text means no synthetic reply enters production regardless of config state.
+  - Session state advances to `"idle"` after each outbound; if the session was already `"waiting_for_upload"` or `"waiting_for_context"`, state stays.
+  - Rate limiting: at most 10 outbound SMS per phone per calendar day. Exceeding the cap records a `rejected_rate_limit` event and does not call Twilio. Cap configurable per product.
+  - Tests: whitelisted inbound triggers a dispatcher job, dispatcher sends the fallback via a stubbed Twilio client, outbound event is recorded, session state updates, rate-limit cap short-circuits at the 11th send in a day, missing-config Twilio (`:not_configured` from the client) records the outbound event with status `"failed"` and a reason note, does not crash the worker.
 
 - **14.3 Upload flow via SMS**
   - Contact can MMS a photo; Content Forge routes the media through Media Forge (EXIF, rendition) and attaches the asset to the related product or draft.

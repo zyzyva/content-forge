@@ -84,8 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 14.1b: Twilio inbound webhook receiver
 
-Status: READY FOR REVIEW
-Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates; one formatter re-pass on `config/runtime.exs` because the new single-key `:twilio` config fit on one line), mix test 459/0 (451 prior + 8 new). Credo by content unchanged vs post-14.1a: zero new findings; same nine baseline findings net-removed.
+Status: DONE
+Merged: master @ `53602d0` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 459-0; credo unchanged. HMAC-SHA1 matches Twilio spec + `secure_compare`. Fail-closed on unset auth token. `port_suffix/2` strips default ports. Controller returns same `rejected_unknown_number` status for inactive AND unknown (no existence leak). 8 tests cover active + inactive + unknown + bad-sig + missing-sig + unset-token + missing-From + media capture.
 Note: `POST /webhooks/twilio/sms` outside `/api/v1` per BUILDPLAN 14.1b. New plug `ContentForgeWeb.Plugs.TwilioSignatureVerifier` at `lib/content_forge_web/plugs/twilio_signature_verifier.ex`:
 
 - Reads `x-twilio-signature` header (400 if missing).
