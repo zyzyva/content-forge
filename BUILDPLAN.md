@@ -335,7 +335,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 11. Leans heavily on Phase 10 Media Forge pl
   - Model prompt includes asset captions / tags so copy and imagery align.
   - **Slicing note:** Three sub-slices — schema extension for draft↔asset many-to-many (13.4a), the generation worker (13.4b), and the LiveView trigger from the bundle drawer (13.4c).
 
-- **13.4a Draft ↔ ProductAsset many-to-many association**
+- **13.4a Draft ↔ ProductAsset many-to-many association** ✅ Shipped `fe68e78`.
   - New join schema `ContentForge.ContentGeneration.DraftAsset` linking `drafts` to `product_assets` so a draft can reference one or more assets as its featured media and an asset can appear in multiple drafts. Join carries a `role` field (enum `"featured" | "gallery"`, default `"featured"`) so the publisher can pick the right one when only a single platform slot is available.
   - Migration creates the join table with binary_id PK, both fks `on_delete: :delete_all`, composite unique on `(draft_id, asset_id)`, plain indexes on each side for reverse lookups.
   - Extend `ContentForge.ContentGeneration.Draft` with `has_many :draft_assets` and `has_many :assets, through: :draft_assets` so existing preload sites work unchanged.
