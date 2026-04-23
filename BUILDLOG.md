@@ -82,6 +82,46 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 15.1a: Provider status panel
+
+Status: READY FOR REVIEW
+Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates; one formatter re-pass on long `llm_row` + `open_claw_status` formatting), mix test 585/0 (563 prior + 22 new: 14 context + 8 LiveView). Credo by content unchanged vs post-14.5: zero new findings.
+Note: `/dashboard/providers` + hub card per BUILDPLAN 15.1a.
+
+**Context `ContentForge.Providers`** at `lib/content_forge/providers.ex` with two public fns:
+
+- `list_provider_statuses/0` returns `[%{id, name, status, last_success_at, last_error_at, note}]` in a stable display order across six integrations: Media Forge, Anthropic, Gemini, OpenClaw, Apify, Twilio.
+- `summary/0` rolls the list up into `%{available: N, configured: N, unavailable: N, degraded: N}` for the hub card.
+
+Status derivation per provider with `classify/3` (three-head on error-count threshold vs last-success-at):
+
+- `:unavailable` - credentials missing. Note carries the env var name to set.
+- `:degraded` - credentials present AND more than 3 transient errors in the last 15 minutes. Note says "N errors in the last 15 min".
+- `:available` - credentials present AND a successful use within the 1h success window.
+- `:configured` - credentials present but no recent traffic.
+
+Per-integration activity signals:
+
+- **Media Forge**: `ProductAsset.status="processed"` (success) / `status="failed"` (error) with `updated_at` timestamps via `most_recent_asset_at/2` + `count_assets_within/2`.
+- **Anthropic / Gemini**: `Draft.generating_model LIKE "anthropic:%"` / `"gemini:%"` via `most_recent_draft_at/1`. LLM call errors aren't persisted in a structured way, so degraded does not fire here this slice — future slice can wire LLM error logging.
+- **OpenClaw / Apify**: credentials check only. No audit trail yet so the roll-up stops at `:configured` / `:unavailable`.
+- **Twilio**: `SmsEvent.direction="outbound"` with `status in ["sent", "delivered"]` (success) or `status="failed"` (error), using `most_recent_outbound_at/2` + `count_outbound_within/2`.
+
+All queries read audit tables directly - the page never issues a synthetic call to the upstream. Loading `/dashboard/providers` cannot itself cause a Twilio or Anthropic roundtrip.
+
+**LiveView** `ContentForgeWeb.Live.Dashboard.Providers.StatusLive` at `lib/content_forge_web/live/dashboard/providers/status_live.ex`. Mount calls `Providers.list_provider_statuses/0` once and computes the summary inline. Template renders:
+
+- Four summary tiles (Available / Configured / Unavailable / Degraded) each with a `data-summary-*` attribute for stable test assertions.
+- A table row per provider marked `data-provider-id={id} data-provider-status={status}` with columns Provider / Status (colored badge via `badge_classes/1` four-head) / Last success / Last error / Note.
+
+**Dashboard hub** gets a "Providers" card that loads `Providers.summary/0` at mount and shows either "All integrations healthy" (when both `unavailable` and `degraded` are zero) or "N integration(s) need attention". Icon + background swap between success-green and warning-amber based on the same two counters via `provider_hub_icon_bg/1` and `provider_hub_icon_color/1` two-head helpers.
+
+22 new tests:
+- `test/content_forge/providers_test.exs` (14 tests): every provider starts `:unavailable`; each of the six flips to `:configured` when its credentials are set but no activity exists; Twilio flips to `:available` with a single recent `"sent"` outbound; Anthropic with a recent `anthropic:...` draft; Media Forge with a processed `ProductAsset`; Twilio with 4+ failed outbound events in the last 15 min flips to `:degraded` with `note =~ "4 errors"`; Twilio with exactly 3 failures stays sub-degrade (threshold is strictly >3); `summary/0` counts correctly when a mix of states is present.
+- `test/content_forge_web/live/dashboard/providers/status_live_test.exs` (8 tests): all 6 provider rows render with stable data attributes; default state renders all as `Unavailable` with env-var notes; Twilio available/configured/degraded each render with the matching `data-provider-status` attribute; summary tiles count accurately; hub card renders with the "need attention" copy when providers are missing and flips to "All integrations healthy" when every provider is available-or-configured.
+
+Touched files: `lib/content_forge/providers.ex` (new), `lib/content_forge_web/live/dashboard/providers/status_live.ex` (new), `lib/content_forge_web/router.ex` (new route), `lib/content_forge_web/live/dashboard/dashboard_live.ex` (Providers card + summary load + three small helpers), `test/content_forge/providers_test.exs` (new), `test/content_forge_web/live/dashboard/providers/status_live_test.exs` (new), `BUILDLOG.md`.
+
 ### Phase 14.5: Escalation + needs-reply dashboard
 
 Status: DONE

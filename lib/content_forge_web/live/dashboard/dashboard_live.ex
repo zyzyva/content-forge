@@ -4,10 +4,26 @@ defmodule ContentForgeWeb.Live.Dashboard.DashboardLive do
   """
   use ContentForgeWeb, :live_view
 
+  alias ContentForge.Providers
+
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, socket}
+    {:ok, assign(socket, provider_summary: Providers.summary())}
   end
+
+  defp provider_hub_summary(%{unavailable: 0, degraded: 0}), do: "All integrations healthy"
+
+  defp provider_hub_summary(%{unavailable: u, degraded: d}) do
+    "#{u + d} integration(s) need attention"
+  end
+
+  defp provider_hub_icon_bg(%{unavailable: 0, degraded: 0}), do: "p-2 bg-success/20 rounded-lg"
+
+  defp provider_hub_icon_bg(_), do: "p-2 bg-warning/20 rounded-lg"
+
+  defp provider_hub_icon_color(%{unavailable: 0, degraded: 0}), do: "size-6 text-success"
+
+  defp provider_hub_icon_color(_), do: "size-6 text-warning"
 
   @impl true
   def render(assigns) do
@@ -116,6 +132,25 @@ defmodule ContentForgeWeb.Live.Dashboard.DashboardLive do
               <div>
                 <h3 class="font-semibold">SMS</h3>
                 <p class="text-xs text-base-content/70">Needs-reply queue + escalations</p>
+              </div>
+            </div>
+          </div>
+        </a>
+
+        <a
+          href={~p"/dashboard/providers"}
+          class="card bg-base-200 hover:bg-base-300 transition-colors"
+        >
+          <div class="card-body">
+            <div class="flex items-center gap-3">
+              <div class={provider_hub_icon_bg(@provider_summary)}>
+                <.icon name="hero-signal" class={provider_hub_icon_color(@provider_summary)} />
+              </div>
+              <div>
+                <h3 class="font-semibold">Providers</h3>
+                <p class="text-xs text-base-content/70" data-provider-hub-summary>
+                  {provider_hub_summary(@provider_summary)}
+                </p>
               </div>
             </div>
           </div>
