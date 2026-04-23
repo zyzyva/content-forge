@@ -26,11 +26,14 @@ defmodule ContentForge.OpenClawTools do
   `draft_status`, `upcoming_schedule`,
   `competitor_intel_summary`). Phase 16.3c adds two light-write
   tools (`create_asset_bundle`, `add_tag_to_asset`). Phase 16.3d
-  adds `record_memory`. The 16.4+ slices add heavy writes with
-  confirmation, escalation, and full audit surfacing.
+  adds `record_memory`. Phase 16.4b adds the first heavy-write
+  tool behind the 16.4a confirmation envelope: `approve_draft`.
+  The remaining 16.4+ slices add `schedule_reminder_change`,
+  `generate_drafts_from_bundle`, escalation, and audit surfacing.
   """
 
   alias ContentForge.OpenClawTools.AddTagToAsset
+  alias ContentForge.OpenClawTools.ApproveDraft
   alias ContentForge.OpenClawTools.CompetitorIntelSummary
   alias ContentForge.OpenClawTools.CreateAssetBundle
   alias ContentForge.OpenClawTools.CreateUploadLink
@@ -58,7 +61,8 @@ defmodule ContentForge.OpenClawTools do
     "competitor_intel_summary" => CompetitorIntelSummary,
     "create_asset_bundle" => CreateAssetBundle,
     "add_tag_to_asset" => AddTagToAsset,
-    "record_memory" => RecordMemory
+    "record_memory" => RecordMemory,
+    "approve_draft" => ApproveDraft
   }
 
   @doc """

@@ -178,6 +178,13 @@ The plugin ships these tools. Each corresponds to a module under
   higher. `session_id` / `channel` / `sender_identity` come
   from the invocation ctx, not params, so the agent cannot
   spoof them.
+- **`approve_draft`** - approve a draft for publication, with
+  the 12.4 publish gate (Phase 16.4b). Requires `:owner`. Runs
+  a two-turn confirmation: first call returns a preview + echo
+  phrase; second call with `confirm` set to the phrase executes
+  the approval. Blog drafts that fail the gate need an
+  `override_reason` (20+ chars) on both turns; otherwise the
+  second turn returns `publish_gate_blocks`.
 
 ## Future tools (ship pattern)
 
