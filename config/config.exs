@@ -11,6 +11,12 @@ config :content_forge,
   ecto_repos: [ContentForge.Repo],
   generators: [timestamp_type: :utc_datetime]
 
+# Phase 12.4 publish gate: blog drafts with seo_score below this
+# threshold (or with research_status=lost_data_point) cannot be
+# moved to "approved" via the normal approve action; the override
+# path records the reason + state snapshot at approval.
+config :content_forge, :seo, publish_threshold: 18
+
 # Configure the endpoint
 config :content_forge, ContentForgeWeb.Endpoint,
   url: [host: "localhost"],

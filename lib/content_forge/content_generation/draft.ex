@@ -19,6 +19,10 @@ defmodule ContentForge.ContentGeneration.Draft do
     field :seo_score, :integer
     field :research_status, :string, default: "none"
     field :research_source, :string
+    field :approved_via_override, :boolean, default: false
+    field :override_reason, :string
+    field :override_score_at_approval, :integer
+    field :override_research_status_at_approval, :string
 
     belongs_to :product, ContentForge.Products.Product
     belongs_to :content_brief, ContentForge.Products.ContentBrief
@@ -58,7 +62,11 @@ defmodule ContentForge.ContentGeneration.Draft do
       :ai_summary_nugget,
       :seo_score,
       :research_status,
-      :research_source
+      :research_source,
+      :approved_via_override,
+      :override_reason,
+      :override_score_at_approval,
+      :override_research_status_at_approval
     ])
     |> validate_required([:product_id, :content, :platform, :content_type, :generating_model])
     |> validate_inclusion(:platform, ~w(twitter linkedin reddit facebook instagram blog youtube))

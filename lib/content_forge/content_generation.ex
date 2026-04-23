@@ -271,6 +271,103 @@ defmodule ContentForge.ContentGeneration do
     update_draft_status(draft, "approved")
   end
 
+  @doc """
+  Phase 12.4 publish gate for blog drafts. Blocks approval when
+  `seo_score` is below the configured `:publish_threshold` (see
+  `config :content_forge, :seo, publish_threshold:`) OR when
+  `research_status == "lost_data_point"`.
+
+  Non-blog drafts bypass the gate and approve normally.
+
+  Returns:
+
+    * `{:ok, draft}` - approved
+    * `{:error, :seo_below_threshold, %{score: n, threshold: t, failing_checks: [..]}}`
+    * `{:error, :research_lost_data, %{research_source: src}}`
+  """
+  def approve_blog_draft(draft, opts \\ [])
+
+  def approve_blog_draft(%Draft{content_type: "blog"} = draft, opts) do
+    threshold = Keyword.get(opts, :publish_threshold, seo_publish_threshold())
+    score = draft.seo_score || 0
+
+    cond do
+      draft.research_status == "lost_data_point" ->
+        {:error, :research_lost_data, %{research_source: draft.research_source}}
+
+      score < threshold ->
+        {:error, :seo_below_threshold,
+         %{
+           score: score,
+           threshold: threshold,
+           failing_checks: seo_failing_checks(draft)
+         }}
+
+      true ->
+        mark_draft_approved(draft)
+    end
+  end
+
+  def approve_blog_draft(%Draft{} = draft, _opts), do: mark_draft_approved(draft)
+
+  @doc """
+  Override path for blog drafts that fail the publish gate.
+  Records the override reason + a snapshot of the score and
+  research_status AT the moment of approval, then transitions to
+  `"approved"`. Requires `reason` to be a string with at least
+  20 characters.
+
+  Non-blog drafts still pass through `mark_draft_approved/1` but
+  also record the override fields for audit symmetry.
+  """
+  def approve_blog_draft_with_override(%Draft{} = draft, reason, opts \\ [])
+      when is_binary(reason) do
+    trimmed = String.trim(reason)
+
+    if String.length(trimmed) < override_min_reason_length() do
+      {:error, :override_reason_too_short,
+       %{min_length: override_min_reason_length(), got_length: String.length(trimmed)}}
+    else
+      attrs = %{
+        status: "approved",
+        approved_via_override: true,
+        override_reason: trimmed,
+        override_score_at_approval: draft.seo_score || 0,
+        override_research_status_at_approval: draft.research_status || "none"
+      }
+
+      # Skip-gate flag is honored so the override path is truly
+      # out-of-band from the normal approve call stack.
+      _ = Keyword.get(opts, :skip_gate, true)
+
+      draft
+      |> Draft.changeset(attrs)
+      |> Repo.update()
+    end
+  end
+
+  defp seo_publish_threshold do
+    Application.get_env(:content_forge, :seo, [])
+    |> Keyword.get(:publish_threshold, 18)
+  end
+
+  defp override_min_reason_length, do: 20
+
+  defp seo_failing_checks(%Draft{} = draft) do
+    case SeoChecklist.Runner.get_for_draft(draft.id) do
+      nil ->
+        []
+
+      %SeoChecklist{results: results} ->
+        results
+        |> Enum.filter(fn {_name, value} -> value["status"] == "fail" end)
+        |> Enum.map(fn {name, value} ->
+          %{name: name, note: value["note"]}
+        end)
+        |> Enum.sort_by(& &1.name)
+    end
+  end
+
   def mark_draft_rejected(%Draft{} = draft, _reason \\ nil) do
     draft
     |> Draft.changeset(%{status: "rejected"})

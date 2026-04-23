@@ -4,8 +4,10 @@ defmodule ContentForgeWeb.DashboardLiveTest do
   import Phoenix.LiveViewTest
   import ExUnit.CaptureLog
 
-  alias ContentForge.Products
   alias ContentForge.ContentGeneration
+  alias ContentForge.ContentGeneration.Draft
+  alias ContentForge.Products
+  alias ContentForge.Repo
 
   defp create_product(attrs \\ %{}) do
     defaults = %{name: "Test Product", voice_profile: "professional"}
@@ -776,6 +778,93 @@ defmodule ContentForgeWeb.DashboardLiveTest do
       html = render(view)
       assert html =~ "NEEDS_REVIEW"
       assert html =~ "badge-warning"
+    end
+
+    test "SEO badge colors by score band", %{conn: conn} do
+      product = create_product()
+      draft = create_draft(product, %{platform: "blog", content_type: "blog"})
+
+      # Write the score post-creation because the nugget hook /
+      # SEO runner compute a score for the default content.
+      draft
+      |> Draft.changeset(%{seo_score: 25})
+      |> Repo.update!()
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/drafts")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      html = render(view)
+      assert html =~ ~s|data-seo-score="25"|
+      assert html =~ "badge-success"
+    end
+
+    test "research badge label + color maps per status", %{conn: conn} do
+      product = create_product()
+      draft = create_draft(product, %{platform: "blog", content_type: "blog"})
+
+      draft
+      |> Draft.changeset(%{research_status: "lost_data_point"})
+      |> Repo.update!()
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/drafts")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      html = render(view)
+      assert html =~ ~s|data-research-status="lost_data_point"|
+      assert html =~ "Missing citation"
+    end
+
+    test "approve button on a below-threshold draft opens the override modal",
+         %{conn: conn} do
+      product = create_product()
+      draft = create_draft(product, %{platform: "blog", content_type: "blog"})
+
+      draft
+      |> Draft.changeset(%{seo_score: 10})
+      |> Repo.update!()
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/drafts")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      html = render_click(view, "approve_draft", %{"id" => draft.id})
+
+      assert html =~ "data-override-modal"
+      assert html =~ "Approve via override"
+    end
+
+    test "submitting the override modal with a >= 20 char reason approves the draft",
+         %{conn: conn} do
+      product = create_product()
+      draft = create_draft(product, %{platform: "blog", content_type: "blog"})
+
+      draft
+      |> Draft.changeset(%{seo_score: 10})
+      |> Repo.update!()
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/drafts")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      render_click(view, "approve_draft", %{"id" => draft.id})
+
+      reason = "human editor signed off after review"
+      render_submit(view, "submit_override", %{"reason" => reason})
+
+      approved = ContentGeneration.get_draft!(draft.id)
+      assert approved.status == "approved"
+      assert approved.approved_via_override == true
+      assert approved.override_reason == reason
     end
 
     test "shows SEO score column on blog drafts and opens the drawer on select",

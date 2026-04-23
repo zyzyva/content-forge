@@ -20,6 +20,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Drafts.ReviewLive do
        drafts: drafts,
        products: products,
        selected_draft: nil,
+       override_prompt: nil,
        filter: Map.get(params, "filter", "all"),
        product_filter: Map.get(params, "product", "")
      )}
@@ -59,7 +60,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Drafts.ReviewLive do
   def handle_event("approve_draft", %{"id" => id}, socket) do
     draft = ContentGeneration.get_draft!(id)
 
-    case ContentGeneration.mark_draft_approved(draft) do
+    case ContentGeneration.approve_blog_draft(draft) do
       {:ok, _} ->
         Logger.info("Approved draft: #{id}")
 
@@ -69,11 +70,77 @@ defmodule ContentForgeWeb.Live.Dashboard.Drafts.ReviewLive do
             "product" => socket.assigns.product_filter
           })
 
-        {:noreply, assign(socket, drafts: drafts, selected_draft: nil)}
+        {:noreply, assign(socket, drafts: drafts, selected_draft: nil, override_prompt: nil)}
+
+      {:error, :seo_below_threshold, details} ->
+        Logger.info("Approve blocked by SEO gate: #{id} (#{details.score}/#{details.threshold})")
+
+        {:noreply,
+         assign(socket,
+           override_prompt: %{
+             draft_id: id,
+             reason: "",
+             error: nil,
+             blocker: :seo_below_threshold,
+             details: details
+           }
+         )}
+
+      {:error, :research_lost_data, details} ->
+        Logger.info("Approve blocked by research gate: #{id}")
+
+        {:noreply,
+         assign(socket,
+           override_prompt: %{
+             draft_id: id,
+             reason: "",
+             error: nil,
+             blocker: :research_lost_data,
+             details: details
+           }
+         )}
 
       {:error, changeset} ->
         Logger.error("Failed to approve draft: #{inspect(changeset.errors)}")
         {:noreply, put_flash(socket, :error, "Failed to approve draft")}
+    end
+  end
+
+  @impl true
+  def handle_event("cancel_override", _params, socket) do
+    {:noreply, assign(socket, override_prompt: nil)}
+  end
+
+  @impl true
+  def handle_event("submit_override", %{"reason" => reason}, socket) do
+    case socket.assigns[:override_prompt] do
+      %{draft_id: id} ->
+        draft = ContentGeneration.get_draft!(id)
+
+        case ContentGeneration.approve_blog_draft_with_override(draft, reason) do
+          {:ok, _} ->
+            Logger.info("Approved via override: #{id}")
+
+            drafts =
+              fetch_drafts(%{
+                "filter" => socket.assigns.filter,
+                "product" => socket.assigns.product_filter
+              })
+
+            {:noreply, assign(socket, drafts: drafts, selected_draft: nil, override_prompt: nil)}
+
+          {:error, :override_reason_too_short, %{min_length: min}} ->
+            prompt =
+              Map.merge(socket.assigns.override_prompt, %{
+                reason: reason,
+                error: "Reason must be at least #{min} characters."
+              })
+
+            {:noreply, assign(socket, override_prompt: prompt)}
+        end
+
+      _ ->
+        {:noreply, socket}
     end
   end
 
@@ -261,8 +328,32 @@ defmodule ContentForgeWeb.Live.Dashboard.Drafts.ReviewLive do
                         class="mt-2 text-xs"
                         data-seo-score={item.draft.seo_score}
                       >
-                        <span class="badge badge-sm badge-outline">
+                        <span class={["badge badge-sm", seo_badge_color(item.draft.seo_score)]}>
                           SEO {item.draft.seo_score}/28
+                        </span>
+                      </div>
+                      <div
+                        :if={item.draft.content_type == "blog"}
+                        class="mt-1 text-xs"
+                        data-research-status={item.draft.research_status}
+                      >
+                        <span class={[
+                          "badge badge-sm",
+                          research_badge_color(item.draft.research_status)
+                        ]}>
+                          {research_badge_label(item.draft.research_status)}
+                        </span>
+                      </div>
+                      <div
+                        :if={item.draft.approved_via_override}
+                        class="mt-1 text-xs"
+                        data-override="true"
+                      >
+                        <span
+                          class="badge badge-sm badge-warning"
+                          title={item.draft.override_reason}
+                        >
+                          Approved via override
                         </span>
                       </div>
                     </div>
@@ -400,9 +491,66 @@ defmodule ContentForgeWeb.Live.Dashboard.Drafts.ReviewLive do
           </div>
         </aside>
       </div>
+      
+    <!-- Override confirmation modal -->
+      <div
+        :if={@override_prompt}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="override-modal-title"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+        data-override-modal
+      >
+        <div class="card bg-base-100 w-full max-w-md mx-4">
+          <div class="card-body">
+            <h2 id="override-modal-title" class="card-title">Approve via override</h2>
+            <p class="text-sm text-base-content/70">
+              This blog draft failed the publish gate. {override_blocker_summary(@override_prompt)} Provide a written reason (≥ 20 chars) to approve anyway.
+            </p>
+
+            <form phx-submit="submit_override" class="mt-4 space-y-3">
+              <label class="form-control">
+                <span class="label-text sr-only">Override reason</span>
+                <textarea
+                  name="reason"
+                  class="textarea textarea-bordered"
+                  rows="4"
+                  minlength="20"
+                  required
+                  aria-label="Override reason"
+                  data-override-reason
+                >{@override_prompt.reason}</textarea>
+              </label>
+
+              <p :if={@override_prompt.error} class="text-error text-sm" role="alert">
+                {@override_prompt.error}
+              </p>
+
+              <div class="flex gap-2 justify-end">
+                <button type="button" class="btn btn-ghost" phx-click="cancel_override">
+                  Cancel
+                </button>
+                <button type="submit" class="btn btn-warning" data-override-submit>
+                  Approve via override
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
     </main>
     """
   end
+
+  defp override_blocker_summary(%{blocker: :seo_below_threshold, details: d}) do
+    "SEO score #{d.score} is below the #{d.threshold} publish threshold."
+  end
+
+  defp override_blocker_summary(%{blocker: :research_lost_data}) do
+    "Research block is missing its cited data point."
+  end
+
+  defp override_blocker_summary(_), do: ""
 
   defp status_tabs do
     [
@@ -416,6 +564,20 @@ defmodule ContentForgeWeb.Live.Dashboard.Drafts.ReviewLive do
       {"needs_review", "Needs Review"}
     ]
   end
+
+  defp seo_badge_color(score) when is_integer(score) and score >= 24, do: "badge-success"
+  defp seo_badge_color(score) when is_integer(score) and score >= 18, do: "badge-warning"
+  defp seo_badge_color(_), do: "badge-error"
+
+  defp research_badge_color("enriched"), do: "badge-success"
+  defp research_badge_color("no_data"), do: "badge-ghost"
+  defp research_badge_color("lost_data_point"), do: "badge-error"
+  defp research_badge_color(_), do: "badge-ghost"
+
+  defp research_badge_label("enriched"), do: "Enriched"
+  defp research_badge_label("no_data"), do: "No data"
+  defp research_badge_label("lost_data_point"), do: "Missing citation"
+  defp research_badge_label(_), do: "—"
 
   defp sorted_checklist_rows(%{results: results}) do
     # Surface failures first so a reviewer sees what is wrong

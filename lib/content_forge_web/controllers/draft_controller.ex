@@ -73,14 +73,69 @@ defmodule ContentForgeWeb.DraftController do
   end
 
   # POST /api/v1/drafts/:id/approve
+  #
+  # Routes through the Phase 12.4 publish gate for blog drafts:
+  # below-threshold SEO or research_status=lost_data_point
+  # returns a 422 with the failing checks. Non-blog drafts fall
+  # through to `mark_draft_approved/1` without gate checks.
   def approve(conn, %{"id" => id}) do
     case ContentGeneration.get_draft(id) do
       nil ->
         {:error, :not_found}
 
       draft ->
-        with {:ok, draft} <- ContentGeneration.mark_draft_approved(draft) do
-          render(conn, :approved, draft: draft)
+        case ContentGeneration.approve_blog_draft(draft) do
+          {:ok, approved} ->
+            render(conn, :approved, draft: approved)
+
+          {:error, :seo_below_threshold, details} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{
+              error: "seo_below_threshold",
+              score: details.score,
+              threshold: details.threshold,
+              failing_checks: details.failing_checks
+            })
+
+          {:error, :research_lost_data, details} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{
+              error: "research_lost_data",
+              research_source: details.research_source
+            })
+        end
+    end
+  end
+
+  # POST /api/v1/drafts/:id/approve_override
+  #
+  # Applies the Phase 12.4 override path. Requires a `reason`
+  # field (>= 20 chars). Records approved_via_override +
+  # override_reason + override_score_at_approval +
+  # override_research_status_at_approval, then transitions to
+  # "approved".
+  def approve_override(conn, %{"id" => id} = params) do
+    reason = Map.get(params, "reason", "")
+
+    case ContentGeneration.get_draft(id) do
+      nil ->
+        {:error, :not_found}
+
+      draft ->
+        case ContentGeneration.approve_blog_draft_with_override(draft, reason) do
+          {:ok, approved} ->
+            render(conn, :approved, draft: approved)
+
+          {:error, :override_reason_too_short, details} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{
+              error: "override_reason_too_short",
+              min_length: details.min_length,
+              got_length: details.got_length
+            })
         end
     end
   end

@@ -108,6 +108,7 @@ defmodule ContentForgeWeb.Router do
 
     # Draft actions
     post "/drafts/:id/approve", DraftController, :approve
+    post "/drafts/:id/approve_override", DraftController, :approve_override
     post "/drafts/:id/reject", DraftController, :reject
     post "/drafts/:id/score", DraftController, :score
   end

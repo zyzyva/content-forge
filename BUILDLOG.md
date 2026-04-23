@@ -82,6 +82,48 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 12.4: publish gate + override path
+
+Status: DONE
+Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `5ad3d4f`. Gate: compile --warnings-as-errors clean, format clean (ran LAST), full test 769/0, credo baseline-diff empty, coverage 59.82% (up from 59.47%). Phase 12 (SEO Quality Pipeline) exit criteria now all met: every blog draft passes the nugget check + 28-point checklist + publish gate before approval; research block visible; integration tests cover missing-nugget + red-check paths.
+
+**Schema + migration**:
+- `priv/repo/migrations/20260506120000_add_override_fields_to_drafts.exs` adds four columns to `drafts`: `approved_via_override :boolean NOT NULL DEFAULT false`, `override_reason :text`, `override_score_at_approval :integer`, `override_research_status_at_approval :string`.
+- `Draft` schema + changeset updated to cast all four.
+
+**Config**: `config :content_forge, :seo, publish_threshold: 18` in `config/config.exs`. Fallback default also baked into the context function so tests can flip the threshold via `opts`.
+
+**Context functions** (`lib/content_forge/content_generation.ex`):
+- `approve_blog_draft/2` - publish gate. Pattern-matches on `content_type: "blog"`; non-blog drafts fall through to `mark_draft_approved/1`. Checks `research_status == "lost_data_point"` FIRST (higher-severity failure, blocks regardless of SEO score), then `seo_score < threshold`. Returns `{:error, :research_lost_data, %{research_source:}}` or `{:error, :seo_below_threshold, %{score:, threshold:, failing_checks:}}`. Failing-checks payload is derived from the stored `SeoChecklist.results` - each entry is `%{name:, note:}` sorted by name for deterministic rendering.
+- `approve_blog_draft_with_override/3` - override path. Requires `reason` string with >= 20 chars after trim. Records all four override fields plus the score and research_status AT the moment of approval (a snapshot, not the current live value, so audit trail survives later SEO re-runs). Transitions to `"approved"` unconditionally.
+- Function-head default arg pattern (`def approve_blog_draft(draft, opts \\ [])`) used to avoid the multi-clause + default-arg compile warning.
+
+**API** (`lib/content_forge_web/controllers/draft_controller.ex`):
+- `POST /api/v1/drafts/:id/approve` now routes through `approve_blog_draft/1`. On gate block, returns 422 with a structured body matching the context error shape: `{"error": "seo_below_threshold", "score":, "threshold":, "failing_checks": [...]}` or `{"error": "research_lost_data", "research_source":}`. Happy path unchanged (renders via DraftJSON.approved).
+- `POST /api/v1/drafts/:id/approve_override` - new endpoint. Takes `reason` in body, dispatches to `approve_blog_draft_with_override/3`. 422 with `{"error": "override_reason_too_short", "min_length": 20, "got_length":}` on short reason. Wired under the same `:api_auth` pipeline as the existing approve endpoint - single-tenant operator model today; a future slice can layer on role checks.
+
+**Dashboard** (`lib/content_forge_web/live/dashboard/drafts/review_live.ex`):
+- Draft card now renders three color-coded badges stacked: SEO badge (`badge-success` >= 24, `badge-warning` 18-23, `badge-error` < 18), Research badge (`badge-success` enriched / `badge-ghost` no_data / `badge-error` lost_data_point / `—` otherwise) with labels `Enriched` / `No data` / `Missing citation` / `—`, and an `Approved via override` badge (only when true) with the reason in a `title` tooltip.
+- Helper functions `seo_badge_color/1`, `research_badge_color/1`, `research_badge_label/1` at the module bottom use pattern-match function heads.
+- `approve_draft` handler dispatches through `approve_blog_draft/1`. On gate block, assigns an `override_prompt` map to the socket containing the blocker reason + details; the modal renders conditionally on that assign.
+- Override modal: dialog-role confirmation with a textarea (minlength=20) + Cancel/Submit buttons. `submit_override` event dispatches to `approve_blog_draft_with_override/3`; a too-short reason re-displays the modal with an inline error (under alert role) and preserves the typed reason so operators don't retype from scratch.
+- Override blocker summary helper renders per-blocker context in the modal body: "SEO score N is below the X publish threshold" or "Research block is missing its cited data point".
+
+**Tests** (three new files, 18 new tests):
+- `test/content_forge/content_generation/approve_blog_draft_test.exs` (8 tests) - gate pass at + above threshold, :publish_threshold override opt, below-threshold fail with failing_checks in payload, research_lost_data fail, non-blog bypass, override records all 4 fields, override rejects < 20 char reason, override trims whitespace before length check.
+- `test/content_forge_web/controllers/draft_controller_approve_gate_test.exs` (6 tests) - happy-path approve, 422 seo_below_threshold body shape, 422 research_lost_data body shape, non-blog bypass, override endpoint records fields + 200, override 422 on short reason.
+- `test/content_forge_web/live/dashboard_live_test.exs` (4 new tests) - SEO badge color bands (`badge-success` at 25 with `data-seo-score="25"`), research badge label + color (`"Missing citation"` + `data-research-status="lost_data_point"`), approve on below-threshold draft opens modal (`data-override-modal`), submit with >= 20 char reason approves + sets all override fields.
+
+**Scoreboard fixture gotcha already flagged in 12.3 BUILDLOG** - the approve-gate tests sidestep the changeset's `calculate_delta` / `determine_outcome` override by directly updating `seo_score` + `research_status` on the draft after `create_draft/1` returns, rather than trying to work through the hook chain. Cleaner and more focused; a future slice that wires up the full pipeline as an E2E can use actual scoreboard entries.
+
+**What was explicitly NOT changed** (kept out of scope):
+- No role-based auth on the override endpoint. Single-tenant operator model today; a future slice can layer this in.
+- No override audit log separate from `override_reason`. The snapshot captures score + research_status at approval; if we want a full revision log of overrides (multiple overrides over time), that's a new table.
+- No publish-trigger cascade on override. Approval transitions to `"approved"` but doesn't enqueue Publisher - that's handled by the existing schedule/publisher flow when `status == "approved"`.
+- No tests for the modal's cancel path or for re-opening the modal after error. Tight loop is covered by the submit + submit-short-reason paths; UI minutiae stay untested.
+
+**Gate**: compile --warnings-as-errors clean, format clean (ran LAST per the 12.2c reject discipline), full test 769/0 (18 new across 3 files), credo --strict baseline-diff empty, `mix test --cover` overall 59.82% above threshold 10. Rebased cleanly on master @ `5ad3d4f`.
+
 ### Phase 12.3: ResearchEnricher (Original Research block)
 
 Status: DONE
