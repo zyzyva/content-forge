@@ -128,10 +128,9 @@ defmodule ContentForgeWeb.ScheduleController do
         {:error, :not_found}
 
       %{status: "approved"} ->
-        # Schedule immediate publishing
-        Oban.insert(%{
-          "draft_id" => draft_id
-        })
+        %{"draft_id" => draft_id}
+        |> Publisher.new()
+        |> Oban.insert()
 
         json(conn, %{
           status: "scheduled",
@@ -152,10 +151,9 @@ defmodule ContentForgeWeb.ScheduleController do
         {:error, :not_found}
 
       _ ->
-        # Schedule immediate publishing (runs as soon as possible)
-        Oban.insert(%{
-          "draft_id" => draft_id
-        })
+        %{"draft_id" => draft_id}
+        |> Publisher.new()
+        |> Oban.insert()
 
         json(conn, %{status: "scheduled", draft_id: draft_id})
     end

@@ -4,6 +4,7 @@ defmodule ContentForge.Jobs.ScriptGate do
 
   alias ContentForge.ContentGeneration
   alias ContentForge.ContentGeneration.Draft
+  alias ContentForge.Publishing
 
   @default_threshold 6.0
 
@@ -32,9 +33,7 @@ defmodule ContentForge.Jobs.ScriptGate do
         composite = ContentGeneration.compute_composite_score(script.id) || 0
 
         if composite >= threshold do
-          # Approve script and enqueue video production
-          ContentGeneration.update_draft_status(script, "approved")
-          enqueue_video_production(script)
+          promote_to_video(script, composite, threshold)
           Logger.info("Script #{script.id} approved for production (score: #{composite})")
           {:approved, script.id, composite}
         else
@@ -62,19 +61,18 @@ defmodule ContentForge.Jobs.ScriptGate do
     %{approved: approved_count, archived: archived_count}
   end
 
-  defp enqueue_video_production(%Draft{} = script) do
-    # Enqueue the video production job
-    # This will be implemented in Phase 6
-    Oban.insert(%Oban.Job{
-      queue: :video_production,
-      worker: "ContentForge.Jobs.VideoProduction",
-      args: %{
-        "script_id" => script.id,
-        "product_id" => script.product_id
-      },
-      max_attempts: 3
-    })
+  defp promote_to_video(%Draft{} = script, composite, threshold) do
+    # Promote via the blessed path: creates a VideoJob row and
+    # enqueues VideoProducer with the matching video_job_id inside
+    # a single transaction. Replaces a historical hand-rolled
+    # Oban.insert(%Oban.Job{...}) call that referenced a
+    # non-existent worker module and the wrong args.
+    {:ok, _video_job} =
+      Publishing.promote_script(script.id,
+        score: composite,
+        threshold: threshold
+      )
 
-    Logger.info("Enqueued video production job for script #{script.id}")
+    :ok
   end
 end

@@ -82,6 +82,35 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 15.4.2: Oban.insert bare-map audit sweep
+
+Status: DONE
+Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `f7fc0c2`. Gate: compile --warnings-as-errors clean, format clean, full test 630/0, credo baseline-diff empty.
+Note: Grep sweep of `lib/` for `Oban.insert(%{` and `Oban.insert(%Oban.Job{` found exactly three remaining bare-arg sites after 15.3.1 and 15.4.1. All three converted to `Worker.new(args) |> Oban.insert()` (or its blessed-helper equivalent). Post-sweep grep is clean; only a reference comment remains.
+
+**Sites converted**:
+
+1. `ContentForgeWeb.ScheduleController.publish_draft/2` (line 132) - bare map `%{"draft_id" => draft_id}`. This action takes an approved draft and schedules it for publishing. Args shape matches `Publisher.perform/1`'s second clause (`%{"draft_id" => draft_id}`). Fix: `Publisher.new(%{"draft_id" => draft_id}) |> Oban.insert()`.
+
+2. `ContentForgeWeb.ScheduleController.publish_now/2` (line 156) - same bare-map shape. Schedules a draft for immediate publish regardless of status. Same `Publisher` fix pattern.
+
+3. `ContentForge.Jobs.ScriptGate.enqueue_video_production/1` (line 68) - bare `%Oban.Job{}` struct form. This one was worse than the map cases: the struct referenced a non-existent worker module (`"ContentForge.Jobs.VideoProduction"` - the real worker is `ContentForge.Jobs.VideoProducer`) and supplied args (`script_id`, `product_id`) that would not have matched `VideoProducer.perform/1`'s clause (which takes `video_job_id`) even if the module name had been right. The correct integration already exists as `Publishing.promote_script/2`, which creates a `VideoJob` row and enqueues `VideoProducer` with the right `video_job_id` transactionally. Fix: replaced the private `enqueue_video_production/1` helper with `promote_to_video/3` that delegates to `Publishing.promote_script(script.id, score:, threshold:)`. The redundant `ContentGeneration.update_draft_status(script, "approved")` call on the approve branch was dropped because `promote_script` sets it inside its own transaction.
+
+**New test files**:
+
+- `test/content_forge/jobs/script_gate_test.exs` (new) - 2 tests. One asserts the approve path promotes the draft to `"approved"`, creates a `VideoJob` via `Publishing.get_video_job_by_draft/1`, and `assert_enqueued(worker: VideoProducer, args: %{"video_job_id" => ...})` against the VideoJob's id. One asserts the below-threshold path doesn't promote, doesn't create a VideoJob, and doesn't enqueue any VideoProducer work. Direct `ScriptGate.perform/1` invocation is used rather than `perform_job/2` because the worker returns a bare summary map (`%{approved: ..., archived: ...}`); Oban's testing helper rejects that shape. The bad return shape is a separate pre-existing issue, explicitly documented as out of scope.
+
+**Extensions to existing tests**:
+
+- `test/content_forge_web/controllers/schedule_controller_test.exs` gained two new describe blocks: `"publish_draft/2 (action direct)"` (3 tests: happy path enqueues Publisher with `draft_id`, missing draft returns `:not_found`, non-approved draft returns `:bad_request`) and `"publish_now/2 (action direct)"` (2 tests: happy path enqueues Publisher with any status, missing draft returns `:not_found`). These actions aren't routed yet, so the tests invoke the controller functions directly with a `Phoenix.ConnTest.build_conn/0`-built connection. When / if the routes land, the tests carry over unchanged - only the dispatch path changes. Total controller test count now 7.
+
+**What was explicitly NOT changed** (kept out of scope):
+
+- `ScriptGate.perform/1` still returns a bare `%{approved: ..., archived: ...}` map instead of `{:ok, ...}`. That's a separate Oban worker-contract issue; the archive path also fails silently because `"archived"` isn't in the Draft status inclusion list (only `~w(draft ranked approved rejected published blocked)` is). Both are pre-existing bugs; surface area for a future slice if someone wants to fix the archive pathway AND the return shape together.
+- Did not wire routes for `publish_draft` and `publish_now` in the router. They remain action-only until / unless the architect asks for them to be published.
+
+**Gate**: compile --warnings-as-errors clean, format clean, full test 630/0 (7 new test cases across 2 files), credo --strict baseline-diff empty. Rebased cleanly on master @ `f7fc0c2`.
+
 ### Phase 15.4.1: ScheduleController Oban.insert map-shape fix
 
 Status: DONE
