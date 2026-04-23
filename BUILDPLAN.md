@@ -350,7 +350,12 @@ Per `CONTENT_FORGE_SPEC.md` Feature 11. Leans heavily on Phase 10 Media Forge pl
   - Error handling mirrors the brief generator: `:not_configured` logs "LLM unavailable for bundle drafts", returns a skipped result, creates no drafts. Transient errors retry via Oban. Permanent errors cancel the job.
   - Tests: happy-path generation for two platforms produces the right number of drafts with assets attached and image_url populated from the featured asset; `:not_configured` skip creates no drafts; malformed JSON response rejects without fabricating; transient retries; permanent cancels.
 
-- **13.4c LiveView "Generate drafts" trigger from bundle drawer**
+- **13.4c LiveView "Generate drafts" trigger from bundle drawer** ✅ Shipped `fde2561`.
+
+- **13.4d Banner stickiness hardening (small)**
+  - If `LLM.Anthropic.complete/2` (or any upstream) raises instead of returning `{:error, _}`, the generator worker's broadcast path never fires and the LiveView banner sticks forever on that bundle. `classify/1` covers every known error tuple shape so this is rare in practice, but a raise is a valid outcome that the broadcast contract currently does not survive.
+  - Wrap the completion path in a `try/after` (or equivalent) so the `:finished` broadcast always fires on exit, regardless of whether the call returned or raised. Keep the error reporting path unchanged for the non-raise cases.
+  - One regression test that forces a raise inside a stubbed Anthropic client and asserts the banner clears for that bundle id.
   - In the bundle detail drawer shipped under 13.3b, add a "Generate drafts" form that lets the user select target platforms (multi-checkbox over the product's enabled publishing targets) and a per-platform variant count (default 3). Submitting enqueues `AssetBundleDraftGenerator.new/1` with the bundle id, selected platforms, and count.
   - After enqueueing, the drawer shows a "drafts generating..." banner until the job completes; completion is surfaced via PubSub on the existing `content_forge:drafts:<product_id>` topic (new topic if it does not exist yet), and the drafts queue view updates in real time.
   - Tests: submitting the form enqueues the job with the right args; the banner appears and clears; a draft created by the worker links back to its bundle via the new bundle_id column.
@@ -358,6 +363,24 @@ Per `CONTENT_FORGE_SPEC.md` Feature 11. Leans heavily on Phase 10 Media Forge pl
 - **13.5 Asset renditions on publish**
   - At publish time, Content Forge requests platform-specific renditions from Media Forge (Instagram 1:1, TikTok 9:16, etc.) and attaches the rendition to the platform post.
   - **Must-fix carryover from 13.4b:** Bundle-generated drafts currently have `image_url` set to the featured asset's internal R2 storage key (not a real URL). The manual `"draft"→"approved"` workflow gates this today, but 13.5 must teach the publisher to resolve the correct URL at publish time from the attached `draft_assets` instead of reading `image_url` blindly. Resolution order: prefer a platform-specific rendition from Media Forge for the attached asset; fall back to the asset's primary storage key converted to a signed or public URL; finally fall back to the legacy `draft.image_url` for pre-13.4 drafts.
+  - **Slicing note:** Split into rendition resolver (13.5a) and publisher swap (13.5b).
+
+- **13.5a AssetRenditionResolver module**
+  - New named module `ContentForge.ProductAssets.RenditionResolver` (single file under `lib/content_forge/product_assets/`) that given `(product_asset, platform)` returns `{:ok, public_or_signed_url}` or a classified error. Dispatches to MediaForge for rendition generation when no cached rendition exists, persists the generated rendition's storage key on a new `asset_renditions` table (keyed by `(asset_id, platform)`), and returns the resolved URL.
+  - Platform rendition spec map at `config :content_forge, :renditions` with entries like `%{"twitter" => %{aspect: "16:9", width: 1200, format: "jpg"}, "instagram" => %{aspect: "1:1", width: 1080, format: "jpg"}, "reels" => %{aspect: "9:16", width: 1080, format: "jpg"}, ...}`. Unknown platforms fall back to the asset's primary storage key with no rendition.
+  - For images the module calls `MediaForge.enqueue_image_render/1` with the source storage key and the target rendition spec, polls until done, records the output storage key on `asset_renditions`, and returns the public URL.
+  - For videos (in preparation for future TikTok/Reels/Shorts paths; not used by the initial image-only publisher swap) the module calls `MediaForge.enqueue_video_batch/1` similarly. 13.5b's publisher swap ships image-only; video rendition is wired but not yet exercised.
+  - New migration creates `asset_renditions` with `asset_id` fk, `platform` string, `storage_key`, `width`, `height`, `format`, `generated_at`, composite unique on `(asset_id, platform)` and partial unique on `storage_key` to prevent collisions on rendition retries.
+  - `:not_configured` passes through from MediaForge and becomes `{:error, :not_configured}` at the resolver's surface. Transient errors propagate for Oban retry. Permanent errors return `{:error, {:permanent, reason}}` so callers can mark drafts blocked.
+  - Tests: happy path creates the rendition and returns the URL; second call for the same (asset, platform) hits the cache and does not call MediaForge; `:not_configured` passes through without a rendition row; unknown platform returns the asset's primary URL; transient error propagates; permanent error surfaces clearly.
+
+- **13.5b Publisher resolution swap**
+  - Change `ContentForge.Jobs.Publisher.build_post_opts/3` to prefer the `RenditionResolver` path for any draft that has attached `draft_assets`. For each attached asset, resolve the URL via `RenditionResolver.resolve/2` with the draft's platform; choose the featured asset for the primary `image_url` opt and include any gallery assets where the platform supports carousels.
+  - Legacy drafts (no attached assets, only `draft.image_url`) continue to publish with that URL unchanged.
+  - On `{:error, :not_configured}` from the resolver, reuse the existing missing-image blocker from 10.2b: mark the draft blocked with a note `"rendition unavailable: media forge not configured"`, do not call the platform client. The dashboard's blocked-filter tab already surfaces this via the shared blocked label.
+  - On `{:error, {:permanent, _}}`, mark the draft blocked with a note including the permanent reason.
+  - On transient errors, return a retryable error from the Publisher worker so Oban retries.
+  - Tests: bundle-generated draft with a featured asset publishes with the resolver-sourced URL; legacy draft with `image_url` only publishes unchanged; `:not_configured` from resolver marks the draft blocked; permanent error from resolver marks the draft blocked; transient error triggers Oban retry.
 
 Phase exit criteria: a marketer can upload a product photo, tag it, drop it in a bundle, generate a draft around it, and publish per-platform renditions without touching any external tool.
 
