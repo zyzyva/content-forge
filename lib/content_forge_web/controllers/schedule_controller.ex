@@ -1,6 +1,7 @@
 defmodule ContentForgeWeb.ScheduleController do
   use ContentForgeWeb, :controller
 
+  alias ContentForge.Jobs.Publisher
   alias ContentForge.{Products, Publishing}
 
   action_fallback ContentForgeWeb.FallbackController
@@ -180,13 +181,9 @@ defmodule ContentForgeWeb.ScheduleController do
       {next_hour, next_day} = find_next_window(optimal_windows, now.hour, Date.day_of_week(now))
       delay = calculate_delay(next_hour, next_day, now)
 
-      Oban.insert(
-        %{
-          "product_id" => product.id,
-          "platform" => platform
-        },
-        scheduled_at: DateTime.add(now, delay, :second)
-      )
+      %{"product_id" => product.id, "platform" => platform}
+      |> Publisher.new(scheduled_at: DateTime.add(now, delay, :second))
+      |> Oban.insert()
 
       %{platform: platform, status: "scheduled", scheduled_in_seconds: delay}
     else
