@@ -2,6 +2,8 @@ defmodule ContentForgeWeb.DraftController do
   use ContentForgeWeb, :controller
 
   alias ContentForge.ContentGeneration
+  alias ContentForge.Jobs.ContentBriefGenerator
+  alias ContentForge.Jobs.OpenClawBulkGenerator
   alias ContentForge.Products
 
   action_fallback ContentForgeWeb.FallbackController
@@ -193,10 +195,8 @@ defmodule ContentForgeWeb.DraftController do
           brief_args = %{"product_id" => product_id, "force_rewrite" => false}
           bulk_args = %{"product_id" => product_id, "options" => options || %{}}
 
-          with {:ok, _} <-
-                 Oban.insert(ContentForge.Jobs.ContentBriefGenerator.new(brief_args)),
-               {:ok, _} <-
-                 Oban.insert(ContentForge.Jobs.OpenClawBulkGenerator.new(bulk_args)) do
+          with {:ok, _} <- Oban.insert(ContentBriefGenerator.new(brief_args)),
+               {:ok, _} <- Oban.insert(OpenClawBulkGenerator.new(bulk_args)) do
             json(conn, %{message: "Generation job enqueued", product_id: product_id})
           else
             {:error, reason} ->
