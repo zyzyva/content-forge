@@ -4,10 +4,10 @@
 
 - At startup, each agent must discover the branch and worktree assigned to its role, and work only there.
 - The architect works on `master` (the main working directory).
-- The coder works in `.worktrees/coder` on branch `coder`.
-- The reviewer works in `.worktrees/reviewer` on branch `reviewer`.
+- The coder works in `.worktrees/coder` on branch `swarmforge-coder`.
+- The reviewer works in `.worktrees/reviewer` on branch `swarmforge-reviewer`.
 - Agents must not silently work in the wrong branch or another role's worktree. If the expected layout is missing, repair it or stop and report.
-- If the repository currently sits on a non-master branch (for example `phase-2`), the architect must reconcile before spawning worktrees: either merge to `master`, rename `master` to point at the current head, or report and wait for guidance. Do not silently create `coder` / `reviewer` branches off the wrong base.
+- If the repository currently sits on a non-master branch (for example `phase-2`), the architect must reconcile before spawning worktrees: either merge to `master`, rename `master` to point at the current head, or report and wait for guidance. Do not silently create `swarmforge-coder` / `swarmforge-reviewer` branches off the wrong base.
 
 ## Handoffs
 

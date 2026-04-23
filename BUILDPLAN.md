@@ -9,8 +9,8 @@ Plain English only — no code. `CONTENT_FORGE_SPEC.md` is the source of truth f
 All remaining phases (10 through 15) ship via the swarmforge tmux flow defined in `swarmforge/`. Per slice:
 
 1. **Architect** reads this plan, picks the next slice, writes the acceptance spec into `CONTENT_FORGE_SPEC.md`, commits on `master`, and notifies the coder.
-2. **Coder** merges from `master`, implements the slice TDD-style in `.worktrees/coder` on the `coder` branch, runs the full local quality gate (`mix compile --warnings-as-errors`, `mix format --check-formatted`, `mix test`; add `mix credo --strict` once it lands), updates `BUILDLOG.md`, commits, and notifies the reviewer.
-3. **Reviewer** merges from `coder`, runs the deep gate (full suite + `mix test --cover`), looks for silent failures and pattern-match-first compliance, refactors small things in place if needed, commits on `reviewer`, and notifies both architect and coder. The architect then merges the reviewer's branch into `master`.
+2. **Coder** merges from `master`, implements the slice TDD-style in `.worktrees/coder` on the `swarmforge-coder` branch, runs the full local quality gate (`mix compile --warnings-as-errors`, `mix format --check-formatted`, `mix test`; add `mix credo --strict` once it lands), updates `BUILDLOG.md`, commits, and notifies the reviewer.
+3. **Reviewer** merges from `swarmforge-coder`, runs the deep gate (full suite + `mix test --cover`), looks for silent failures and pattern-match-first compliance, refactors small things in place if needed, commits on `swarmforge-reviewer`, and notifies both architect and coder. The architect then merges the reviewer's branch into `master`.
 
 If `mix credo --strict` is not yet wired into the project, the first coder slice should add it (see Bootstrap below). The reviewer must not skip a gate just because it is unconfigured — they should fail back to the architect with a request to wire it.
 
