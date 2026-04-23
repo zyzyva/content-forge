@@ -84,8 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 13.5a: AssetRenditionResolver + asset_renditions cache
 
-Status: READY FOR REVIEW
-Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format clean, mix test 414/0 (404 prior + 10 new). Credo by content unchanged vs post-13.4c: zero new findings from the new resolver, schema, migration, or test file; same known carryovers per `f26d099` rule.
+Status: DONE
+Merged: master @ `1ae7b53` (fast-forward). Reviewer ACCEPT after a re-handoff (initial handoff missed a format gate failure because the coder's wrapper script masked `mix format`'s non-zero exit; fixed inline). Gate: compile/format/test 414-0; credo unchanged. Resolver three-head cache dispatch; verbatim Media Forge error pass-through; partial unique on `status='ready'` keeps failed rows replaceable.
 Note: New `ContentForge.ProductAssets.RenditionResolver` at `lib/content_forge/product_assets/rendition_resolver.ex` per BUILDPLAN 13.5a. Single public function `resolve/2`: takes a `%ProductAsset{}` + a platform string, dispatches pattern-match-first through `lookup_spec/1` → `apply_spec/3`. Flow:
 
 - **Unknown platform** (no entry in the `:renditions` config map): `apply_spec(nil, asset, _)` returns `{:ok, Storage.get_publicUrl(asset.storage_key)}` without touching Media Forge.
