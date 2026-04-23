@@ -777,6 +777,49 @@ defmodule ContentForgeWeb.DashboardLiveTest do
       assert html =~ "NEEDS_REVIEW"
       assert html =~ "badge-warning"
     end
+
+    test "shows SEO score column on blog drafts and opens the drawer on select",
+         %{conn: conn} do
+      product = create_product()
+
+      blog_content =
+        """
+        # SEO Sample Title Under Sixty Chars
+
+        <meta name="description" content="A concise meta description well within the 155 character SERP snippet budget for blog article.">
+
+        Stripe: 2.9% + $0.30 per charge, 3-5 day payout, USD and EUR supported. Published Feb 2026 after the Checkout API rewrite that shipped January 15.
+
+        Longer body content continues here with paragraphs talking about the subject.
+        """
+
+      draft =
+        create_draft(product, %{content: blog_content, platform: "blog", content_type: "blog"})
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/drafts")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+
+      # Card list shows the SEO score chip for this blog draft.
+      list_html = render(view)
+      assert list_html =~ "data-seo-score="
+      assert list_html =~ "SEO "
+
+      # Selecting the draft opens the drawer with per-check rows.
+      render_click(view, "select_draft", %{"id" => draft.id})
+      drawer_html = render(view)
+
+      assert drawer_html =~ "data-seo-checklist-drawer"
+      assert drawer_html =~ "SEO Checklist"
+      assert drawer_html =~ ~s|data-seo-check="title_length"|
+      assert drawer_html =~ ~s|data-seo-check="single_h1"|
+      # Stub checks also appear with their not_applicable badge.
+      assert drawer_html =~ ~s|data-seo-check="heading_hierarchy"|
+      assert drawer_html =~ "not_applicable"
+    end
   end
 
   describe "Schedule page" do

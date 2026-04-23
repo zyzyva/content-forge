@@ -10,6 +10,7 @@ defmodule ContentForge.ContentGeneration do
   alias ContentForge.ContentGeneration.DraftAsset
   alias ContentForge.ContentGeneration.DraftScore
   alias ContentForge.ContentGeneration.NuggetValidator
+  alias ContentForge.ContentGeneration.SeoChecklist
   alias ContentForge.ProductAssets.ProductAsset
   alias ContentForge.Products.BriefVersion
   alias ContentForge.Products.ContentBrief
@@ -204,16 +205,28 @@ defmodule ContentForge.ContentGeneration do
         draft
         |> Draft.changeset(%{ai_summary_nugget: nugget})
         |> Repo.update()
+        |> maybe_run_seo_checklist()
 
       {:error, reasons} ->
+        # Nugget failure already flags needs_review. Still run the
+        # SEO checklist so operators see the full picture in the
+        # drawer when they open the draft to fix the nugget.
         draft
         |> Draft.changeset(%{
           status: "needs_review",
           error: NuggetValidator.format_reasons(reasons)
         })
         |> Repo.update()
+        |> maybe_run_seo_checklist()
     end
   end
+
+  defp maybe_run_seo_checklist({:ok, %Draft{content_type: "blog"} = draft} = result) do
+    _ = SeoChecklist.Runner.run(draft)
+    result
+  end
+
+  defp maybe_run_seo_checklist(result), do: result
 
   def create_drafts(attrs_list) when is_list(attrs_list) do
     Repo.insert_all(Draft, attrs_list, returning: true)

@@ -16,6 +16,7 @@ defmodule ContentForge.ContentGeneration.Draft do
     field :media_forge_job_id, :string
     field :error, :string
     field :ai_summary_nugget, :string
+    field :seo_score, :integer
 
     belongs_to :product, ContentForge.Products.Product
     belongs_to :content_brief, ContentForge.Products.ContentBrief
@@ -52,7 +53,8 @@ defmodule ContentForge.ContentGeneration.Draft do
       :image_url,
       :media_forge_job_id,
       :error,
-      :ai_summary_nugget
+      :ai_summary_nugget,
+      :seo_score
     ])
     |> validate_required([:product_id, :content, :platform, :content_type, :generating_model])
     |> validate_inclusion(:platform, ~w(twitter linkedin reddit facebook instagram blog youtube))

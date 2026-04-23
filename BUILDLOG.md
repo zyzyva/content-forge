@@ -82,6 +82,55 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 12.2a: SEO checklist infrastructure
+
+Status: DONE
+Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `de8830f`. Gate: compile --warnings-as-errors clean, format clean, full test 675/0, credo baseline-diff empty, `mix test --cover` overall 57.76% (up from 56.67%).
+Note: Second Phase 12 slice. 28-point SEO checklist infrastructure with runner + per-check modules + post-generation hook + dashboard drawer. Ships 4 real checks; 24 stubs defer to 12.2b/c per architect direction.
+
+**Schema + migration**:
+- `priv/repo/migrations/20260504120000_create_seo_checklists.exs` creates `seo_checklists` (binary_id PK, fk to `drafts` with `on_delete: :delete_all`, unique index on `draft_id`, `results :map`, `score :integer`, `run_at :utc_datetime_usec`, timestamps). Same migration also adds `seo_score :integer` to `drafts` for quick-query access.
+- `ContentForge.ContentGeneration.SeoChecklist` schema wraps the table. Changeset validates required `draft_id`, `results`, `score`, `run_at` and asserts the unique constraint on `draft_id`.
+- `Draft` schema gained `seo_score :integer` field + cast.
+
+**Runner** (`lib/content_forge/content_generation/seo_checklist/runner.ex`):
+- `@checks` module attribute holds the 28 `{check_name_atom, module}` tuples in canonical order. Runner exposes `checks/0` so tests can assert the dispatch surface.
+- `run/1` iterates the list, calls `module.check(draft)` on each (rescuing raises as `:fail` with an inspected-error note so one broken check never kills the batch), converts the `{status_atom, note}` result pair to a string-keyed map entry (JSON-friendly for Postgres `:map`), sums passes into the aggregate score, and upserts by `draft_id`. On success, mirrors the score to `draft.seo_score`.
+- `get_for_draft/1` returns the stored row or `nil` for LiveView drawer use.
+
+**Implemented checks (4)** under `lib/content_forge/content_generation/seo_checklist/checks/`:
+- `TitleLength` - extracts the first markdown `# ...` or HTML `<h1>...</h1>` and asserts length <= 60 chars. Missing H1 returns `:not_applicable` (the dedicated `SingleH1` check owns the missing-title failure).
+- `MetaDescriptionLength` - extracts `<meta name="description">` or a `meta:` / `meta_description:` frontmatter line and asserts length <= 155 chars.
+- `SingleH1` - counts markdown H1s + HTML `<h1>` tags and requires exactly one. Zero or multiple both fail.
+- `CoreAnswerInFirst150Words` - slices the first 150 words, requires at least one declarative sentence that ends with `.` and is >= 40 chars long. Pure-question openers fail.
+
+**Stub checks (24)** - one trivial module each at the same path, returning `{:not_applicable, "check not implemented yet"}`. Names chosen to align with the 12.2b/c plan: `HeadingHierarchy`, `FastScanSummaryFirst200`, `FaqPresent`, `JsonLdSchema`, `ImageAltCoverage`, `InternalLinks`, `ExternalLinkCount`, `KeywordDensityTitle`, `SlugLength`, `TocLongArticles`, `ReadingTimeEstimate`, `InformationGain`, `EntityDensity`, `PaaCoverage`, `EeatSignals`, `CitationPresence`, `NotForYouBlock`, `BannedPhrases`, `ReadingLevel`, `KeywordInFirstParagraph`, `OutboundLinkAuthority`, `ImageCount`, `MinimumWordCount`, `SchemaArticle`.
+
+**Post-generation hook** (`lib/content_forge/content_generation.ex`):
+- `create_draft/1` now pipes the nugget-validation result through `maybe_run_seo_checklist/1`. Pattern-matches on `content_type: "blog"`; non-blog drafts pass through.
+- Runs the checklist even when nugget validation fails - operators see the full SEO picture in the drawer when they open a `needs_review` draft to fix it. The checklist row is persisted; nugget status takes precedence on the draft row.
+- Bulk `create_drafts/1` (insert_all) still bypasses both hooks; only the social-post path uses it.
+
+**Dashboard drawer** (`lib/content_forge_web/live/dashboard/drafts/review_live.ex`):
+- Draft card now shows `SEO X/28` chip when `draft.content_type == "blog"` and `draft.seo_score != nil`. Carries `data-seo-score` attribute for test targeting and future filtering.
+- `handle_event("select_draft", ...)` also loads `SeoChecklist.Runner.get_for_draft/1` and assigns it to `selected_draft.seo_checklist` (nil if none run).
+- Detail panel gains a `<section aria-labelledby="seo-checklist-heading">` under the Critiques section when a checklist exists. Shows score header + per-check rows ordered failures-first, then passes, then not_applicable. Each row carries a `data-seo-check` attribute and a colored badge (error/success/ghost) plus a truncated note with a `title` attribute for full-text hover.
+- Helpers `sorted_checklist_rows/1` and `seo_badge_class/1` live at the bottom of the file.
+
+**Tests**:
+- `test/content_forge/content_generation/seo_checklist/runner_test.exs` (new, 7 tests) - asserts `checks/0` returns exactly 28 `{name, module}` tuples; the post-generation hook persists a row with 28 result keys keyed by `draft_id`; `draft.seo_score` mirrors the checklist aggregate; re-running upserts rather than duplicating; every result carries a status in `["pass", "fail", "not_applicable"]`; the 4 implemented checks produce non-stub notes; the 24 stubs return `:not_applicable` with the sentinel note.
+- `test/content_forge/content_generation/seo_checklist/checks_test.exs` (new, 14 tests) - unit coverage for all 4 implemented checks: TitleLength (pass / fail / not_applicable / HTML-form), MetaDescriptionLength (pass / fail / not_applicable / frontmatter-form), SingleH1 (pass / no-H1 fail / multi-H1 fail), CoreAnswerInFirst150Words (pass / question-only fail / too-short fail / empty fail).
+- `test/content_forge_web/live/dashboard_live_test.exs` (updated, 1 new test) - `"shows SEO score column on blog drafts and opens the drawer on select"` creates a blog draft with content that passes several checks, asserts the list view shows the `data-seo-score` chip, clicks `select_draft`, and asserts the drawer renders with `data-seo-checklist-drawer`, per-check rows carrying `data-seo-check="title_length"` / `"single_h1"` / `"heading_hierarchy"`, and the `"not_applicable"` status text for stub rows.
+
+**What was explicitly NOT changed** (kept out of scope):
+- 12.2b fills in the mechanical checks (heading hierarchy, FAQ, JSON-LD, image alt, links, slug, TOC, reading time, banned phrases, etc.). Their stub modules exist and are dispatched - only the `check/1` body changes.
+- 12.2c fills in the semantic checks (information_gain, entity_density, paa_coverage, eeat_signals, citation_presence, not_for_you_block, reading_level, keyword_in_first_paragraph, outbound_link_authority). Same pattern.
+- No publish-gate based on SEO score. 12.4 adds the dashboard "block publishing on red checks unless overridden" surface.
+- No revalidate button in the drawer. A human editing a draft and re-running the checklist is a future slice.
+- No filtering / sorting by SEO score on the drafts list. The `data-seo-score` attribute is wired so it can land later.
+
+**Gate**: compile --warnings-as-errors clean, format clean, full test 675/0 (22 new across 3 files), credo --strict baseline-diff empty, `mix test --cover` overall 57.76% (up from 56.67%) above threshold 10. Rebased cleanly on master @ `de8830f`.
+
 ### Phase 12.1: AI Summary Nugget validator
 
 Status: DONE

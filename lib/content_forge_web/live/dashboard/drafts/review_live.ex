@@ -6,6 +6,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Drafts.ReviewLive do
   """
   use ContentForgeWeb, :live_view
   alias ContentForge.ContentGeneration
+  alias ContentForge.ContentGeneration.SeoChecklist.Runner, as: SeoRunner
   alias ContentForge.Products
   alias ContentForgeWeb.Live.Dashboard.Components
 
@@ -41,10 +42,16 @@ defmodule ContentForgeWeb.Live.Dashboard.Drafts.ReviewLive do
     draft = ContentGeneration.get_draft!(id)
     scores = ContentGeneration.get_scores_for_draft(id)
     composite = ContentGeneration.compute_composite_score(id)
+    seo_checklist = SeoRunner.get_for_draft(id)
 
     {:noreply,
      assign(socket,
-       selected_draft: %{draft: draft, scores: scores, composite: composite}
+       selected_draft: %{
+         draft: draft,
+         scores: scores,
+         composite: composite,
+         seo_checklist: seo_checklist
+       }
      )}
   end
 
@@ -249,6 +256,15 @@ defmodule ContentForgeWeb.Live.Dashboard.Drafts.ReviewLive do
                       <div :if={item.composite} class="mt-2">
                         <Components.score_display score={item.composite} />
                       </div>
+                      <div
+                        :if={item.draft.content_type == "blog" and item.draft.seo_score != nil}
+                        class="mt-2 text-xs"
+                        data-seo-score={item.draft.seo_score}
+                      >
+                        <span class="badge badge-sm badge-outline">
+                          SEO {item.draft.seo_score}/28
+                        </span>
+                      </div>
                     </div>
                   </div>
                   <p class="text-sm mt-2 line-clamp-2">
@@ -321,6 +337,39 @@ defmodule ContentForgeWeb.Live.Dashboard.Drafts.ReviewLive do
               </div>
             </div>
             
+    <!-- SEO Checklist -->
+            <section
+              :if={@selected_draft.seo_checklist}
+              aria-labelledby="seo-checklist-heading"
+              class="bg-base-300 rounded-lg p-4 mb-4"
+              data-seo-checklist-drawer
+            >
+              <h3 id="seo-checklist-heading" class="font-semibold mb-2">
+                SEO Checklist ({@selected_draft.seo_checklist.score}/28)
+              </h3>
+              <ul class="space-y-1 text-xs max-h-64 overflow-y-auto">
+                <li
+                  :for={{name, value} <- sorted_checklist_rows(@selected_draft.seo_checklist)}
+                  class="flex justify-between gap-2"
+                  data-seo-check={name}
+                >
+                  <span class="font-mono">{name}</span>
+                  <span class="flex items-center gap-2">
+                    <span class={["badge badge-sm", seo_badge_class(value["status"])]}>
+                      {value["status"]}
+                    </span>
+                    <span
+                      :if={value["note"]}
+                      class="text-base-content/70 truncate max-w-[12rem]"
+                      title={value["note"]}
+                    >
+                      {value["note"]}
+                    </span>
+                  </span>
+                </li>
+              </ul>
+            </section>
+            
     <!-- Content -->
             <div class="mb-4">
               <h3 class="font-semibold mb-2">Content</h3>
@@ -367,6 +416,29 @@ defmodule ContentForgeWeb.Live.Dashboard.Drafts.ReviewLive do
       {"needs_review", "Needs Review"}
     ]
   end
+
+  defp sorted_checklist_rows(%{results: results}) do
+    # Surface failures first so a reviewer sees what is wrong
+    # without scrolling; then passes; then not_applicable stubs.
+    results
+    |> Enum.to_list()
+    |> Enum.sort_by(fn {name, value} ->
+      priority =
+        case value["status"] do
+          "fail" -> 0
+          "pass" -> 1
+          "not_applicable" -> 2
+          _ -> 3
+        end
+
+      {priority, name}
+    end)
+  end
+
+  defp seo_badge_class("pass"), do: "badge-success"
+  defp seo_badge_class("fail"), do: "badge-error"
+  defp seo_badge_class("not_applicable"), do: "badge-ghost"
+  defp seo_badge_class(_), do: "badge-neutral"
 
   defp avg_score([]), do: "—"
 
