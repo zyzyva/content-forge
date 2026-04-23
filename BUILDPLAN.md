@@ -266,7 +266,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 10. Goal: produce content that is AI-retriev
   - Each check is its own module with a `check/1` function. All tests live alongside.
   - Typically 12-14 checks land here; the remaining 10-12 semantic checks are 12.2c.
 
-- **12.2c SEO checklist semantic checks (LLM/data-driven)**
+- **12.2c SEO checklist semantic checks (LLM/data-driven)** ✅ Shipped `1e53be3`.
   - Information-gain check: compare the draft against a summary of the top 10 SERP results for its primary keyword (requires search integration or Apify). If no SERP data is available, the check returns `:not_applicable` with a note.
   - Entity-density check: count named entities, require at least a threshold density for the word count.
   - PAA-question coverage: FAQ answers match People-Also-Asked questions from SERP data.
@@ -278,6 +278,15 @@ Per `CONTENT_FORGE_SPEC.md` Feature 10. Goal: produce content that is AI-retriev
 - **12.3 Original Research block**
   - Pipeline step that sources original data (survey, scrape, or competitor delta) and injects a research block into the draft.
   - If no research can be sourced for a topic, flag rather than fabricate.
+  - Additional requirements:
+    - New module `ContentForge.ContentGeneration.ResearchEnricher` at `lib/content_forge/content_generation/research_enricher.ex`. Public function `enrich/1` takes a blog draft, returns `{:ok, updated_draft_with_block}`, `{:ok, :no_data}`, or `{:error, reason}`. Never fabricates data.
+    - Data sources attempted in order, first hit wins: (1) the product's own `ScoreboardEntry` rows (what's working for this product on this topic — compute a delta vs average engagement over a time window); (2) `CompetitorIntel` for the product (trending topics + hooks from scraped competitors via 11.3a/b); (3) `ProductSnapshot` content (repo/site crawl data — a concrete metric from the product's own site or docs). If none yield a usable data point, return `{:ok, :no_data}` and tag the draft with a status note.
+    - When a data point is found, call `LLM.Anthropic.complete/2` with a structured prompt that asks the model to write a 2-3 sentence research block citing the data point verbatim (with source attribution — which of the three sources it came from). The response is parsed, validated that it contains the data point as a substring (so the LLM didn't hallucinate numbers), and if valid is injected into the draft at a marked position (a new `{{research_block}}` placeholder the blog generation prompt is updated to emit, or appended after the nugget paragraph if no placeholder is present).
+    - Hallucination guard: if the LLM response does not contain the literal data value, return `{:error, :lost_data_point}` and flag the draft with status `needs_review` plus the reason. No research block is written.
+    - New field on `Draft`: `research_status` (enum `"none" | "enriched" | "no_data" | "lost_data_point"`, default `"none"`). Nullable text field `research_source` records which of the three sources fired when enriched.
+    - Post-generation hook: after the SEO checklist runs on a blog draft, `ResearchEnricher.enrich/1` runs. Ordering matters — SEO first so checks can already see the draft shape before any injection; ResearchEnricher after so injection doesn't invalidate check results (checks are stored; the enrichment simply appends without changing what was already checked).
+    - Dashboard: drafts review drawer shows the `research_source` label next to the SEO score, and the research block content is visible in the draft preview.
+    - Tests: happy-path scoreboard-sourced enrichment injects a block with the source label; happy-path competitor-intel fallback; happy-path snapshot fallback; no-data case returns `:no_data` and tags the draft; hallucination case (LLM drops the data point) returns `:lost_data_point` and flips status to `needs_review`; `:not_configured` on the LLM client returns `{:error, :not_configured}` without writing; all sources empty returns `:no_data` without LLM call.
 
 - **12.4 Dashboard surfacing**
   - Drafts page shows checklist status per item and blocks publishing on red checks unless manually overridden.

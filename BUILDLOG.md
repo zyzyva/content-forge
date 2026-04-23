@@ -85,7 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 12.2c: SEO checklist semantic checks
 
 Status: DONE
-Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `6423cb1`. Gate: compile --warnings-as-errors clean, format clean, full test 744/0, credo baseline-diff empty, coverage 59.06% (up from 58.44%). All 28 SEO checks now implemented.
+Merged: master @ `1e53be3` (fast-forward). Reviewer ACCEPT after re-handoff (format gate initially failed on 4 files; coder's process fix: always run `mix format --check-formatted` last after late credo edits, same class as 13.5a). Gate: compile/format/test 744-0; coverage 59.06% (+0.62). All 28 SEO checks implemented. 3 LLM/SERP-dependent checks honor `:not_applicable` contract with deferred-pipeline note for 12.3.
 
 Note: Fills in the remaining 10 stub slots. Six are mechanical-semantic heuristics that can be evaluated from content alone (entity density, reading level via Flesch, citation presence, image count, schema article, E-E-A-T signal markers, Not-For-You block detection). Three depend on LLM or SERP data and follow the `:not_applicable` contract when upstreams are unavailable.
 
