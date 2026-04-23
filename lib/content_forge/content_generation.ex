@@ -74,8 +74,11 @@ defmodule ContentForge.ContentGeneration do
         %ContentBrief{} = brief,
         new_content,
         performance_summary \\ %{},
-        rewrite_reason \\ nil
+        rewrite_reason \\ nil,
+        opts \\ []
       ) do
+    model_used = Keyword.get(opts, :model_used)
+
     Repo.transaction(fn ->
       # Archive current version; treat nil as 1 so archive version is always valid (> 0)
       current_version = brief.version || 1
@@ -94,13 +97,17 @@ defmodule ContentForge.ContentGeneration do
       # Update brief with new version
       new_version = current_version + 1
 
-      {:ok, updated_brief} =
-        brief
-        |> ContentBrief.changeset(%{
+      attrs =
+        %{
           content: new_content,
           version: new_version,
           performance_summary: performance_summary
-        })
+        }
+        |> put_if_present(:model_used, model_used)
+
+      {:ok, updated_brief} =
+        brief
+        |> ContentBrief.changeset(attrs)
         |> Repo.update()
 
       updated_brief
@@ -193,6 +200,9 @@ defmodule ContentForge.ContentGeneration do
     |> Draft.changeset(%{status: "rejected"})
     |> Repo.update()
   end
+
+  defp put_if_present(map, _key, nil), do: map
+  defp put_if_present(map, key, value), do: Map.put(map, key, value)
 
   def mark_draft_blocked(%Draft{} = draft) do
     draft

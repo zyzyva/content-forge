@@ -2,16 +2,25 @@ defmodule ContentForge.Jobs.ContentBriefGenerator do
   @moduledoc """
   Oban job that generates or rewrites a content brief for a product.
 
-  On first run: queries smart models (Claude/Gemini/xAI) with snapshot + competitor intel
-  to synthesize an initial brief.
+  On first run the job sends a prompt built from the product's snapshot and
+  competitor intelligence to `ContentForge.LLM.Anthropic.complete/2`; the
+  completion text becomes the brief body and the actual model id returned
+  by the API is recorded on the brief record.
 
-  On subsequent runs: rewrites the brief using scoreboard + calibration + competitor intel
-  when performance data exists.
+  On subsequent runs (when performance data is available) it rewrites the
+  brief with the previous brief and the performance summary in the prompt.
+
+  When the LLM is not configured on this deployment the job logs
+  `LLM unavailable`, returns `{:ok, :skipped}`, and does not create a
+  brief record: no placeholder or templated text ever reaches the
+  database. Transient errors propagate as `{:error, _}` so Oban retries;
+  permanent errors cancel the job so retries do not spin against
+  unchanged input.
   """
   use Oban.Worker, queue: :content_generation, max_attempts: 3
   require Logger
 
-  alias ContentForge.{Products, ContentGeneration}
+  alias ContentForge.{ContentGeneration, LLM, Products}
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"product_id" => product_id, "force_rewrite" => force_rewrite}}) do
@@ -30,86 +39,144 @@ defmodule ContentForge.Jobs.ContentBriefGenerator do
   end
 
   defp generate_or_rewrite_brief(product, force_rewrite) do
-    # Get latest snapshot and competitor intel
     snapshot = Products.get_latest_snapshot_for_product(product.id, "full")
     competitor_intel = Products.get_latest_competitor_intel_for_product(product.id)
 
-    # Check if brief already exists
     existing_brief = ContentGeneration.get_latest_content_brief_for_product(product.id)
 
-    if existing_brief && !force_rewrite do
-      Logger.info(
-        "Content brief already exists for product #{product.id}, skipping initial generation"
-      )
+    cond do
+      existing_brief && !force_rewrite ->
+        Logger.info(
+          "Content brief already exists for product #{product.id}, skipping initial generation"
+        )
 
-      {:ok, existing_brief}
-    else
-      # Determine if we should rewrite based on performance data
-      should_rewrite = existing_brief && has_significant_performance_data?(product.id)
+        {:ok, existing_brief}
 
-      if should_rewrite do
+      existing_brief ->
         rewrite_brief_with_performance(product, existing_brief, snapshot, competitor_intel)
-      else
+
+      true ->
         generate_initial_brief(product, snapshot, competitor_intel)
-      end
     end
   end
 
-  defp has_significant_performance_data?(_product_id) do
-    # Check if there are enough measured pieces to trigger a rewrite
-    # For now, we'll check if content_scoreboard has entries
-    # This would be implemented when Phase 7 is complete
-    false
-  end
-
   defp generate_initial_brief(product, snapshot, competitor_intel) do
-    # Build context for smart model
     context = build_brief_context(product, snapshot, competitor_intel, nil)
 
-    # Query multiple smart models and synthesize
-    # For now, we'll use a single model as placeholder
-    brief_content = query_smart_model_for_brief(context)
+    context
+    |> brief_user_prompt()
+    |> call_llm(brief_system_prompt())
+    |> handle_initial_llm_result(product, snapshot, competitor_intel)
+  end
 
-    # Create the content brief
+  defp rewrite_brief_with_performance(product, existing_brief, snapshot, competitor_intel) do
+    performance_summary = %{}
+
+    context = build_brief_context(product, snapshot, competitor_intel, performance_summary)
+
+    context
+    |> rewrite_user_prompt(existing_brief.content)
+    |> call_llm(brief_system_prompt())
+    |> handle_rewrite_llm_result(product, existing_brief, performance_summary)
+  end
+
+  # --- LLM result handling --------------------------------------------------
+
+  defp handle_initial_llm_result({:ok, text, model}, product, snapshot, competitor_intel) do
     {:ok, brief} =
       ContentGeneration.create_content_brief(%{
         product_id: product.id,
         version: 1,
-        content: brief_content,
+        content: text,
         snapshot_id: snapshot && snapshot.id,
         competitor_intel_id: competitor_intel && competitor_intel.id,
-        model_used: "claude"
+        model_used: model
       })
 
-    Logger.info("Created initial content brief v1 for product #{product.id}")
+    Logger.info(
+      "ContentBriefGenerator: created initial content brief v1 for product #{product.id} via #{model}"
+    )
+
     {:ok, brief}
   end
 
-  defp rewrite_brief_with_performance(product, existing_brief, snapshot, competitor_intel) do
-    # Get performance scoreboard and model calibration data
-    # This would come from Phase 7 when implemented
-    performance_summary = %{}
+  defp handle_initial_llm_result({:error, err}, product, _snapshot, _competitor_intel) do
+    handle_llm_error(err, product.id)
+  end
 
-    # Build context with performance insights
-    context = build_brief_context(product, snapshot, competitor_intel, performance_summary)
-
-    # Query smart model for rewrite
-    new_brief_content = query_smart_model_for_brief_rewrite(context, existing_brief.content)
-
-    # Create new version
+  defp handle_rewrite_llm_result({:ok, text, model}, product, existing_brief, performance_summary) do
     {:ok, new_brief} =
       ContentGeneration.create_new_brief_version(
         existing_brief,
-        new_brief_content,
+        text,
         performance_summary,
-        "Performance-based rewrite"
+        "Performance-based rewrite",
+        model_used: model
       )
 
-    Logger.info("Created content brief v#{new_brief.version} for product #{product.id}")
+    Logger.info(
+      "ContentBriefGenerator: created content brief v#{new_brief.version} for product #{product.id} via #{model}"
+    )
+
     {:ok, new_brief}
   end
 
-  defp build_brief_context(product, snapshot, competitor_intel, _performance_summary) do
+  defp handle_rewrite_llm_result({:error, err}, product, _existing_brief, _performance_summary) do
+    handle_llm_error(err, product.id)
+  end
+
+  defp handle_llm_error(:not_configured, product_id) do
+    Logger.warning(
+      "ContentBriefGenerator: LLM unavailable; skipping brief for product #{product_id}"
+    )
+
+    {:ok, :skipped}
+  end
+
+  defp handle_llm_error({:transient, _, _} = reason, product_id) do
+    Logger.warning(
+      "ContentBriefGenerator: transient LLM error for product #{product_id}; Oban will retry (#{inspect(reason)})"
+    )
+
+    {:error, reason}
+  end
+
+  defp handle_llm_error({:http_error, status, body}, product_id) do
+    Logger.error(
+      "ContentBriefGenerator: permanent LLM error #{status} for product #{product_id}: #{inspect(body)}"
+    )
+
+    {:cancel, "LLM rejected brief request (HTTP #{status})"}
+  end
+
+  defp handle_llm_error({:unexpected_status, status, _body}, product_id) do
+    Logger.error(
+      "ContentBriefGenerator: LLM returned unexpected HTTP status #{status} for product #{product_id}"
+    )
+
+    {:cancel, "LLM returned unexpected HTTP status #{status}"}
+  end
+
+  defp handle_llm_error(reason, product_id) do
+    Logger.error(
+      "ContentBriefGenerator: unexpected LLM error for product #{product_id}: #{inspect(reason)}"
+    )
+
+    {:error, reason}
+  end
+
+  # --- LLM call wrapper -----------------------------------------------------
+
+  defp call_llm(user_prompt, system_prompt) do
+    case LLM.Anthropic.complete(user_prompt, system: system_prompt) do
+      {:ok, %{text: text, model: model}} -> {:ok, text, model}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # --- context + prompts ----------------------------------------------------
+
+  defp build_brief_context(product, snapshot, competitor_intel, performance_summary) do
     %{
       product_name: product.name,
       voice_profile: product.voice_profile,
@@ -117,70 +184,56 @@ defmodule ContentForge.Jobs.ContentBriefGenerator do
       site_url: product.site_url,
       snapshot_content: snapshot && snapshot.content,
       competitor_intel_content: competitor_intel && competitor_intel.summary,
-      # performance_summary would include scoreboard data when Phase 7 is done
-      performance_summary: %{}
+      performance_summary: performance_summary || %{}
     }
   end
 
-  defp query_smart_model_for_brief(context) do
-    # This is a placeholder - in production, this would call Claude/Gemini/xAI
-    # The actual implementation would use the LLM client
+  defp brief_system_prompt do
     """
-    Content Brief for #{context.product_name}
-
-    ## Voice Profile
-    #{context.voice_profile}
-
-    ## Target Audience
-    [To be determined based on product analysis]
-
-    ## Content Pillars
-    - Educational content explaining product features and benefits
-    - Problem-aware content addressing customer pain points
-    - Social proof through customer success stories
-    - Entertaining content that humanizes the brand
-
-    ## Content Angles (Required)
-    - educational: Explain concepts, how-tos, tutorials
-    - entertaining: Humor, storytelling, engaging narratives
-    - problem_aware: Address pain points, challenges
-    - social_proof: Testimonials, case studies, success stories
-    - testimonial: Customer quotes and experiences
-
-    ## Platform-Specific Guidelines
-    - Twitter/X: Short, punchy, hook-driven, max 280 chars
-    - LinkedIn: Professional, thought leadership, longer form
-    - Reddit: Value-first, community-focused, authentic
-    - Blog: Comprehensive, SEO-optimized, actionable
-
-    ## Competitor Intelligence
-    #{context.competitor_intel_content || "No competitor intel available"}
-
-    ## Key Themes for This Cycle
-    Focus on educational and problem-aware content that demonstrates understanding of customer challenges.
-    Include at least one humor variant per content type to test engagement.
+    You are an expert content strategist for a SaaS product team. Produce a
+    concise, actionable content brief in Markdown that will steer future
+    content generation. The brief must cover: voice profile, target
+    audience, content pillars, required angles (educational, entertaining,
+    problem_aware, social_proof, testimonial, and at least one humor
+    angle), platform-specific guidelines for Twitter/X, LinkedIn, Reddit,
+    and blog, and key themes for this cycle.
     """
   end
 
-  defp query_smart_model_for_brief_rewrite(context, previous_brief) do
-    # This is a placeholder - in production, this would call a smart model
-    # to rewrite the brief based on performance data
+  defp brief_user_prompt(context) do
     """
-    Content Brief Rewrite for #{context.product_name}
+    Product: #{context.product_name}
+    Voice profile: #{context.voice_profile}
+    Repository: #{context.repo_url || "N/A"}
+    Site: #{context.site_url || "N/A"}
 
-    ## Previous Brief Summary
+    Product snapshot:
+    #{context.snapshot_content || "(no snapshot available)"}
+
+    Competitor intelligence:
+    #{context.competitor_intel_content || "(no competitor intel available)"}
+
+    Write the content brief.
+    """
+  end
+
+  defp rewrite_user_prompt(context, previous_brief) do
+    """
+    Product: #{context.product_name}
+    Voice profile: #{context.voice_profile}
+
+    Previous brief:
     #{previous_brief}
 
-    ## Updated Voice Profile
-    #{context.voice_profile}
+    Performance summary:
+    #{inspect(context.performance_summary)}
 
-    ## Performance Insights
-    [Based on actual performance data - to be expanded when Phase 7 is complete]
+    Competitor intelligence:
+    #{context.competitor_intel_content || "(no competitor intel available)"}
 
-    ## Updated Strategy
-    Focus on high-performing angles identified from scoreboard data.
-    Continue testing humor variants as they historically perform well.
-    Prioritize content formats that showed positive delta between predicted and actual engagement.
+    Rewrite the brief, identifying which angles and formats are working,
+    which are underperforming, and what to try next. Keep the same
+    structure.
     """
   end
 end
