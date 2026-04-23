@@ -84,8 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 15.2b: WCAG AA audit on drafts review + schedule
 
-Status: READY FOR REVIEW
-Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates), mix test 611/0 (609 prior + 2 new). Credo by content unchanged vs post-15.2a: zero new findings.
+Status: DONE
+Merged: master @ `2a744cf` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 611-0; credo unchanged. Landmark pattern + ARIA-tablist on filters (roving tabindex). Draft cards promoted from `<div phx-click>` to `<button>`. Detail panel `<aside role=region>`. Schedule: `aria-live=polite` on date-range, `<nav aria-label>` around date-nav. JS arrow-key roving deferred to 15.2d.
 Note: WCAG AA audit + fixes on the two dashboard listing/timeline pages per BUILDPLAN 15.2b. Three remaining pages (video / performance / clips / sms / providers) are separate follow-up slices.
 
 **Pages touched**:

@@ -521,7 +521,7 @@ Pick up after the feature waves clear. Any of these can be inserted earlier if i
   - Tests: a per-page assertion that ensures each page contains the required landmarks and a single h1; optionally run an existing a11y-checker library against the rendered HTML if one is already in the project, otherwise the structural assertions are the regression gate. No screen-reader automation — manual verification is documented in the handoff notes.
   - Explicit scope boundary: drafts review, schedule, video status, performance, clips, providers, and SMS pages are NOT touched in this slice. Each gets its own follow-up 15.2b/c/d/e/f/g/h.
 
-- **15.2b Drafts review + schedule accessibility audit**
+- **15.2b Drafts review + schedule accessibility audit** ✅ Shipped `2a744cf`.
   - Same audit checklist as 15.2a applied to `/dashboard/drafts` (`Drafts.ReviewLive`) and `/dashboard/schedule` (`Schedule.Live` — includes the calendar from 15.1c).
   - Drafts review is form-heavy (approve/reject/tag/filter controls); pay extra attention to filter tabs' `role=tablist` + `tabindex` management and to the inline tag chip/remove buttons.
   - Schedule includes the week calendar from 15.1c — that page was already landed with `role=grid` + drawer dialog semantics, so this slice mostly audits the surrounding nav + the per-post rows.
