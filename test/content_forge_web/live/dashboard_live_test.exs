@@ -348,6 +348,301 @@ defmodule ContentForgeWeb.DashboardLiveTest do
     end
   end
 
+  describe "Product bundles tab" do
+    alias ContentForge.ProductAssets
+
+    defp create_asset!(product, overrides) do
+      defaults = %{
+        product_id: product.id,
+        storage_key:
+          "products/#{product.id}/assets/#{Ecto.UUID.generate()}/#{Map.get(overrides, :filename, "file.jpg")}",
+        media_type: "image",
+        filename: "file.jpg",
+        mime_type: "image/jpeg",
+        byte_size: 1024,
+        uploaded_at: DateTime.utc_now(),
+        tags: []
+      }
+
+      {:ok, asset} = ProductAssets.create_asset(Map.merge(defaults, overrides))
+      asset
+    end
+
+    test "Bundles tab renders empty state and a create-bundle form", %{conn: conn} do
+      product = create_product(%{name: "Bundle Home"})
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/products/#{product.id}")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      html = render_click(view, "switch_tab", %{"tab" => "bundles"})
+
+      assert html =~ "Asset Bundles"
+      assert html =~ "No bundles yet"
+      assert html =~ "Create bundle"
+      assert html =~ ~s|name="bundle[name]"|
+      assert html =~ ~s|name="bundle[context]"|
+    end
+
+    test "create_bundle event inserts a bundle and lists it", %{conn: conn} do
+      product = create_product(%{name: "Create Bundle"})
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/products/#{product.id}")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      _ = render_click(view, "switch_tab", %{"tab" => "bundles"})
+
+      html =
+        render_submit(view, "create_bundle", %{
+          "bundle" => %{
+            "name" => "Johnson kitchen remodel",
+            "context" => "Quartz counters, 3 weeks"
+          }
+        })
+
+      assert html =~ "Johnson kitchen remodel"
+      assert html =~ "0 assets"
+      refute html =~ "No bundles yet"
+    end
+
+    test "create_bundle shows a validation error for missing name", %{conn: conn} do
+      product = create_product(%{name: "Create Bundle Err"})
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/products/#{product.id}")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      _ = render_click(view, "switch_tab", %{"tab" => "bundles"})
+
+      html =
+        render_submit(view, "create_bundle", %{
+          "bundle" => %{"name" => "", "context" => ""}
+        })
+
+      assert html =~ "can&#39;t be blank"
+    end
+
+    test "bundle card shows asset count and thumbnail mosaic", %{conn: conn} do
+      product = create_product(%{name: "Mosaic"})
+      {:ok, bundle} = ProductAssets.create_bundle(%{product_id: product.id, name: "Mosaic B"})
+      a1 = create_asset!(product, %{filename: "a.jpg"})
+      a2 = create_asset!(product, %{filename: "b.jpg"})
+      {:ok, _} = ProductAssets.add_asset_to_bundle(bundle, a1)
+      {:ok, _} = ProductAssets.add_asset_to_bundle(bundle, a2)
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/products/#{product.id}")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      html = render_click(view, "switch_tab", %{"tab" => "bundles"})
+
+      assert html =~ "Mosaic B"
+      assert html =~ "2 assets"
+      assert html =~ ~s|id="bundle-#{bundle.id}"|
+      assert html =~ ~s|data-bundle-thumb="#{a1.id}"|
+      assert html =~ ~s|data-bundle-thumb="#{a2.id}"|
+    end
+
+    test "open_bundle expands the drawer with asset list", %{conn: conn} do
+      product = create_product(%{name: "Open Drawer"})
+      {:ok, bundle} = ProductAssets.create_bundle(%{product_id: product.id, name: "Drawer B"})
+      asset = create_asset!(product, %{filename: "hero.jpg"})
+      {:ok, _} = ProductAssets.add_asset_to_bundle(bundle, asset)
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/products/#{product.id}")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      _ = render_click(view, "switch_tab", %{"tab" => "bundles"})
+
+      html = render_click(view, "open_bundle", %{"bundle-id" => bundle.id})
+
+      assert html =~ ~s|id="bundle-detail-#{bundle.id}"|
+      assert html =~ "hero.jpg"
+      assert html =~ ~s|data-bundle-asset-row="#{asset.id}"|
+    end
+
+    test "remove_bundle_asset removes an asset from the bundle", %{conn: conn} do
+      product = create_product(%{name: "Remove"})
+      {:ok, bundle} = ProductAssets.create_bundle(%{product_id: product.id, name: "Remove B"})
+      asset = create_asset!(product, %{filename: "drop.jpg"})
+      {:ok, _} = ProductAssets.add_asset_to_bundle(bundle, asset)
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/products/#{product.id}")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      _ = render_click(view, "switch_tab", %{"tab" => "bundles"})
+      _ = render_click(view, "open_bundle", %{"bundle-id" => bundle.id})
+
+      html =
+        render_click(view, "remove_bundle_asset", %{
+          "bundle-id" => bundle.id,
+          "asset-id" => asset.id
+        })
+
+      refute html =~ ~s|data-bundle-asset-row="#{asset.id}"|
+      assert html =~ "0 assets"
+    end
+
+    test "reorder_bundle_asset direction=up swaps order", %{conn: conn} do
+      product = create_product(%{name: "Reorder"})
+      {:ok, bundle} = ProductAssets.create_bundle(%{product_id: product.id, name: "Reorder B"})
+      a = create_asset!(product, %{filename: "first.jpg"})
+      b = create_asset!(product, %{filename: "second.jpg"})
+      c = create_asset!(product, %{filename: "third.jpg"})
+      {:ok, _} = ProductAssets.add_asset_to_bundle(bundle, a)
+      {:ok, _} = ProductAssets.add_asset_to_bundle(bundle, b)
+      {:ok, _} = ProductAssets.add_asset_to_bundle(bundle, c)
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/products/#{product.id}")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      _ = render_click(view, "switch_tab", %{"tab" => "bundles"})
+      _ = render_click(view, "open_bundle", %{"bundle-id" => bundle.id})
+
+      _ =
+        render_click(view, "reorder_bundle_asset", %{
+          "bundle-id" => bundle.id,
+          "asset-id" => c.id,
+          "direction" => "up"
+        })
+
+      reloaded = ProductAssets.get_bundle!(bundle.id)
+      ordered_ids = Enum.map(reloaded.bundle_assets, & &1.asset_id)
+      assert ordered_ids == [a.id, c.id, b.id]
+    end
+
+    test "add_bundle_asset attaches an unattached asset; picker filters by media type",
+         %{conn: conn} do
+      product = create_product(%{name: "Picker"})
+      {:ok, bundle} = ProductAssets.create_bundle(%{product_id: product.id, name: "Picker B"})
+      img = create_asset!(product, %{filename: "only-image.jpg", media_type: "image"})
+
+      vid =
+        create_asset!(product, %{
+          filename: "clip.mp4",
+          media_type: "video",
+          mime_type: "video/mp4"
+        })
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/products/#{product.id}")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      _ = render_click(view, "switch_tab", %{"tab" => "bundles"})
+      _ = render_click(view, "open_bundle", %{"bundle-id" => bundle.id})
+
+      filtered =
+        render_change(view, "filter_picker_media", %{
+          "bundle-id" => bundle.id,
+          "media_type" => "image"
+        })
+
+      assert filtered =~ "only-image.jpg"
+      refute filtered =~ "clip.mp4"
+
+      added =
+        render_click(view, "add_bundle_asset", %{
+          "bundle-id" => bundle.id,
+          "asset-id" => img.id
+        })
+
+      assert added =~ ~s|data-bundle-asset-row="#{img.id}"|
+      assert added =~ "1 assets"
+
+      # The just-added asset should no longer be offered by the picker.
+      refute added =~ ~s|data-picker-asset="#{img.id}"|
+
+      # Video asset is still unattached and selectable when filter is cleared.
+      cleared =
+        render_change(view, "filter_picker_media", %{
+          "bundle-id" => bundle.id,
+          "media_type" => ""
+        })
+
+      assert cleared =~ ~s|data-picker-asset="#{vid.id}"|
+      assert cleared =~ "clip.mp4"
+    end
+
+    test "archive_bundle removes it from the default list", %{conn: conn} do
+      product = create_product(%{name: "Archive"})
+      {:ok, bundle} = ProductAssets.create_bundle(%{product_id: product.id, name: "Trashable"})
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/products/#{product.id}")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      _ = render_click(view, "switch_tab", %{"tab" => "bundles"})
+
+      html =
+        render_click(view, "archive_bundle", %{"bundle-id" => bundle.id})
+
+      refute html =~ "Trashable"
+      assert ProductAssets.get_bundle!(bundle.id).status == "archived"
+    end
+
+    test "soft_delete_bundle removes it from the default list", %{conn: conn} do
+      product = create_product(%{name: "SoftDel"})
+      {:ok, bundle} = ProductAssets.create_bundle(%{product_id: product.id, name: "Doomed"})
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/products/#{product.id}")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      _ = render_click(view, "switch_tab", %{"tab" => "bundles"})
+
+      html =
+        render_click(view, "soft_delete_bundle", %{"bundle-id" => bundle.id})
+
+      refute html =~ "Doomed"
+      assert ProductAssets.get_bundle!(bundle.id).status == "deleted"
+    end
+
+    test "PubSub :bundle_created from another process refreshes the list",
+         %{conn: conn} do
+      product = create_product(%{name: "PubSub Bundles"})
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/products/#{product.id}")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      _ = render_click(view, "switch_tab", %{"tab" => "bundles"})
+
+      {:ok, _external} =
+        ProductAssets.create_bundle(%{product_id: product.id, name: "Externally created"})
+
+      Process.sleep(100)
+      html = render(view)
+
+      assert html =~ "Externally created"
+    end
+  end
+
   describe "Draft review page" do
     test "mounts and lists drafts", %{conn: conn} do
       product = create_product()

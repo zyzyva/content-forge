@@ -9,6 +9,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
   alias ContentForge.Jobs.AssetImageProcessor
   alias ContentForge.Jobs.AssetVideoProcessor
   alias ContentForge.ProductAssets
+  alias ContentForge.ProductAssets.AssetBundle
   alias ContentForge.ProductAssets.ProductAsset
   alias ContentForge.Products
   alias ContentForge.Publishing
@@ -35,8 +36,12 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
     drafts = ContentGeneration.list_drafts_for_product(product_id)
     published_posts = Publishing.list_published_posts(product_id: product_id, limit: 10)
     assets = ProductAssets.list_assets(product_id)
+    bundles = list_bundles_with_assets(product_id)
 
-    if connected?(socket), do: ProductAssets.subscribe(product_id)
+    if connected?(socket) do
+      ProductAssets.subscribe(product_id)
+      ProductAssets.subscribe_bundles(product_id)
+    end
 
     {:ok,
      socket
@@ -51,6 +56,10 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
        asset_media_filter: "",
        asset_tag_catalog: ProductAssets.list_distinct_tags(product_id),
        asset_top_tags: ProductAssets.top_tags(product_id, 8),
+       bundles: bundles,
+       bundle_form: to_bundle_form(%AssetBundle{}, %{}),
+       open_bundle_id: nil,
+       picker_media_filter: "",
        active_tab: "overview"
      )
      |> allow_upload(:assets,
@@ -126,6 +135,102 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
     {:noreply, socket |> refresh_assets() |> refresh_asset_catalog()}
   end
 
+  # --- bundle events ------------------------------------------------------
+
+  @impl true
+  def handle_event("create_bundle", %{"bundle" => params}, socket) do
+    attrs = Map.put(params, "product_id", socket.assigns.product.id)
+
+    case ProductAssets.create_bundle(attrs) do
+      {:ok, _bundle} ->
+        {:noreply,
+         socket
+         |> assign(bundle_form: to_bundle_form(%AssetBundle{}, %{}))
+         |> refresh_bundles()}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, bundle_form: to_form(changeset, as: :bundle))}
+    end
+  end
+
+  @impl true
+  def handle_event("open_bundle", %{"bundle-id" => bundle_id}, socket) do
+    {:noreply, assign(socket, open_bundle_id: bundle_id, picker_media_filter: "")}
+  end
+
+  @impl true
+  def handle_event("close_bundle", _params, socket) do
+    {:noreply, assign(socket, open_bundle_id: nil)}
+  end
+
+  @impl true
+  def handle_event(
+        "remove_bundle_asset",
+        %{"bundle-id" => bundle_id, "asset-id" => asset_id},
+        socket
+      ) do
+    bundle = ProductAssets.get_bundle!(bundle_id)
+    asset = ProductAssets.get_asset!(asset_id)
+    :ok = ProductAssets.remove_asset_from_bundle(bundle, asset)
+    {:noreply, refresh_bundles(socket)}
+  end
+
+  @impl true
+  def handle_event(
+        "reorder_bundle_asset",
+        %{"bundle-id" => bundle_id, "asset-id" => asset_id, "direction" => direction},
+        socket
+      ) do
+    bundle = ProductAssets.get_bundle!(bundle_id)
+    current_ids = Enum.map(bundle.bundle_assets, & &1.asset_id)
+    new_ids = shift_asset(current_ids, asset_id, direction)
+    {:ok, _} = ProductAssets.reorder_bundle_assets(bundle, new_ids)
+    {:noreply, refresh_bundles(socket)}
+  end
+
+  @impl true
+  def handle_event(
+        "filter_picker_media",
+        %{"bundle-id" => bundle_id, "media_type" => media_type},
+        socket
+      ) do
+    {:noreply, assign(socket, open_bundle_id: bundle_id, picker_media_filter: media_type)}
+  end
+
+  @impl true
+  def handle_event(
+        "add_bundle_asset",
+        %{"bundle-id" => bundle_id, "asset-id" => asset_id},
+        socket
+      ) do
+    bundle = ProductAssets.get_bundle!(bundle_id)
+    asset = ProductAssets.get_asset!(asset_id)
+    {:ok, _} = ProductAssets.add_asset_to_bundle(bundle, asset)
+    {:noreply, refresh_bundles(socket)}
+  end
+
+  @impl true
+  def handle_event("archive_bundle", %{"bundle-id" => bundle_id}, socket) do
+    bundle = ProductAssets.get_bundle!(bundle_id)
+    {:ok, _} = ProductAssets.archive_bundle(bundle)
+
+    {:noreply,
+     socket
+     |> assign(open_bundle_id: nil)
+     |> refresh_bundles()}
+  end
+
+  @impl true
+  def handle_event("soft_delete_bundle", %{"bundle-id" => bundle_id}, socket) do
+    bundle = ProductAssets.get_bundle!(bundle_id)
+    {:ok, _} = ProductAssets.soft_delete_bundle(bundle)
+
+    {:noreply,
+     socket
+     |> assign(open_bundle_id: nil)
+     |> refresh_bundles()}
+  end
+
   @impl true
   def handle_info({event, asset}, socket)
       when event in [:asset_created, :asset_updated, :asset_deleted] do
@@ -136,6 +241,18 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
       |> assign(last_asset_event: {event, asset.id})
 
     {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({event, %AssetBundle{}}, socket)
+      when event in [
+             :bundle_created,
+             :bundle_updated,
+             :bundle_archived,
+             :bundle_deleted,
+             :bundle_membership_changed
+           ] do
+    {:noreply, refresh_bundles(socket)}
   end
 
   # --- filter application --------------------------------------------------
@@ -158,6 +275,48 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
       asset_tag_catalog: ProductAssets.list_distinct_tags(product_id),
       asset_top_tags: ProductAssets.top_tags(product_id, 8)
     )
+  end
+
+  defp refresh_bundles(socket) do
+    assign(socket, bundles: list_bundles_with_assets(socket.assigns.product.id))
+  end
+
+  defp list_bundles_with_assets(product_id) do
+    product_id
+    |> ProductAssets.list_bundles()
+    |> Enum.map(&ProductAssets.get_bundle!(&1.id))
+  end
+
+  defp to_bundle_form(bundle, attrs),
+    do: bundle |> AssetBundle.changeset(attrs) |> to_form(as: :bundle)
+
+  # Shifts `asset_id` one slot earlier or later in `ids`. No-op if the
+  # asset is already at the edge or not present in the list.
+  defp shift_asset(ids, asset_id, "up") do
+    case Enum.find_index(ids, &(&1 == asset_id)) do
+      nil -> ids
+      0 -> ids
+      idx -> swap(ids, idx, idx - 1)
+    end
+  end
+
+  defp shift_asset(ids, asset_id, "down") do
+    last = length(ids) - 1
+
+    case Enum.find_index(ids, &(&1 == asset_id)) do
+      nil -> ids
+      ^last -> ids
+      idx -> swap(ids, idx, idx + 1)
+    end
+  end
+
+  defp swap(list, i, j) do
+    a = Enum.at(list, i)
+    b = Enum.at(list, j)
+
+    list
+    |> List.replace_at(i, b)
+    |> List.replace_at(j, a)
   end
 
   defp maybe_put_opt(opts, _key, nil), do: opts
@@ -297,6 +456,14 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
           phx-value-tab="assets"
         >
           Assets
+        </button>
+        <button
+          role="tab"
+          class={["tab", @active_tab == "bundles" && "tab-active"]}
+          phx-click="switch_tab"
+          phx-value-tab="bundles"
+        >
+          Bundles
         </button>
       </div>
       
@@ -686,8 +853,251 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
           </div>
         </div>
       </div>
+      
+    <!-- Bundles Tab -->
+      <div :if={@active_tab == "bundles"} class="space-y-4">
+        <div class="card bg-base-200">
+          <div class="card-body">
+            <h2 class="card-title">Asset Bundles</h2>
+            <p class="text-sm text-base-content/70">
+              Group assets into named bundles for draft generation and publishing.
+            </p>
+
+            <.form
+              :let={f}
+              for={@bundle_form}
+              as={:bundle}
+              phx-submit="create_bundle"
+              class="space-y-2"
+            >
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <label class="form-control w-full">
+                  <span class="label-text">Name</span>
+                  <input
+                    type="text"
+                    name={f[:name].name}
+                    value={Phoenix.HTML.Form.normalize_value("text", f[:name].value)}
+                    placeholder="Johnson kitchen remodel"
+                    class="input input-bordered w-full"
+                    aria-label="Bundle name"
+                  />
+                  <span
+                    :for={msg <- Enum.map(f[:name].errors, &translate_bundle_error/1)}
+                    class="text-xs text-error mt-1"
+                  >
+                    {msg}
+                  </span>
+                </label>
+                <label class="form-control w-full">
+                  <span class="label-text">Context (optional)</span>
+                  <input
+                    type="text"
+                    name={f[:context].name}
+                    value={Phoenix.HTML.Form.normalize_value("text", f[:context].value)}
+                    placeholder="3 weeks, quartz counters, custom cabinets"
+                    class="input input-bordered w-full"
+                    aria-label="Bundle context"
+                  />
+                </label>
+              </div>
+              <div class="flex justify-end">
+                <button type="submit" class="btn btn-primary">Create bundle</button>
+              </div>
+            </.form>
+          </div>
+        </div>
+
+        <div :if={@bundles == []} class="text-center py-8 text-base-content/70">
+          No bundles yet
+        </div>
+
+        <div :if={@bundles != []} class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div
+            :for={bundle <- @bundles}
+            id={"bundle-#{bundle.id}"}
+            class="card bg-base-200"
+          >
+            <div class="card-body">
+              <div class="flex justify-between items-start gap-2">
+                <div class="min-w-0">
+                  <h3 class="card-title text-lg truncate">{bundle.name}</h3>
+                  <p :if={bundle.context} class="text-xs text-base-content/70 truncate">
+                    {bundle.context}
+                  </p>
+                </div>
+                <div class="text-sm text-base-content/70 whitespace-nowrap">
+                  {length(bundle.bundle_assets)} assets
+                </div>
+              </div>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-1 mt-2">
+                <div
+                  :for={ba <- Enum.take(bundle.bundle_assets, 4)}
+                  data-bundle-thumb={ba.asset_id}
+                  class="aspect-square bg-base-300 rounded flex items-center justify-center text-xs text-base-content/60 overflow-hidden p-1 text-center"
+                  title={ba.asset.filename}
+                >
+                  {ba.asset.filename}
+                </div>
+              </div>
+              <div class="card-actions justify-end flex-wrap gap-1 mt-2">
+                <button
+                  :if={@open_bundle_id != bundle.id}
+                  type="button"
+                  class="btn btn-sm btn-ghost"
+                  phx-click="open_bundle"
+                  phx-value-bundle-id={bundle.id}
+                  aria-label={"Open bundle #{bundle.name}"}
+                >
+                  Open
+                </button>
+                <button
+                  :if={@open_bundle_id == bundle.id}
+                  type="button"
+                  class="btn btn-sm btn-ghost"
+                  phx-click="close_bundle"
+                  phx-value-bundle-id={bundle.id}
+                  aria-label="Close bundle"
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-sm btn-ghost"
+                  phx-click="archive_bundle"
+                  phx-value-bundle-id={bundle.id}
+                  aria-label={"Archive bundle #{bundle.name}"}
+                  data-confirm={"Archive #{bundle.name}?"}
+                >
+                  Archive
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-sm btn-ghost text-error"
+                  phx-click="soft_delete_bundle"
+                  phx-value-bundle-id={bundle.id}
+                  aria-label={"Delete bundle #{bundle.name}"}
+                  data-confirm={"Delete #{bundle.name}?"}
+                >
+                  Delete
+                </button>
+              </div>
+
+              <div
+                :if={@open_bundle_id == bundle.id}
+                id={"bundle-detail-#{bundle.id}"}
+                class="mt-3 border-t border-base-300 pt-3 space-y-3"
+              >
+                <div :if={bundle.bundle_assets == []} class="text-sm text-base-content/60">
+                  No assets in this bundle yet.
+                </div>
+                <ul :if={bundle.bundle_assets != []} class="space-y-1">
+                  <li
+                    :for={{ba, idx} <- Enum.with_index(bundle.bundle_assets)}
+                    data-bundle-asset-row={ba.asset_id}
+                    class="flex items-center gap-2 text-sm"
+                  >
+                    <span class="text-xs text-base-content/60 w-6">{idx + 1}.</span>
+                    <span class="flex-1 truncate">{ba.asset.filename}</span>
+                    <button
+                      type="button"
+                      class="btn btn-ghost btn-xs"
+                      phx-click="reorder_bundle_asset"
+                      phx-value-bundle-id={bundle.id}
+                      phx-value-asset-id={ba.asset_id}
+                      phx-value-direction="up"
+                      disabled={idx == 0}
+                      aria-label="Move up"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      class="btn btn-ghost btn-xs"
+                      phx-click="reorder_bundle_asset"
+                      phx-value-bundle-id={bundle.id}
+                      phx-value-asset-id={ba.asset_id}
+                      phx-value-direction="down"
+                      disabled={idx == length(bundle.bundle_assets) - 1}
+                      aria-label="Move down"
+                    >
+                      ↓
+                    </button>
+                    <button
+                      type="button"
+                      class="btn btn-ghost btn-xs text-error"
+                      phx-click="remove_bundle_asset"
+                      phx-value-bundle-id={bundle.id}
+                      phx-value-asset-id={ba.asset_id}
+                      aria-label={"Remove #{ba.asset.filename} from bundle"}
+                    >
+                      ×
+                    </button>
+                  </li>
+                </ul>
+
+                <div class="border-t border-base-300 pt-3">
+                  <p class="text-xs text-base-content/70 mb-1">Add from library</p>
+                  <form phx-change="filter_picker_media" class="mb-2">
+                    <input type="hidden" name="bundle-id" value={bundle.id} />
+                    <select
+                      name="media_type"
+                      class="select select-bordered select-sm"
+                      aria-label="Filter unattached assets by media type"
+                    >
+                      <option value="" selected={@picker_media_filter == ""}>All media</option>
+                      <option value="image" selected={@picker_media_filter == "image"}>
+                        Images
+                      </option>
+                      <option value="video" selected={@picker_media_filter == "video"}>
+                        Videos
+                      </option>
+                    </select>
+                  </form>
+                  <div class="flex flex-wrap gap-1">
+                    <button
+                      :for={asset <- picker_candidates(@assets, bundle, @picker_media_filter)}
+                      type="button"
+                      data-picker-asset={asset.id}
+                      class="btn btn-outline btn-xs"
+                      phx-click="add_bundle_asset"
+                      phx-value-bundle-id={bundle.id}
+                      phx-value-asset-id={asset.id}
+                    >
+                      + {asset.filename}
+                    </button>
+                  </div>
+                  <p
+                    :if={picker_candidates(@assets, bundle, @picker_media_filter) == []}
+                    class="text-xs text-base-content/60"
+                  >
+                    No more assets to add.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
     """
+  end
+
+  defp translate_bundle_error({msg, _opts}), do: msg
+  defp translate_bundle_error(msg) when is_binary(msg), do: msg
+
+  defp picker_candidates(assets, %AssetBundle{bundle_assets: members}, filter) do
+    attached = MapSet.new(members, & &1.asset_id)
+
+    assets
+    |> Enum.reject(&MapSet.member?(attached, &1.id))
+    |> filter_by_media(filter)
+  end
+
+  defp filter_by_media(list, nil), do: list
+  defp filter_by_media(list, ""), do: list
+
+  defp filter_by_media(list, media_type) when is_binary(media_type) do
+    Enum.filter(list, &(&1.media_type == media_type))
   end
 
   defp error_to_string(:too_large), do: "File too large"
