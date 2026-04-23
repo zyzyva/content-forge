@@ -85,6 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 16.4b: approve_draft (first consumer of the confirmation envelope)
 
 Status: DONE
+Merged: master @ `3cd5f9c` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 954-0, credo 26 vs 44 baseline (zero new in slice-touched files). Coverage ApproveDraft 88%. Zero emdashes. Flow follows spec verbatim: resolve product -> fetch draft -> authorize, and draft enumeration surface matches the 16.2 `draft_status` read-only tool so no new information leak is introduced. Gate-pass, gate-block, and override paths all exercised; two-turn controller cycle green.
 Note: First real heavy-write tool. Proves the 16.4a infrastructure end-to-end: preview construction, idempotent request, atomic consume-on-confirm, routing to the existing 12.4 publish gate with an override path. No new schema or migration in this slice; reuses `ContentGeneration.approve_blog_draft/1,2` and `approve_blog_draft_with_override/2,3` verbatim.
 
 **Tool** (`lib/content_forge/open_claw_tools/approve_draft.ex`):
