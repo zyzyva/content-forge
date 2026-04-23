@@ -1,0 +1,47 @@
+# Content Forge Constitution
+
+This file takes precedence over subordinate files.
+Read and obey the following subordinate documents in order.
+
+1. `swarmforge/constitution/project.prompt`
+2. `swarmforge/constitution/engineering.prompt`
+3. `swarmforge/constitution/workflow.prompt`
+
+If two subordinate files conflict, the earlier file wins.
+
+## Project Documents
+
+The authoritative project documents live at the repo root:
+
+- `CONTENT_FORGE_SPEC.md` — the Content Forge specification (features, scenarios, integrations)
+- `BUILDPLAN.md` — wave-by-wave plan for outstanding work
+- `BUILDLOG.md` — phase-by-phase build progress
+- `CAPABILITIES.md` — last-audited snapshot of shipped capabilities (may lag HEAD; verify before citing)
+- `CLAUDE.md` — project-specific Claude instructions
+- `README.md` — Phoenix project quickstart
+- `AGENTS.md`, `CLAUDE_TASKS.md`, `CLAW_TASKS.md` — legacy orchestration docs, informational only; the swarm flow supersedes them
+
+Read these before planning, coding, or reviewing. Keep `CONTENT_FORGE_SPEC.md`, `BUILDPLAN.md`, and `BUILDLOG.md` aligned with the code; when scope, plan, or phase status changes, update the document in the same handoff.
+
+## External Services Content Forge Depends On
+
+Integration points the swarm must keep in mind:
+
+- **Media Forge** at `http://192.168.1.37:5001` — image/video processing + AI image generation, gated by `X-MediaForge-Secret`.
+- **OpenClaw** — bulk variant generation and SMS conversational bot endpoints.
+- **Social platforms** — Twitter/X, LinkedIn, Reddit, Facebook, Instagram publishing + metrics APIs.
+- **Blog consumers** — static sites receive HMAC-signed webhooks.
+- **Anthropic / Google / xAI / OpenAI** — model APIs for brief generation and ranking.
+- **Apify** — competitor scraping actors.
+- **Twilio** — SMS gateway for Feature 12.
+- **Cloudflare R2** — long-term storage for drafts, renditions, and assets.
+
+## Queueing
+
+Each agent processes one message at a time.
+
+If another message arrives while the agent is busy, append it to `pending-messages` in that agent's worktree.
+
+When the current message is complete, the agent must process the oldest queued message next and remove it from `pending-messages`.
+
+Agents must not silently discard queued messages.

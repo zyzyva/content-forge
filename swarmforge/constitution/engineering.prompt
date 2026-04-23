@@ -1,0 +1,54 @@
+# Engineering Rules
+
+## Language and Framework
+
+- Elixir 1.19 with Phoenix + LiveView (existing scaffold).
+- Use the native `JSON` module (Elixir 1.18+), not Jason.
+- Always check hex.pm for the latest stable version of any new dependency before adding it to `mix.exs`.
+- Always include zyzyva telemetry: `{:zyzyva_telemetry, github: "zyzyva/zyzyva_telemetry"}`.
+
+## Pattern Matching and Control Flow
+
+- Favor function head pattern matching over `if`/`else` and `case`. Multiple function heads are preferred over branching inside a single function.
+- Use guards instead of `if` for numeric or type-based conditions when a function head split is impractical.
+- Simple boolean conditions inside existing functions are acceptable but not the default.
+
+## Phoenix LiveView and Routes
+
+- Authenticated LiveView routes must be wrapped in `live_session` with an `on_mount` hook. Router-level plugs alone are not enough.
+- Always use verified routes (the `~p` sigil) for internal navigation. Never hardcode path strings in templates or LiveViews.
+- Mobile-first markup by default. Touch targets comfortable on a phone, responsive breakpoints, no desktop-only layouts.
+
+## External Integrations
+
+- Every third-party call (Media Forge, OpenClaw, Twilio, Apify, Anthropic, social platform APIs) lives behind a named module that can be stubbed in tests.
+- Use `Req` for HTTP. Use `Req.Test` stub adapter in tests — never hit a live service from the test suite.
+- Distinguish transient (retryable) from permanent errors in return values. `{:error, {:transient, status, body}}` vs `{:error, {:http_error, status, body}}` vs `{:error, reason}`.
+- For Media Forge: include the `X-MediaForge-Secret` header on every call. For async endpoints, either poll `/api/v1/jobs/:id` or expose a webhook endpoint that verifies the HMAC signature (`X-MediaForge-Signature: t=<unix>,v1=<hex>`) with a 300-second window and `Plug.Crypto.secure_compare/2`.
+- Secrets come from env vars, never hardcoded. Missing credentials should downgrade the feature to "unavailable" in the UI rather than crashing the request.
+
+## Testing
+
+- TDD: red, green, refactor. No placeholder tests left behind when work is considered done.
+- All tests must pass before a handoff.
+- Use `ExUnit.CaptureIO` and `ExUnit.CaptureLog` to suppress noisy output from functions under test. Test output must be clean.
+- For functions that produce console output but return values, capture the IO while still asserting on the return value.
+- End-to-end / multi-step pipeline scenarios deserve at least one integration test each (product registry → brief → ranking → publish, for example).
+
+## Compilation and Code Quality
+
+- Zero compilation warnings before a handoff. Unused variables and parameters must be prefixed with `_`. Remove unused aliases. Fix deprecation warnings.
+- Run `mix format` before committing.
+- Run `mix credo --strict` and resolve issues before handing off.
+- All pattern matches must be exhaustive.
+
+## Accessibility and Mobile
+
+- The LiveView dashboard is the primary UI. It must be accessible: semantic HTML elements, ARIA labels where needed, keyboard navigation, WCAG AA color contrast, text alternatives for images.
+- Design and verify for phone-sized viewports first; desktop is an enhancement.
+
+## Security and Credentials
+
+- API surfaces (Review API, SMS webhooks, Media Forge webhook receivers) must authenticate every request. Bearer tokens for Review API, HMAC signatures for webhooks.
+- Never log credentials, API keys, or tokens. Never commit them.
+- When reading any credential value, ask the user for explicit permission first and report exactly what was accessed.

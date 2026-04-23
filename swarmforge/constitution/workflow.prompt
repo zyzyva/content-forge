@@ -1,0 +1,42 @@
+# Workflow Rules
+
+## Branch and Worktree Discipline
+
+- At startup, each agent must discover the branch and worktree assigned to its role, and work only there.
+- The architect works on `master` (the main working directory).
+- The coder works in `.worktrees/coder` on branch `coder`.
+- The reviewer works in `.worktrees/reviewer` on branch `reviewer`.
+- Agents must not silently work in the wrong branch or another role's worktree. If the expected layout is missing, repair it or stop and report.
+- If the repository currently sits on a non-master branch (for example `phase-2`), the architect must reconcile before spawning worktrees: either merge to `master`, rename `master` to point at the current head, or report and wait for guidance. Do not silently create `coder` / `reviewer` branches off the wrong base.
+
+## Handoffs
+
+- The architect defines behavior and design, then notifies the coder.
+- The coder implements behavior in small slices, runs the full test suite, and notifies the reviewer on green.
+- The reviewer runs deeper quality checks, refactors for testability if needed, and notifies both the architect and the coder when done.
+- Merge accepted changes only from the correct source branch for the role that produced them.
+- Every handoff must include: commit hash, branch name, what changed, what was verified (which commands passed).
+- Use `swarmtools/notify-agent.sh` for all handoffs.
+
+## Commits
+
+- Commit frequently with small atomic commits as work progresses.
+- Do not commit unrelated local changes or generated artifacts unless they are required for the task.
+- Keep client names and private details out of commit messages. Use generic references.
+- No emdashes in commit messages or code.
+
+## Definition of Done
+
+A coder handoff is not done until:
+- All unit and integration tests pass.
+- `mix format` has been run.
+- `mix credo --strict` passes.
+- Zero compilation warnings.
+- `BUILDLOG.md` is updated if the slice completes a phase item.
+
+A reviewer handoff is not done until:
+- All gates above still pass on the reviewer's branch.
+- Coverage is examined and reasonable gaps are filled.
+- Any refactors preserve behavior and the test suite still passes.
+- For LiveView slices, the reviewer has verified the rendered markup is responsive and accessible (semantic elements, ARIA, contrast, keyboard paths).
+- For external-integration slices, the reviewer has verified that missing credentials downgrade gracefully instead of crashing.
