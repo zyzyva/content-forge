@@ -204,7 +204,7 @@ Phase exit criteria: end-to-end image generation, image processing, and video re
   - `Req.Test` stubbed from day one; no live Apify calls from the suite. Tests cover: one happy-path scrape per supported platform with a realistic stubbed actor output shape, rate-limit transient, permanent 4xx, timeout transient, missing-token short-circuit, unsupported-platform short-circuit, partial-parse success.
   - The slice also sets the runtime config wiring in `config/runtime.exs` so `APIFY_TOKEN` in the environment flows through to `:content_forge, :apify, :token`, and `:content_forge, :scraper_adapter` defaults to `ContentForge.CompetitorScraper.ApifyAdapter` in prod (leaves it unset in test so the discard path stays observable).
 
-- **11.3b Intel synthesizer LLM adapter module**
+- **11.3b Intel synthesizer LLM adapter module** ✅ Shipped `59397aa`.
   - Build `ContentForge.CompetitorIntelSynthesizer.LLMAdapter` implementing `summarize/1` that the existing synthesizer already dispatches to via the `:intel_model` config.
   - Public surface: a single `summarize([%CompetitorPost{}])` function that returns a success tuple carrying a map with the summary text, trending topics, winning formats, and effective hooks per the `CompetitorIntel` schema, or a classified error tuple on failure.
   - The adapter internally calls `LLM.Anthropic.complete/2` with a structured prompt that asks for a JSON response matching the intel schema shape. JSON parsing mirrors the MultiModelRanker pattern: direct decode, fenced-block regex fallback, reject-malformed-without-fabricating-fallback.
@@ -259,6 +259,38 @@ Per `CONTENT_FORGE_SPEC.md` Feature 11. Leans heavily on Phase 10 Media Forge pl
   - LiveView upload form for product-level assets (images, short videos, PDFs).
   - Files go to Media Forge for EXIF / normalization / thumbnail generation; renditions land in R2.
   - Records the asset metadata and R2 keys in the Content Forge DB.
+  - **Slicing note:** Expands into a schema-plus-context slice, a presigned-upload slice, a LiveView upload-form slice, and two processing dispatch slices (image, video). Each is a single TDD loop.
+
+- **13.1a ProductAsset schema and context module**
+  - New Ecto schema `ContentForge.ProductAssets.ProductAsset` at `lib/content_forge/product_assets/product_asset.ex` with fields: `product_id` (binary_id fk, required), `storage_key` (string, required — the R2 or Bunny object key for the original upload), `media_type` (string enum, `"image"` or `"video"`, required), `filename` (string, required — original filename as provided by the uploader), `mime_type` (string, required), `byte_size` (integer, required), `duration_ms` (integer, nil for images), `width` (integer), `height` (integer), `uploaded_at` (utc_datetime_usec, required), `uploader` (string — free-form identifier of who uploaded, for example a phone number later in Feature 12), `tags` (array of strings, default empty), `description` (text, nullable), `status` (string enum, one of `"pending"`, `"processed"`, `"failed"`, `"deleted"`, default `"pending"`), plus the usual `inserted_at` and `updated_at`.
+  - Migration `priv/repo/migrations/<ts>_create_product_assets.exs` creates the table with binary_id primary key, foreign key constraint to `products` with `on_delete: :nilify_all` (soft-delete-safe for the product), an index on `(product_id, status)` for dashboard list queries, and a GIN index on `tags` for array-overlap searches. A partial unique index on `(product_id, storage_key)` where `status != 'deleted'` guards against accidental double-registration of the same upload.
+  - New context module `ContentForge.ProductAssets` at `lib/content_forge/product_assets.ex` with: `create_asset/1` (takes attrs, inserts), `get_asset!/1`, `get_asset_by_storage_key/2` (by product and storage_key), `list_assets/2` (by product with filter keyword list — tag, media_type, status — and sort_by :uploaded_at descending by default), `list_distinct_tags/1` (returns sorted unique tags for a product, used for autocomplete), `update_asset/2`, `mark_processed/2` (transitions `pending` → `processed` and writes dimension/duration metadata), `mark_failed/2` (records an error string), `soft_delete_asset/1` (sets status to `"deleted"` without removing the row).
+  - No upload flow, no storage integration, no LiveView in this slice. Only the schema, migration, and context.
+  - Tests cover: the full CRUD happy path, the filter combinations on `list_assets/2`, the `list_distinct_tags/1` deduplication, the soft-delete preserves the row and hides it from default lists, the unique constraint on storage_key rejects a duplicate, and the status transitions on mark_processed and mark_failed.
+
+- **13.1b Presigned upload URL endpoint**
+  - New REST endpoint `POST /api/v1/products/:product_id/assets/presigned-upload` under the existing bearer-token API pipeline. Request body carries the intended filename, content type, and byte size. Response carries a presigned PUT URL scoped to a unique storage key (path like `products/<product_id>/assets/<uuid>/<filename>`), the storage key itself, and an expiry timestamp (15 minutes by default).
+  - The presigning goes through the existing `ContentForge.Storage` module (`ExAws` R2 backend). The controller does not accept the upload bytes directly; the client uploads straight to R2 via the presigned PUT, avoiding the Phoenix server on the hot path.
+  - After the client PUT succeeds, the client posts the upload result back to `POST /api/v1/products/:product_id/assets/register` with the storage key, filename, content type, byte size, and any client-side metadata. The register endpoint creates the `ProductAsset` row in `status: "pending"` and enqueues a processing Oban job (scoped to the right queue based on `media_type`).
+  - Content type allow-list: `image/jpeg`, `image/png`, `image/webp`, `image/heic`, `video/mp4`, `video/quicktime`, `video/x-m4v`. Anything else returns a 415.
+  - Byte-size cap configurable per deployment; default 500MB for video, 50MB for image. Anything larger returns a 413 with the configured limit in the response body.
+  - Tests cover: presigned URL is generated and signed correctly (verify the structure; do not call R2), register endpoint creates a row and enqueues the right processing job per media_type, disallowed content types are rejected, oversized byte sizes are rejected, missing auth on the endpoint returns 401.
+
+- **13.1c LiveView upload form on product detail page**
+  - Extend the product detail LiveView with an upload form that uses Phoenix LiveView's native uploads. The form allows multi-file selection, shows per-file progress, and after a file finishes uploading client-side, fires the presigned-upload flow from 13.1b.
+  - Mobile-first markup: the file input opens the phone's camera or camera roll via standard `accept` attribute; drag-and-drop is offered on desktop. Touch targets meet WCAG AA.
+  - After successful registration, the row appears in an "Assets" section of the product detail page with a pending badge. The processing job flips the badge to `Processed` (or `Failed` with the error) via Phoenix PubSub.
+  - Tests: the LiveView renders the form, a stubbed registration call transitions the UI state, a processing completion over PubSub updates the badge.
+
+- **13.1d Image processing dispatch to Media Forge**
+  - New Oban worker `ContentForge.Jobs.AssetImageProcessor` under queue `:content_generation` (the existing queue configured in 10.2) that consumes an asset id, calls `MediaForge.enqueue_image_process/1` with the storage key and the requested transforms (autorotate, strip EXIF, generate thumbnail at a fixed size, probe dimensions), polls job status until terminal, and on success calls `ProductAssets.mark_processed/2` with the dimensions returned from Media Forge and the thumbnail's storage key recorded on the asset row.
+  - On `{:error, :not_configured}`: mark the asset failed with `"media_forge_unavailable"` so the dashboard surfaces it rather than hanging in `pending`. No synthetic dimensions or thumbnail are fabricated.
+  - On transient errors: let Oban retry. On permanent errors: mark the asset failed with the error recorded.
+  - Tests use the existing `Req.Test` stub pattern. Cover: happy-path sync + async + not-configured + transient retry + permanent failure.
+
+- **13.1e Video processing dispatch to Media Forge**
+  - New Oban worker `ContentForge.Jobs.AssetVideoProcessor` under queue `:content_generation` that consumes an asset id, calls `MediaForge.enqueue_normalize/1` with the storage key and the video normalization config (probe, normalize to H.264/AAC, generate poster thumbnail), polls until terminal, and on success records duration_ms, width, height, a normalized-video storage key, and a poster-image storage key on the asset. Same error handling rules as 13.1d.
+  - Tests mirror 13.1d plus one for duration being recorded correctly.
 
 - **13.2 Tagging and search**
   - Free-text tags plus inferred tags (from filename, EXIF, dominant-color, or model-captioning).
