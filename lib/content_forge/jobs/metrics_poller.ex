@@ -19,6 +19,7 @@ defmodule ContentForge.Jobs.MetricsPoller do
 
   alias ContentForge.{Metrics, Products, Publishing}
   alias ContentForge.ContentGeneration.DraftScore
+  alias ContentForge.Metrics.ScoreboardEntry
   alias ContentForge.Publishing.PublishedPost
   alias ContentForge.Publishing.{Twitter, LinkedIn, Facebook, Reddit, YouTube}
   alias ContentForge.Repo
@@ -297,9 +298,7 @@ defmodule ContentForge.Jobs.MetricsPoller do
           Metrics.update_model_calibration(updated_entry, updated_entry.per_model_scores)
         end
 
-        if updated_entry.outcome == "winner" && updated_entry.delta > 3.0 do
-          trigger_spike_alert(product, updated_entry)
-        end
+        maybe_trigger_spike(product, updated_entry)
 
         {:ok, updated_entry}
       else
@@ -394,7 +393,18 @@ defmodule ContentForge.Jobs.MetricsPoller do
     end)
   end
 
-  defp check_rewrite_trigger(product) do
+  @doc """
+  Checks every platform for poor-performer thresholds and enqueues a
+  brief-rewrite job when at least five scoreboard entries have
+  `delta < -1.0` within the configured window.
+
+  Public so the auto-trigger behaviour can be asserted by tests; it is
+  also called at the end of each poll from `poll_product_metrics/2`.
+  Enqueued jobs are idempotent per `product_id`: Oban's `unique` config
+  collapses duplicate rewrite requests so repeat polls do not stack up
+  multiple rewrites for the same state transition.
+  """
+  def check_rewrite_trigger(product) do
     platforms = ~w(twitter linkedin reddit facebook instagram youtube)
 
     Enum.each(platforms, fn platform ->
@@ -403,10 +413,27 @@ defmodule ContentForge.Jobs.MetricsPoller do
           "MetricsPoller: Triggering brief rewrite for #{product.name} on #{platform}"
         )
 
-        trigger_rewrite(product, platform)
+        trigger_rewrite(product)
       end
     end)
   end
+
+  @doc """
+  Enqueues `WinnerRepurposingEngine` when a scoreboard entry's outcome
+  is `"winner"` and its delta strictly exceeds 3.0.
+
+  Public so the auto-trigger behaviour can be asserted by tests; it is
+  also called from `measure_and_record_post/2` after
+  `Metrics.measure_and_update_scoreboard/2` lands the measurement.
+  Enqueued jobs are idempotent per `draft_id`: Oban's `unique` config
+  prevents duplicate repurposing for the same winning draft.
+  """
+  def maybe_trigger_spike(product, %ScoreboardEntry{outcome: "winner", delta: delta} = entry)
+      when is_number(delta) and delta > 3.0 do
+    trigger_spike_alert(product, entry)
+  end
+
+  def maybe_trigger_spike(_product, _entry), do: :noop
 
   defp trigger_spike_alert(product, entry) do
     Logger.info(
@@ -415,15 +442,22 @@ defmodule ContentForge.Jobs.MetricsPoller do
     )
 
     %{"draft_id" => entry.draft_id}
-    |> ContentForge.Jobs.WinnerRepurposingEngine.new()
+    |> ContentForge.Jobs.WinnerRepurposingEngine.new(
+      unique: [period: :infinity, fields: [:args, :worker]]
+    )
     |> Oban.insert()
   end
 
-  defp trigger_rewrite(product, platform) do
-    Logger.warning("MetricsPoller: Enqueueing brief rewrite for #{product.name} on #{platform}")
+  defp trigger_rewrite(product) do
+    Logger.warning("MetricsPoller: Enqueueing brief rewrite for #{product.name}")
 
+    # Idempotency: repeat polls in the same day for the same product
+    # collapse to a single rewrite job. force_rewrite is held constant so
+    # duplicate arg maps compare equal.
     %{"product_id" => product.id, "force_rewrite" => true}
-    |> ContentForge.Jobs.ContentBriefGenerator.new()
+    |> ContentForge.Jobs.ContentBriefGenerator.new(
+      unique: [period: 24 * 60 * 60, fields: [:args, :worker]]
+    )
     |> Oban.insert()
   end
 end
