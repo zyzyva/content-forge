@@ -264,7 +264,7 @@ defmodule ContentForge.Jobs.ImageGeneratorTest do
                "https://cdn.example/url-key.png"
     end
 
-    test "sync response with nested \"result\".\"image_url\" persists it",
+    test "sync response with nested result.image_url persists it",
          %{draft: draft} do
       Req.Test.stub(@stub_key, fn conn ->
         Req.Test.json(conn, %{
@@ -403,7 +403,7 @@ defmodule ContentForge.Jobs.ImageGeneratorTest do
       assert ContentGeneration.get_draft!(draft.id).image_url == nil
     end
 
-    test "poll \"done\" with top-level \"image_url\" persists it", %{draft: draft} do
+    test "poll done response with top-level image_url persists it", %{draft: draft} do
       Req.Test.stub(@stub_key, fn conn ->
         case conn.request_path do
           "/api/v1/generation/images" ->
@@ -422,7 +422,7 @@ defmodule ContentForge.Jobs.ImageGeneratorTest do
                perform_job(ImageGenerator, %{"draft_id" => draft.id})
     end
 
-    test "poll \"done\" with \"result\".\"url\" (not image_url) persists it",
+    test "poll done response with result.url (not image_url) persists it",
          %{draft: draft} do
       Req.Test.stub(@stub_key, fn conn ->
         case conn.request_path do
