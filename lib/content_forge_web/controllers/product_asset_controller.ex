@@ -14,12 +14,12 @@ defmodule ContentForgeWeb.ProductAssetController do
   alias ContentForge.Jobs.AssetImageProcessor
   alias ContentForge.Jobs.AssetVideoProcessor
   alias ContentForge.ProductAssets
+  alias ContentForge.ProductAssets.AcceptedContentTypes
   alias ContentForge.ProductAssets.ProductAsset
   alias ContentForge.Products
 
-  @image_content_types ~w(image/jpeg image/png image/webp image/heic)
-  @video_content_types ~w(video/mp4 video/quicktime video/x-m4v)
-  @allowed_content_types @image_content_types ++ @video_content_types
+  @image_content_types AcceptedContentTypes.image_list()
+  @video_content_types AcceptedContentTypes.video_list()
 
   @image_byte_cap 50 * 1_024 * 1_024
   @video_byte_cap 500 * 1_024 * 1_024
@@ -97,7 +97,7 @@ defmodule ContentForgeWeb.ProductAssetController do
     |> put_status(415)
     |> json(%{
       "error" => "unsupported content type",
-      "allowed" => @allowed_content_types
+      "allowed" => AcceptedContentTypes.list()
     })
   end
 
@@ -165,8 +165,11 @@ defmodule ContentForgeWeb.ProductAssetController do
     end
   end
 
-  defp validate_content_type(type) when type in @allowed_content_types, do: :ok
-  defp validate_content_type(_), do: {:error, :unsupported_content_type}
+  defp validate_content_type(type) do
+    if AcceptedContentTypes.allowed?(type),
+      do: :ok,
+      else: {:error, :unsupported_content_type}
+  end
 
   defp validate_byte_size(type, size) when type in @image_content_types do
     if size <= @image_byte_cap,
