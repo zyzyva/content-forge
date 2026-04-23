@@ -68,6 +68,17 @@ config :content_forge, Oban,
     competitor: 5
   ]
 
+# Default LLM provider configuration. The API key is sourced from an
+# environment variable at runtime (see config/runtime.exs); the defaults
+# below only cover the model name, token budget, and base URL so no
+# caller has to hardcode them.
+config :content_forge, :llm,
+  anthropic: [
+    base_url: "https://api.anthropic.com",
+    default_model: "claude-sonnet-4-6",
+    max_tokens: 4096
+  ]
+
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
 

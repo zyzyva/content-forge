@@ -29,6 +29,14 @@ config :content_forge, :media_forge,
   webhook_secret:
     System.get_env("MEDIA_FORGE_WEBHOOK_SECRET") || System.get_env("MEDIA_FORGE_SECRET")
 
+config :content_forge, :llm,
+  anthropic: [
+    base_url: System.get_env("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
+    api_key: System.get_env("ANTHROPIC_API_KEY"),
+    default_model: System.get_env("ANTHROPIC_DEFAULT_MODEL", "claude-sonnet-4-6"),
+    max_tokens: String.to_integer(System.get_env("ANTHROPIC_MAX_TOKENS", "4096"))
+  ]
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||
