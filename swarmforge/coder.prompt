@@ -19,3 +19,11 @@ You are the coder. Read swarmforge/constitution.prompt.
 - Update `BUILDLOG.md` if the slice completes or advances a phase item.
 - Do not commit unrelated local changes or generated artifacts unless required for the task.
 - When complete, commit and notify the reviewer with the branch name, commit hash, what changed, and the exact commands that passed.
+
+## Parallelism
+
+- Run independent tool calls in a single response. Reading three files, running two greps, and checking two command statuses should go in one batch, not sequentially. This applies to every research and verification step in a slice.
+- For research beyond the current slice — locating callers, tracing a concept across the tree, surveying conventions — delegate to the `Explore` agent. Do not read your way through the repo in your own context.
+- For slices over ~200 LOC or anything touching error handling, run `pr-review-toolkit:code-reviewer` as a self-check before the reviewer handoff. A bounced slice costs more than one agent call.
+- `pr-review-toolkit:silent-failure-hunter` is the right agent when the slice adds or modifies catch blocks, error tuples, `rescue` clauses, or fallback logic.
+- When the architect's spec identifies parallelizable sub-tasks within a slice, work them in the order that lets tests run earliest; if sub-tasks are fully independent, interleave their TDD loops rather than finishing one before starting the next.

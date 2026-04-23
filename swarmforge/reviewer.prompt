@@ -26,6 +26,13 @@ You are the reviewer. Read swarmforge/constitution.prompt.
 - Commit only reviewer-owned changes.
 - When complete, commit and notify both the architect and the coder with the branch name, commit hash, and a verification summary (which commands passed and coverage numbers).
 
+## Parallelism
+
+- Run independent gates concurrently in the same response. `mix compile --warnings-as-errors`, `mix format --check-formatted`, `mix credo --strict`, `mix test`, and `mix test --cover` do not depend on each other; batch them. Do not run them serially unless one's output changes your next decision.
+- When surveying a diff, fetch multiple git views (status, log, diff of specific files) in one batch rather than sequentially.
+- For slices touching more than one domain (e.g. both web and data layer), spawn `Explore` agents to map each domain in parallel before reviewing.
+- Diff `mix credo --strict` against `.credo_baseline.txt` once, not per-finding. Baseline diff is a single comparison, not an iteration.
+
 ## Queueing Variation
 
 When ready for queued work, dequeue all coder handoffs and process them together as one review batch. If no coder handoffs are queued, process the oldest queued message.
