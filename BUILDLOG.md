@@ -82,6 +82,45 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 13.5b: Publisher rendition swap
+
+Status: READY FOR REVIEW
+Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (each gate invoked as a separate command with its own exit code, per the 13.5a lesson), mix test 425/0 (414 prior + 11 new). Credo by content unchanged vs post-13.5a: a would-be new `cond` finding in the LinkedIn branch of `put_platform_opts/3` fixed inline by reverting to `if/else`; zero net-new findings; nine baseline findings net-removed (one genuinely removed: the `Publisher.build_post_opts` cyclomatic-19 is gone now that the function decomposes into `put_primary_image/2` + `put_carousel/3` + `put_platform_opts/3` function-head-dispatched on platform).
+Note: `ContentForge.Jobs.Publisher` now resolves platform-specific URLs from attached `draft_assets` before publishing, per BUILDPLAN 13.5b. Both entry paths (`publish_to_platform/4` for the `product_id+platform` args shape and `do_publish_approved/2` for the `draft_id` args shape) go through a new `resolve_post_assets/2` step before building opts. `resolve_post_assets/2` returns one of:
+
+- `{:ok, %{primary_url: _, gallery_urls: [...]}}` — continue to publish
+- `{:blocked, reason}` — mark draft `"blocked"` via `ContentGeneration.mark_draft_blocked/1` and return `{:cancel, reason}`, mirroring the 10.2b missing-image blocker state
+- `{:error, reason}` — propagate upward so Oban retries (transient errors only)
+
+Resolution flow: `load_attachments/1` (direct query on `DraftAsset` with `preload: :asset` and `order_by: inserted_at asc`) splits into featured + gallery via `split_by_role/1`. Featured is the first row with `role: "featured"`; if none exists (pre-role-tagging drafts), the first attachment serves as featured while the rest become gallery. `resolve_primary/3` calls `RenditionResolver.resolve/2`; `resolve_gallery/2` uses `Enum.reduce_while/3` to short-circuit on the first error, aggregating resolved URLs into a list in attach order.
+
+Legacy drafts (no attachments) collapse to `{:ok, %{primary_url: draft.image_url, gallery_urls: []}}` so `build_post_opts/4` has a uniform shape regardless of provenance. Legacy callers don't hit `RenditionResolver.resolve/2` and don't touch Media Forge at all — the resolver-first read was key here; resolver-second would have surprised existing "image_url present, no attachments" drafts.
+
+`build_post_opts/3` is gone; the new public `build_post_opts/4` takes `(draft, _optimal_windows, product, resolution)` and composes the keyword list through three small helpers: `put_primary_image/2` (two-head on the resolution's `primary_url` being a binary or not), `put_carousel/3` (two-head: carousel-capable platform AND non-empty `gallery_urls` → `Keyword.put(:carousel, urls)`; otherwise no-op), and `put_platform_opts/3` (function-head dispatched on `"linkedin" | "reddit" | "facebook" | "instagram" | _`). Carousel-capable platforms are `@carousel_platforms ~w(instagram facebook)`; extending this list is a one-line change. Made `build_post_opts/4` public so the test file can exercise the pure keyword-list construction directly without re-implementing carousel + platform-specific wiring inline the way the older `publisher_test.exs` had to.
+
+Error taxonomy pass-through in `interpret_resolver_result/3` (function-head per tuple shape) mirrors `ContentBriefGenerator`:
+
+- `{:error, :not_configured}` → `{:blocked, "rendition unavailable: media forge not configured"}` + a warning log reading "rendition unavailable ... media forge not configured"
+- `{:error, {:transient, _, _}}` → `{:error, reason}` for Oban retry (draft stays `"approved"`)
+- `{:error, {:http_error, status, _}}` → `{:blocked, "rendition failed: HTTP #{status}"}` + error log (draft blocked, `{:cancel, reason}`)
+- `{:error, {:unexpected_status, status, _}}` → `{:blocked, "rendition failed: unexpected HTTP #{status}"}`
+- `{:error, {:unexpected_body, _}}` → `{:blocked, "rendition failed: unexpected response body"}`
+- `{:error, reason}` (catch-all) → `{:error, reason}` for retry
+- `{:ok, {:async, _}}` — video job id, not yet exercised by this slice → falls back to `draft.image_url` on the primary path and contributes nothing to the gallery
+
+Gallery errors use a parallel `interpret_gallery_error/1` so a single bad attachment does not leak through as success.
+
+11 new tests in `test/content_forge/jobs/publisher_rendition_test.exs` (new file, `use Oban.Testing, async: false`):
+- `build_post_opts/4` pure tests: primary URL comes from resolution (not legacy `draft.image_url`); carousel set on instagram/facebook with non-empty gallery; carousel omitted on twitter and on empty gallery lists
+- Legacy draft (no attachments) reaches credentials check with zero Media Forge HTTP and keeps `draft.image_url`
+- Draft with attached featured asset triggers Media Forge `/api/v1/image/render`, persists an `AssetRendition`, and reaches credentials check
+- Cached rendition skips Media Forge entirely
+- `:not_configured` blocks the draft (`status: "blocked"`) and logs "rendition unavailable ... media forge not configured"
+- Permanent 400 from Media Forge blocks the draft with `"rendition failed: HTTP 400"`
+- Transient 503 returns `{:error, {:transient, 503, _}}` for Oban retry, draft stays `"approved"`
+
+Touched files: `lib/content_forge/jobs/publisher.ex` (resolution step in both entry paths, public `build_post_opts/4` with decomposed helpers, full error-taxonomy pass-through), `test/content_forge/jobs/publisher_rendition_test.exs` (new), `BUILDLOG.md`.
+
 ### Phase 13.5a: AssetRenditionResolver + asset_renditions cache
 
 Status: DONE
