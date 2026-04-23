@@ -48,19 +48,24 @@ Both items below landed 2026-04-22 before any Phase 10 work. Retained here as a 
   - Ships with `Req.Test` stub usage baked into the test suite.
 
 - **10.1.1 MediaForge.classify/1 exhaustiveness for 3xx** ✅ Shipped `2fadc8f`.
-  - 3xx catch-all clause returning `{:error, {:unexpected_status, status, body}}`; 304 Not Modified test added. Exhaustiveness gap closed.
+  - The classifier currently pattern-matches 2xx, 4xx, 5xx, timeout, transport/network, and a catch-all for generic error tuples. A successful response in the 300-399 range raises a function-clause error. 304 Not Modified is the realistic case if a future caller enables conditional caching; other 3xx codes are reachable if redirect-following is disabled per request.
+  - Add a head matching the 3xx range and return an unexpected-status error tuple carrying the status and body. Add a failing test first asserting the tuple shape when the stub responds with 304.
+  - The engineering rule requires exhaustive pattern matches; this closes the gap.
 
 - **10.2 Swap image generation onto Media Forge**
-  - Replace the placeholder URL return in `ContentForge.Jobs.ImageGenerator.generate_image/3` with a call into `ContentForge.MediaForge.generate_images/1`, using polling (job status) for async responses. Webhook-based resolution waits for Phase 10.5.
-  - Persist the resulting image URL or R2 key onto `draft.image_url`. If Media Forge returns a synchronous result, persist immediately; if async, poll `get_job/1` with capped retries and persist once the job reports a done state.
-  - When Media Forge reports `{:error, :not_configured}`, the job logs "Media Forge unavailable", returns `{:ok, :skipped}`, and leaves `draft.image_url` nil. No placeholder URL is ever written. Downstream publishing will treat a missing image as a blocker (spec change handled under 10.2 too).
-  - Align Oban queue configuration so this job actually runs in dev/prod: add `:content_generation`, `:ingestion`, and `:competitor` to `config :content_forge, Oban, queues: [...]` in `config/config.exs`. Multiple workers (`ImageGenerator`, `ContentBriefGenerator`, `OpenClawBulkGenerator`, `MultiModelRanker`, `ScriptGate`, `WinnerRepurposingEngine`, `SiteCrawler`, `RepoIngestion`, `CompetitorScraper`, `CompetitorIntelSynthesizer`) declare these queues but they are dormant without the config. Fixing this is a one-line change and a hard prerequisite for the swap to deliver anything visible.
-  - Fix the queue-override bug inside `ImageGenerator.process_all_social_posts/1` which currently enqueues child jobs with `queue: :image_generation` (a queue that does not exist) instead of using the worker's declared `:content_generation` queue. Remove the override.
-  - Tests use `Req.Test` to stub Media Forge responses; no live calls. At least one test for sync success, one for async success via a polled `get_job`, one for `:not_configured` downgrade, and one for transient vs permanent error handling.
+  - Remove the local stub from the image generation entry point.
+  - Issue generation via Media Forge and wait either by poll or by exposing a signed-webhook receiver.
+  - Persist the resulting image bytes or R2 key where the existing schema expects them.
+  - Additional requirements surfaced during investigation of the existing image generator:
+    - When Media Forge reports the not-configured status (no shared secret on this deployment), the job must log the condition, return a skipped result, and leave the draft without an image. No placeholder URL is ever written. This aligns with the project rule that missing credentials downgrade gracefully rather than producing synthetic output.
+    - Align the Oban queue configuration so the image generation job actually runs in dev and prod. Several workers (content brief generator, bulk variant generator, multi-model ranker, script gate, winner repurposing, site crawler, repo ingestion, competitor scraper and synthesizer, image generator) declare queues that are not present in the current Oban config. Add those queues as a prerequisite so this slice delivers a feature that actually executes instead of dropping jobs into dormant queues.
+    - Fix the queue-override bug in the image generator's bulk-enqueue path where it currently enqueues child jobs into a queue name that does not exist, instead of using the worker's declared queue. Remove the override.
+    - Test expectations: stubbed Media Forge responses only; no live calls. Cover synchronous success, asynchronous success resolved by polling job status, not-configured downgrade with no HTTP call, and transient vs permanent error handling.
 
-- **10.2a Media Forge cost mirror and dashboard surfacing** (split from 10.2 for scope control)
-  - Ingest Media Forge `/api/v1/generation/costs` into a lightweight mirror table (product id, cost cents, provider, generated_at) so the dashboard can display real per-product generation spend.
-  - Add a dashboard card on the performance or schedule page showing cumulative image generation cost for each product and a hot-rolling 7-day spend number.
+- **10.2a Media Forge cost mirror and dashboard surfacing** (split from 10.2 for scope control so the swap above stays reviewable)
+  - Cost reporting in the dashboard should read from Media Forge's cost endpoint (or our mirrored record), not placeholder numbers.
+  - Ingest the Media Forge cost endpoint into a lightweight mirror table (product, cost, provider, generated-at) so the dashboard can display real per-product generation spend.
+  - Add a dashboard card on the performance or schedule page showing cumulative image generation cost per product and a rolling seven-day spend number.
   - Backfill strategy for rows that existed before the mirror began: none; start collecting from slice merge forward.
 
 - **10.3 Swap video pipeline FFmpeg step onto Media Forge**
