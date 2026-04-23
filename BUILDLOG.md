@@ -84,8 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 14.4a: Reminder config + STOP opt-out
 
-Status: READY FOR REVIEW
-Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (one formatter re-pass on the test's long keyword list that overflowed a single line), mix test 526/0 (504 prior + 22 new: 12 reminder-config context + 10 webhook STOP/START). Credo by content unchanged vs post-14.3: zero new findings; same nine baseline findings net-removed.
+Status: DONE
+Merged: master @ `9e7ebf4` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 526-0; credo unchanged. STOP/START keyword sets + `body_intent/1`; `dispatch_active` three-head only fires in active-phone head so STOP from unregistered number doesn't leak. STOP records audit + pauses + TwiML ack + `refute_enqueued` on dispatcher (TCPA: pause must be immediate + unaccompanied). START records + resumes + starts session + enqueues dispatcher. 22 tests.
 Note: New schema `ContentForge.Sms.ReminderConfig` at `lib/content_forge/sms/reminder_config.ex`: binary_id PK, belongs_to :product, `enabled` (bool default true), `cadence_days` (int default 7, `>0`), `quiet_hours_start` / `quiet_hours_end` (int 0..23, defaults 20 / 8), `timezone` (string default "UTC"), `backoff_after_ignored` (int default 2, `>0`), `stop_after_ignored` (int default 4, `>0`). Migration `20260430120000_create_reminder_configs_and_pause.exs` creates `sms_reminder_configs` with `on_delete: :delete_all` on product_id + unique index `sms_reminder_configs_product_id_index`, and alters `product_phones` to add a `reminders_paused_until :utc_datetime_usec` nullable column.
 
 `ContentForge.Sms.ProductPhone` picks up `reminders_paused_until` in both the schema field list and the changeset `@optional` list. `SmsEvent` gets two new statuses in its inclusion list: `"stop_received"` and `"start_received"` (plain string column so no migration needed).

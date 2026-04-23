@@ -451,7 +451,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 12. Twilio + OpenClaw integration.
   - Oban-driven, idempotent, respects quiet hours.
   - **Slicing note:** Reminder configuration schema + STOP opt-out handling (14.4a) first, then the cron scheduler + dispatcher worker (14.4b). OpenClaw gating follows the 14.2b pattern: fallback reminder text today, real AI-crafted text when OpenClaw's conversational endpoint lands.
 
-- **14.4a ReminderConfig schema + STOP opt-out**
+- **14.4a ReminderConfig schema + STOP opt-out** ✅ Shipped `9e7ebf4`.
   - New schema `ContentForge.Sms.ReminderConfig` at `lib/content_forge/sms/reminder_config.ex` with fields: `product_id` (fk, unique), `enabled` (boolean default true), `cadence_days` (integer default 7 — how often a quiet client gets a reminder), `quiet_hours_start` (integer 0-23 default 20 — no outbound after this local hour), `quiet_hours_end` (integer 0-23 default 8 — no outbound before this local hour), `timezone` (string default "UTC"), `backoff_after_ignored` (integer default 2 — how many unanswered reminders before tone shifts), `stop_after_ignored` (integer default 4 — stop sending after this many total unanswered), plus timestamps.
   - Migration creates `sms_reminder_configs` with binary_id PK, fk to products with `on_delete: :delete_all`, unique index on `product_id`.
   - Extend `ContentForge.Sms.ProductPhone` with a new `reminders_paused_until` field (utc_datetime_usec, nullable). Any outbound send skips phones where `reminders_paused_until` is in the future.
