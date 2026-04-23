@@ -52,6 +52,7 @@ defmodule ContentForgeWeb.Router do
     live "/dashboard/video", Live.Dashboard.Video.StatusLive, :index
     live "/dashboard/performance", Live.Dashboard.Performance.DashboardLive, :index
     live "/dashboard/clips", Live.Dashboard.Clips.QueueLive, :index
+    live "/dashboard/sms", Live.Dashboard.Sms.NeedsAttentionLive, :index
   end
 
   scope "/api/v1", ContentForgeWeb do

@@ -16,7 +16,7 @@ defmodule ContentForge.Sms.SmsEvent do
   @foreign_key_type :binary_id
 
   @directions ~w(inbound outbound)
-  @statuses ~w(received sent delivered failed rejected_unknown_number rejected_rate_limit unsupported_media stop_received start_received)
+  @statuses ~w(received sent delivered failed rejected_unknown_number rejected_rate_limit unsupported_media stop_received start_received escalated)
 
   schema "sms_events" do
     field :phone_number, :string

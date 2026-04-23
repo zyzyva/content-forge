@@ -216,6 +216,152 @@ defmodule ContentForge.Sms do
     |> Repo.update()
   end
 
+  @doc """
+  Marks `session` escalated: sets `escalated_at` to now, records the
+  given `reason`, flips `auto_response_paused: true`, and writes an
+  `SmsEvent` audit row with status `"escalated"` so downstream
+  dashboards can surface the transition.
+
+  `opts` currently only carries `:notify_channels`; the list is
+  recorded on the audit row body so a future slice can fan out to
+  Slack / email. For this slice the dashboard LiveView is the only
+  consumer.
+  """
+  @spec escalate_session(ConversationSession.t(), String.t(), keyword()) ::
+          {:ok, ConversationSession.t()} | {:error, Ecto.Changeset.t()}
+  def escalate_session(%ConversationSession{} = session, reason, opts \\ [])
+      when is_binary(reason) do
+    now = DateTime.utc_now()
+    notify_channels = Keyword.get(opts, :notify_channels, [])
+
+    updated =
+      session
+      |> ConversationSession.changeset(%{
+        escalated_at: now,
+        escalation_reason: reason,
+        auto_response_paused: true
+      })
+      |> Repo.update()
+
+    case updated do
+      {:ok, row} = ok ->
+        {:ok, _} =
+          record_event(%{
+            product_id: row.product_id,
+            phone_number: row.phone_number,
+            direction: "inbound",
+            status: "escalated",
+            body: escalation_audit_body(reason, notify_channels)
+          })
+
+        ok
+
+      err ->
+        err
+    end
+  end
+
+  defp escalation_audit_body(reason, []), do: "escalated: #{reason}"
+
+  defp escalation_audit_body(reason, channels) when is_list(channels) do
+    "escalated: #{reason} (notify: #{Enum.join(channels, ", ")})"
+  end
+
+  @doc """
+  Clears escalation flags on `session`: `escalated_at: nil`,
+  `escalation_reason: nil`, `auto_response_paused: false`.
+  Auto-response resumes the next time an inbound lands.
+  """
+  @spec resolve_session(ConversationSession.t()) ::
+          {:ok, ConversationSession.t()} | {:error, Ecto.Changeset.t()}
+  def resolve_session(%ConversationSession{} = session) do
+    session
+    |> ConversationSession.changeset(%{
+      escalated_at: nil,
+      escalation_reason: nil,
+      auto_response_paused: false
+    })
+    |> Repo.update()
+  end
+
+  @doc """
+  Lists every currently-escalated `ConversationSession` across all
+  products, newest-escalation-first. Used by the NeedsAttention
+  dashboard.
+  """
+  @spec list_escalated_sessions() :: [ConversationSession.t()]
+  def list_escalated_sessions do
+    from(s in ConversationSession,
+      where: not is_nil(s.escalated_at),
+      order_by: [desc: s.escalated_at]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Lists sessions that have received at least `threshold` inbound
+  `"received"` events in the last `seconds` window with no outbound
+  `"sent"`/`"delivered"` reply in that same window. Default threshold
+  10 and window 24h. Excludes already-escalated sessions so the
+  dashboard does not double-list a single conversation.
+  """
+  @spec list_high_volume_sessions(keyword()) :: [ConversationSession.t()]
+  def list_high_volume_sessions(opts \\ []) do
+    threshold = Keyword.get(opts, :threshold, 10)
+    seconds = Keyword.get(opts, :seconds, 86_400)
+    since = DateTime.add(DateTime.utc_now(), -seconds, :second)
+
+    inbound_counts =
+      from(e in SmsEvent,
+        where:
+          e.direction == "inbound" and
+            e.status == "received" and
+            e.inserted_at >= ^since and
+            not is_nil(e.product_id),
+        group_by: [e.product_id, e.phone_number],
+        select: {e.product_id, e.phone_number, count(e.id)}
+      )
+      |> Repo.all()
+
+    outbound_pairs =
+      from(e in SmsEvent,
+        where:
+          e.direction == "outbound" and
+            e.status in ["sent", "delivered"] and
+            e.inserted_at >= ^since,
+        group_by: [e.product_id, e.phone_number],
+        select: {e.product_id, e.phone_number}
+      )
+      |> Repo.all()
+      |> MapSet.new()
+
+    qualifying =
+      inbound_counts
+      |> Enum.filter(fn {product_id, phone_number, count} ->
+        count >= threshold and
+          not MapSet.member?(outbound_pairs, {product_id, phone_number})
+      end)
+      |> Enum.map(fn {product_id, phone_number, _count} -> {product_id, phone_number} end)
+
+    lookup_sessions(qualifying)
+  end
+
+  defp lookup_sessions([]), do: []
+
+  defp lookup_sessions(pairs) do
+    pairs
+    |> Enum.flat_map(fn {product_id, phone_number} ->
+      case Repo.get_by(ConversationSession,
+             product_id: product_id,
+             phone_number: phone_number
+           ) do
+        %ConversationSession{escalated_at: nil} = s -> [s]
+        _ -> []
+      end
+    end)
+    |> Enum.sort_by(& &1.last_message_at, {:desc, DateTime})
+  end
+
   # ---- reminder config + phone pause -------------------------------------
 
   @doc """

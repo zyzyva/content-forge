@@ -106,6 +106,20 @@ defmodule ContentForgeWeb.Live.Dashboard.DashboardLive do
             </div>
           </div>
         </a>
+
+        <a href={~p"/dashboard/sms"} class="card bg-base-200 hover:bg-base-300 transition-colors">
+          <div class="card-body">
+            <div class="flex items-center gap-3">
+              <div class="p-2 bg-warning/20 rounded-lg">
+                <.icon name="hero-chat-bubble-left-right" class="size-6 text-warning" />
+              </div>
+              <div>
+                <h3 class="font-semibold">SMS</h3>
+                <p class="text-xs text-base-content/70">Needs-reply queue + escalations</p>
+              </div>
+            </div>
+          </div>
+        </a>
       </div>
       
     <!-- Quick Stats -->

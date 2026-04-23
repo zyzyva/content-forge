@@ -21,6 +21,9 @@ defmodule ContentForge.Sms.ConversationSession do
     field :state, :string, default: "idle"
     field :last_message_at, :utc_datetime_usec
     field :inactive_after_seconds, :integer, default: 3600
+    field :escalated_at, :utc_datetime_usec
+    field :escalation_reason, :string
+    field :auto_response_paused, :boolean, default: false
 
     belongs_to :product, ContentForge.Products.Product
 
@@ -28,7 +31,7 @@ defmodule ContentForge.Sms.ConversationSession do
   end
 
   @required ~w(product_id phone_number state)a
-  @optional ~w(last_message_at inactive_after_seconds)a
+  @optional ~w(last_message_at inactive_after_seconds escalated_at escalation_reason auto_response_paused)a
 
   def changeset(row, attrs) do
     row

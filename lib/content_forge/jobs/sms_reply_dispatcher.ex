@@ -51,10 +51,12 @@ defmodule ContentForge.Jobs.SmsReplyDispatcher do
 
   alias ContentForge.Products
   alias ContentForge.Sms
+  alias ContentForge.Sms.ConversationSession
   alias ContentForge.Sms.SmsEvent
   alias ContentForge.Twilio
 
   @default_fallback "Thanks — your assistant is temporarily unavailable. We will get back to you shortly."
+  @holding_message "Thanks — a human from our team will follow up shortly."
   @default_rate_limit 10
 
   @impl Oban.Worker
@@ -98,7 +100,72 @@ defmodule ContentForge.Jobs.SmsReplyDispatcher do
 
   defp dispatch_or_skip({:ok, event}) do
     product = Products.get_product!(event.product_id)
-    dispatch_with_quota(event, product)
+
+    event
+    |> load_session()
+    |> dispatch_with_session(event, product)
+  end
+
+  defp load_session(%SmsEvent{product_id: pid, phone_number: phone}) do
+    ContentForge.Repo.get_by(ConversationSession,
+      product_id: pid,
+      phone_number: phone
+    )
+  end
+
+  # --- escalation short-circuit -------------------------------------------
+
+  # When the session is escalated AND auto-response is paused, send the
+  # holding message EXACTLY ONCE (the one the human operator will see on
+  # the dashboard), then let subsequent inbound events no-op until
+  # `resolve_session/1` clears the flags.
+  defp dispatch_with_session(
+         %ConversationSession{auto_response_paused: true} = session,
+         event,
+         product
+       ) do
+    if already_sent_holding_since_escalation?(session) do
+      Logger.info(
+        "SmsReplyDispatcher: session escalated for #{event.phone_number}; auto-response paused, holding message already sent"
+      )
+
+      {:ok, :escalated_paused}
+    else
+      send_holding_message(event, product)
+    end
+  end
+
+  defp dispatch_with_session(_session, event, product),
+    do: dispatch_with_quota(event, product)
+
+  defp already_sent_holding_since_escalation?(%ConversationSession{
+         product_id: pid,
+         phone_number: phone,
+         escalated_at: since
+       })
+       when not is_nil(since) do
+    import Ecto.Query, only: [from: 2]
+
+    ContentForge.Repo.aggregate(
+      from(e in SmsEvent,
+        where:
+          e.product_id == ^pid and
+            e.phone_number == ^phone and
+            e.direction == "outbound" and
+            e.status == "sent" and
+            e.inserted_at >= ^since
+      ),
+      :count,
+      :id
+    ) > 0
+  end
+
+  defp already_sent_holding_since_escalation?(_), do: false
+
+  defp send_holding_message(event, _product) do
+    @holding_message
+    |> send_via_twilio(event)
+    |> handle_twilio_result(event, @holding_message)
   end
 
   # --- rate limit ----------------------------------------------------------
