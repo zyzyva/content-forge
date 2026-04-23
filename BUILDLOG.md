@@ -85,6 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 16.3a: Authorization framework (infra)
 
 Status: DONE
+Merged: master @ `158afbe` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 865-0, credo 26 vs 44 baseline (zero new in 16.3a-touched files). Coverage Operators 100%, Authorization 86%, OperatorIdentity 80%. Zero emdashes. Reviewer-only delta tightened the Authorization moduledoc to reflect that only `"cli"` routes to `OperatorIdentity` and unknown channels fail closed (code already did this; doc was misleading).
 Note: Prerequisite infra for every 16.3+ write tool and 16.4 heavy writes. Ships the single `Authorization.require(ctx, required_role)` helper + the CLI-side `OperatorIdentity` schema that pairs with `ProductPhone` for SMS. No tool behavior changes in this slice; the helper is wiring. 16.3b is the first consumer (CreateUploadLink hardening); 16.3c and 16.3d are parallel-safe now that the resolver is in place.
 
 **Schema + migration** (`priv/repo/migrations/20260507120000_create_operator_identities.exs`):
