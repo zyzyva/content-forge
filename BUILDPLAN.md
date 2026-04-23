@@ -654,7 +654,7 @@ Phase exit criteria: a marketer can text a photo in, get it tagged into a produc
     - `add_tag_to_asset`: happy path merges tag into existing list, duplicate tag is a no-op returning the unchanged set, unknown asset id = `:not_found`, asset from a different product = `:not_found`, viewer role = `:forbidden`, invalid tag length / empty tag = validation error.
     - Controller: one end-to-end per tool exercising the full HTTP pipeline to lock the serialization shape (atom-keyed maps and DateTime fields).
 
-- **16.3d New schema: ProductMemory + record_memory tool** *(DONE - see `BUILDLOG.md` Phase 16.3d)*
+- **16.3d New schema: ProductMemory + record_memory tool** ✅ Shipped `63beb20`.
   - Blocks: none. Blocked by: 16.3a. Independent of 16.3c.
   - Ship `ContentForge.Products.ProductMemory` schema at `lib/content_forge/products/product_memory.ex`. Fields: `product_id` (binary_id fk, required), `session_id` (string, required), `channel` (string, required), `sender_identity` (string, nullable), `content` (text, required, 1..2000 chars), `tags` (array of strings, default empty), `inserted_at` + `updated_at`. Migration adds an index on `product_id` and a composite on `(product_id, inserted_at desc)` for recent-memory queries. Context functions `create_memory/1` and `list_recent_memories(product_id, limit \\ 10)` live on `ContentForge.Products`.
   - Ship `ContentForge.OpenClawTools.RecordMemory`: params are `"content"` (required) and optional `"tags"` (list of strings, each 1..40 chars, lowercased) plus the `"product"` resolver passthrough. Requires `:submitter`. Builds the memory row from ctx (session_id, channel, sender_identity) plus the supplied content/tags, inserts, returns `%{memory_id, product_id, session_id, recorded_at}`.

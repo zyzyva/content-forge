@@ -85,6 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 16.3d: ProductMemory schema + record_memory tool
 
 Status: DONE
+Merged: master @ `63beb20` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 918-0, credo 26 vs 44 baseline (zero new in slice-touched files). Coverage RecordMemory 83%, ProductMemory 77%. Zero emdashes. Phase 16.3 wave complete: all four sub-slices shipped, every write tool gates through `Authorization.require`, and ctx-sourced session_id/channel/sender_identity cannot be spoofed through params; the tool returns `:missing_session` when ctx lacks it.
 Note: Completes the 16.3 light-write wave. New schema for conversation-derived product memories plus the first tool that writes ctx-sourced fields (session_id, channel, sender_identity) rather than taking them from params - the agent cannot spoof the audit trail through the tool surface.
 
 **Schema + migration** (`priv/repo/migrations/20260508120000_create_product_memories.exs` + `lib/content_forge/products/product_memory.ex`):
