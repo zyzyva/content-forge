@@ -282,7 +282,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 11. Leans heavily on Phase 10 Media Forge pl
   - After successful registration, the row appears in an "Assets" section of the product detail page with a pending badge. The processing job flips the badge to `Processed` (or `Failed` with the error) via Phoenix PubSub.
   - Tests: the LiveView renders the form, a stubbed registration call transitions the UI state, a processing completion over PubSub updates the badge.
 
-- **13.1d Image processing dispatch to Media Forge**
+- **13.1d Image processing dispatch to Media Forge** ✅ Shipped `afd596b`.
   - New Oban worker `ContentForge.Jobs.AssetImageProcessor` under queue `:content_generation` (the existing queue configured in 10.2) that consumes an asset id, calls `MediaForge.enqueue_image_process/1` with the storage key and the requested transforms (autorotate, strip EXIF, generate thumbnail at a fixed size, probe dimensions), polls job status until terminal, and on success calls `ProductAssets.mark_processed/2` with the dimensions returned from Media Forge and the thumbnail's storage key recorded on the asset row.
   - On `{:error, :not_configured}`: mark the asset failed with `"media_forge_unavailable"` so the dashboard surfaces it rather than hanging in `pending`. No synthetic dimensions or thumbnail are fabricated.
   - On transient errors: let Oban retry. On permanent errors: mark the asset failed with the error recorded.

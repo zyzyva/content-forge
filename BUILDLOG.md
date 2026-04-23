@@ -84,7 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 13.1d: AssetImageProcessor worker
 
-Status: IN PROGRESS (coder handoff)
+Status: DONE
+Merged: master @ `afd596b` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 328-0; credo unchanged. `process/1` 3-head dispatch (already-processed no-op, missing storage_key fail, default); `handle_response/2` and `handle_poll/4` six-head taxonomies — pattern-match-first throughout. `:not_configured` hits `fail/2` with exact `"media_forge_unavailable"` string on both sync and poll paths. Shape-tolerant `extract_int`/`first_present` for Media Forge response variance. 8 tests. Migration adds `thumbnail_storage_key`; `mark_processed_changeset` casts it.
 Note: Filled in the stub `ContentForge.Jobs.AssetImageProcessor` that shipped under 13.1b. The worker now dispatches pending image assets through Media Forge and records the probed dimensions plus the generated thumbnail's storage key. Flow mirrors the `ImageGenerator` + `VideoProducer` patterns:
 
 1. `perform/1` loads the asset. Missing asset -> `{:cancel, "asset not found"}`. Already-processed/failed/deleted asset -> `:ok` (no HTTP, safe to replay). Asset without a `storage_key` -> mark failed with a clear reason.
