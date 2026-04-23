@@ -618,7 +618,7 @@ Phase exit criteria: a marketer can text a photo in, get it tagged into a produc
 - **16.3 Light-write tools + role-based authorization framework**
   - Decomposed into four sub-slices. 16.3a is the prerequisite infra; 16.3b hardens an already-shipped tool as the first consumer of the helper; 16.3c and 16.3d add the three new light-write tools. 16.3c and 16.3d are independent of each other and parallel-safe once 16.3a is shipped.
 
-- **16.3a Authorization framework (infra)** *(DONE - see `BUILDLOG.md` Phase 16.3a)*
+- **16.3a Authorization framework (infra)** ✅ Shipped `158afbe`.
   - Blocks: 16.3b, 16.3c, 16.3d, 16.4 (heavy writes), 16.5 (audit). Blocked by: none.
   - Ship `ContentForge.OpenClawTools.Authorization` at `lib/content_forge/open_claw_tools/authorization.ex` with a single public `require(ctx, required_role)` function implementing the Feature 13 authorization contract. Role hierarchy constant inside the module, channel resolution pattern-matched on `ctx.channel`, fail-closed catch-all.
   - Ship `ContentForge.Operators.OperatorIdentity` schema at `lib/content_forge/operators/operator_identity.ex` with fields `product_id` (binary_id fk, required), `identity` (string, required; the channel-specific identifier such as `"cli:ops"`), `role` (string, required, inclusion in `~w(owner submitter viewer)`), `active` (boolean, default true), plus inserted_at / updated_at. Migration adds the table and a partial unique index on `(product_id, identity) WHERE active = true` so a re-seed after deactivation works cleanly. Context module `ContentForge.Operators` at `lib/content_forge/operators.ex` with `create_identity/1`, `lookup_active_identity(identity, product_id)`, and `list_identities_for_product/1`.
@@ -637,7 +637,7 @@ Phase exit criteria: a marketer can text a photo in, get it tagged into a produc
     - Schema: inclusion validation on role, required-field checks, partial-unique on `(product_id, identity) WHERE active`, `lookup_active_identity` excludes inactive rows.
   - No tools change in this slice. The helper is plumbing. 16.3b is the first consumer.
 
-- **16.3b CreateUploadLink hardening (first consumer of the helper)**
+- **16.3b CreateUploadLink hardening (first consumer of the helper)** *(DONE - see `BUILDLOG.md` Phase 16.3b)*
   - Blocks: none. Blocked by: 16.3a.
   - Apply the authorization helper to `create_upload_link`: the tool now requires `:submitter` before presigning. This closes the forward-looking gap the 16.1 reviewer flagged: agent-authorized callers can no longer presign upload URLs without an explicit role on the caller.
   - Extract a shared `ContentForge.ProductAssets.AcceptedContentTypes` module listing the image + video MIME types `ProductAssetController` already enforces (image/jpeg, image/png, image/webp, image/heic, video/mp4, video/quicktime, video/x-m4v). The 13.1b controller and the tool path both import the list; zero divergence. The tool returns `:unsupported_content_type` when the requested content-type is not on the list.

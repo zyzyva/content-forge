@@ -10,6 +10,7 @@ defmodule ContentForgeWeb.OpenClawToolControllerTest do
   use ContentForgeWeb.ConnCase, async: false
 
   alias ContentForge.ContentGeneration.Draft
+  alias ContentForge.Operators
   alias ContentForge.ProductAssets
   alias ContentForge.Products
   alias ContentForge.Repo
@@ -81,6 +82,13 @@ defmodule ContentForgeWeb.OpenClawToolControllerTest do
          %{conn: conn} do
       {:ok, product} =
         Products.create_product(%{name: "Acme Widgets Inc", voice_profile: "professional"})
+
+      {:ok, _} =
+        Operators.create_identity(%{
+          product_id: product.id,
+          identity: "cli:ops",
+          role: "submitter"
+        })
 
       body = %{
         "session_id" => "test-session",
