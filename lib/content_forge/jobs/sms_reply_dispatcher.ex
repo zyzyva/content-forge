@@ -49,6 +49,7 @@ defmodule ContentForge.Jobs.SmsReplyDispatcher do
   use Oban.Worker, queue: :default, max_attempts: 3
   require Logger
 
+  alias ContentForge.OpenClaw.AgentGateway
   alias ContentForge.Products
   alias ContentForge.Sms
   alias ContentForge.Sms.ConversationSession
@@ -185,7 +186,61 @@ defmodule ContentForge.Jobs.SmsReplyDispatcher do
     {:ok, :rate_limited}
   end
 
-  defp enforce_quota(false, _count, _limit, event, product), do: send_fallback(event, product)
+  defp enforce_quota(false, _count, _limit, event, product),
+    do: send_agent_reply_or_fallback(event, product)
+
+  # --- agent reply (14.2c) -------------------------------------------------
+
+  defp send_agent_reply_or_fallback(event, product) do
+    case AgentGateway.status() do
+      :not_configured ->
+        send_fallback(event, product)
+
+      :ok ->
+        try_agent_turn(event, product)
+    end
+  end
+
+  defp try_agent_turn(event, product) do
+    session_id = session_key(event)
+    opts = [session_id: session_id] ++ agent_id_opts(product)
+
+    case AgentGateway.agent_turn(event.body || "", opts) do
+      {:ok, %{text: text}} when is_binary(text) and text != "" ->
+        text
+        |> send_via_twilio(event)
+        |> handle_twilio_result(event, text)
+
+      {:error, :not_configured} ->
+        send_fallback(event, product)
+
+      {:error, {:permanent, reason}} ->
+        Logger.error(
+          "SmsReplyDispatcher: OpenClaw permanent error #{inspect(reason)}; falling back"
+        )
+
+        send_fallback(event, product)
+
+      {:error, {:transient, reason, detail}} ->
+        Logger.warning(
+          "SmsReplyDispatcher: OpenClaw transient error #{inspect({reason, detail})}; Oban will retry"
+        )
+
+        {:error, {:transient, reason, detail}}
+    end
+  end
+
+  defp session_key(%SmsEvent{product_id: pid, phone_number: phone}) do
+    "content-forge:#{pid}:#{phone}"
+  end
+
+  defp agent_id_opts(%Products.Product{
+         publishing_targets: %{"sms" => %{"agent_id" => agent_id}}
+       })
+       when is_binary(agent_id) and agent_id != "",
+       do: [agent_id: agent_id]
+
+  defp agent_id_opts(_), do: []
 
   defp record_rate_limit_rejection(event) do
     Sms.record_event(%{

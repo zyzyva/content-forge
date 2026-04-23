@@ -1,21 +1,60 @@
 defmodule ContentForge.Jobs.OpenClawBulkGenerator do
   @moduledoc """
-  Oban job that generates content variants via OpenClaw API.
+  Oban job that generates bulk content variants for a product
+  via `ContentForge.LLM.Anthropic`.
 
-  Generates N variants per platform, N blog drafts, and N video scripts
-  based on the content brief. Stores all as draft records with angle/type label.
+  Phase 11.2L renamed the semantics - the module still carries
+  the `OpenClawBulkGenerator` name for backwards compatibility,
+  but it dispatches through the LLM client rather than an
+  OpenClaw HTTP endpoint. OpenClaw is locally hosted and
+  turn-oriented; Anthropic is already configured for batch,
+  structured-JSON responses and is what the rest of the
+  generation pipeline uses (see `ContentBriefGenerator`,
+  `AssetBundleDraftGenerator`, `MultiModelRanker`).
 
-  Ensures at least one humor variant per content type.
+  Three LLM calls, one per content family:
+
+    1. Social posts - one call returning per-platform arrays of
+       variants across twitter / linkedin / reddit / facebook /
+       instagram.
+    2. Blog drafts - one call returning angle-labeled variants.
+    3. Video scripts - one call returning angle-labeled variants.
+
+  Each variant becomes a `Draft` with `generating_model` set to
+  the actual Anthropic model name returned in the response (not
+  a hardcoded "openclaw" marker). Blog drafts flow through
+  `ContentGeneration.create_draft/1` individually so the Phase
+  12.1 nugget validator + 12.2a SEO checklist hooks run on each.
+
+  Humor-angle guarantee: every prompt explicitly requires at
+  least one variant labeled `angle: "humor"` per family.
+
+  Failure modes:
+
+    * `{:error, :not_configured}` on Anthropic - log + return
+      `{:ok, :skipped}`, zero drafts created.
+    * Malformed JSON / missing expected keys - `{:cancel,
+      "malformed LLM output"}`. Never fabricates content.
+    * `{:error, {:transient, _, _}}` - return the error so Oban
+      retries.
+    * `{:error, {:http_error, status, _}}` / `{:unexpected_status,
+      _, _}` - `{:cancel, reason}`.
   """
   use Oban.Worker, queue: :content_generation, max_attempts: 3
   require Logger
 
-  alias ContentForge.{Products, ContentGeneration}
+  alias ContentForge.ContentGeneration
+  alias ContentForge.LLM.Anthropic
+  alias ContentForge.Products
 
-  # Default generation counts (configurable)
   @default_social_variants 20
   @default_blog_drafts 5
   @default_video_scripts 10
+
+  @social_platforms ~w(twitter linkedin reddit facebook instagram)
+  @social_angles ~w(educational entertaining problem_aware social_proof humor testimonial case_study how_to)
+  @blog_angles ~w(educational how_to listicle case_study problem_aware humor)
+  @video_angles ~w(educational problem_aware demo testimonial humor how_to)
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"product_id" => product_id, "options" => options}}) do
@@ -33,300 +72,340 @@ defmodule ContentForge.Jobs.OpenClawBulkGenerator do
   end
 
   defp generate_content(product, options) do
-    # Get the latest content brief
     brief = ContentGeneration.get_latest_content_brief_for_product(product.id)
 
-    unless brief do
-      Logger.warning("No content brief found for product #{product.id}")
-      {:cancel, "No content brief found"}
-    else
-      # Get counts from options or use defaults
-      social_count = Map.get(options, :social_variants, @default_social_variants)
-      blog_count = Map.get(options, :blog_drafts, @default_blog_drafts)
-      video_count = Map.get(options, :video_scripts, @default_video_scripts)
+    cond do
+      is_nil(brief) ->
+        Logger.warning("OpenClawBulkGenerator: no content brief for product #{product.id}")
+        {:cancel, "No content brief found"}
 
-      Logger.info(
-        "Generating content for product #{product.id}: #{social_count} social, #{blog_count} blog, #{video_count} video"
-      )
+      Anthropic.status() == :not_configured ->
+        Logger.warning(
+          "OpenClawBulkGenerator: LLM unavailable for bulk generation; skipping with zero drafts"
+        )
 
-      # Generate social posts for each platform
-      platforms = ["twitter", "linkedin", "reddit", "facebook", "instagram"]
+        {:ok, :skipped}
 
-      Enum.each(platforms, fn platform ->
-        generate_social_variants(product, brief, platform, social_count)
-      end)
-
-      # Generate blog drafts
-      generate_blog_drafts(product, brief, blog_count)
-
-      # Generate video scripts
-      generate_video_scripts(product, brief, video_count)
-
-      Logger.info("Content generation complete for product #{product.id}")
-      {:ok, %{drafts_created: true}}
+      true ->
+        do_generate(product, brief, options)
     end
   end
 
-  defp generate_social_variants(product, brief, platform, count) do
-    # Define angles to generate for
-    angles = [
-      "educational",
-      "entertaining",
-      "problem_aware",
-      "social_proof",
-      "humor",
-      "testimonial",
-      "case_study",
-      "how_to"
-    ]
+  defp do_generate(product, brief, options) do
+    social_count = Map.get(options, "social_variants", @default_social_variants)
+    blog_count = Map.get(options, "blog_drafts", @default_blog_drafts)
+    video_count = Map.get(options, "video_scripts", @default_video_scripts)
 
-    # Ensure humor is always included
-    angles = if "humor" not in angles, do: ["humor" | angles], else: angles
+    with {:ok, social} <- generate_social(product, brief, social_count),
+         {:ok, blogs} <- generate_blogs(product, brief, blog_count),
+         {:ok, videos} <- generate_videos(product, brief, video_count) do
+      total = length(social) + length(blogs) + length(videos)
 
-    # Build prompt for OpenClaw
-    _prompt = build_social_prompt(product, brief, platform)
+      Logger.info(
+        "OpenClawBulkGenerator: created #{total} drafts for product #{product.id} (#{length(social)} social, #{length(blogs)} blog, #{length(videos)} video)"
+      )
 
-    # Generate variants - in production, this calls OpenClaw API
-    # For now, we'll create placeholder drafts
-    drafts_attrs =
-      angles
-      |> Enum.take(count)
-      |> Enum.map(fn angle ->
-        content = generate_social_content(platform, angle, product.name)
+      {:ok, %{drafts_created: total}}
+    else
+      error -> classify_error(error)
+    end
+  end
 
-        %{
+  # --- social posts ----------------------------------------------------------
+
+  defp generate_social(product, brief, count) do
+    prompt = social_prompt(product, brief, count)
+
+    with {:ok, %{text: text, model: model}} <- Anthropic.complete(prompt, system: system_prompt()),
+         {:ok, payload} <- extract_json(text),
+         {:ok, per_platform} <- Map.fetch(payload, "platforms") || {:error, :malformed_llm_output} do
+      drafts =
+        @social_platforms
+        |> Enum.flat_map(fn platform ->
+          variants = Map.get(per_platform, platform, [])
+          persist_social_variants(product, brief, platform, variants, model)
+        end)
+
+      {:ok, drafts}
+    end
+  end
+
+  defp social_prompt(product, brief, count) do
+    """
+    Generate social post variants for #{product.name}.
+
+    Voice profile: #{product.voice_profile}
+
+    Content brief:
+    #{brief.content}
+
+    Produce #{count} variants per platform across these platforms:
+    #{Enum.join(@social_platforms, ", ")}
+
+    Each variant is labeled with one of these angles:
+    #{Enum.join(@social_angles, ", ")}
+
+    At least one variant per platform MUST use angle "humor".
+
+    BANNED PHRASES - never use:
+    delve, comprehensive guide, in today's digital landscape, it's worth noting,
+    as an AI, in conclusion it's clear, at the end of the day, in the ever-evolving,
+    navigate the complexities.
+
+    Respond with a single JSON object and nothing else, in exactly
+    this shape (extra keys allowed but ignored):
+
+        {
+          "platforms": {
+            "twitter":  [{"angle": "humor", "content": "..."}, ...],
+            "linkedin": [{"angle": "educational", "content": "..."}, ...]
+          }
+        }
+
+    Use specific numbers and data wherever possible. No fabricated metrics.
+    """
+  end
+
+  defp persist_social_variants(product, brief, platform, variants, model)
+       when is_list(variants) do
+    descriptor = "anthropic:#{model}"
+
+    variants
+    |> Enum.filter(&valid_variant?/1)
+    |> Enum.map(fn %{"angle" => angle, "content" => content} ->
+      {:ok, draft} =
+        ContentGeneration.create_draft(%{
           product_id: product.id,
           content_brief_id: brief.id,
           content: content,
           platform: platform,
           content_type: "post",
-          angle: angle,
-          generating_model: "openclaw",
+          angle: normalize_angle(angle, @social_angles),
+          generating_model: descriptor,
           status: "draft"
-        }
-      end)
+        })
 
-    # Insert all drafts
-    if drafts_attrs != [] do
-      ContentGeneration.create_drafts(drafts_attrs)
-      Logger.info("Created #{length(drafts_attrs)} social drafts for #{platform}")
+      draft
+    end)
+  end
+
+  defp persist_social_variants(_product, _brief, _platform, _other, _model), do: []
+
+  # --- blog drafts -----------------------------------------------------------
+
+  defp generate_blogs(product, brief, count) do
+    prompt = blog_prompt(product, brief, count)
+
+    with {:ok, %{text: text, model: model}} <- Anthropic.complete(prompt, system: system_prompt()),
+         {:ok, payload} <- extract_json(text),
+         {:ok, variants} <- Map.fetch(payload, "variants") || {:error, :malformed_llm_output} do
+      descriptor = "anthropic:#{model}"
+
+      drafts =
+        variants
+        |> Enum.filter(&valid_variant?/1)
+        |> Enum.map(fn %{"angle" => angle, "content" => content} ->
+          {:ok, draft} =
+            ContentGeneration.create_draft(%{
+              product_id: product.id,
+              content_brief_id: brief.id,
+              content: content,
+              platform: "blog",
+              content_type: "blog",
+              angle: normalize_angle(angle, @blog_angles),
+              generating_model: descriptor,
+              status: "draft"
+            })
+
+          draft
+        end)
+
+      {:ok, drafts}
     end
   end
 
-  defp generate_blog_drafts(product, brief, count) do
-    angles = ["educational", "how_to", "listicle", "case_study", "problem_aware", "humor"]
-
-    # Uses create_draft/1 per angle (not create_drafts/1) so the
-    # Phase 12.1 NuggetValidator hook runs on each blog draft.
-    drafts =
-      angles
-      |> Enum.take(count)
-      |> Enum.map(fn angle ->
-        _prompt = build_blog_prompt(product, brief, angle)
-        content = generate_blog_content(angle, product.name)
-
-        {:ok, draft} =
-          ContentGeneration.create_draft(%{
-            product_id: product.id,
-            content_brief_id: brief.id,
-            content: content,
-            platform: "blog",
-            content_type: "blog",
-            angle: angle,
-            generating_model: "openclaw",
-            status: "draft"
-          })
-
-        draft
-      end)
-
-    if drafts != [] do
-      Logger.info("Created #{length(drafts)} blog drafts")
-    end
-  end
-
-  defp generate_video_scripts(product, brief, count) do
-    angles = ["educational", "problem_aware", "demo", "testimonial", "humor", "how_to"]
-
-    drafts_attrs =
-      angles
-      |> Enum.take(count)
-      |> Enum.map(fn angle ->
-        content = generate_video_script_content(angle, product.name)
-
-        %{
-          product_id: product.id,
-          content_brief_id: brief.id,
-          content: content,
-          platform: "youtube",
-          content_type: "video_script",
-          angle: angle,
-          generating_model: "openclaw",
-          status: "draft"
-        }
-      end)
-
-    if drafts_attrs != [] do
-      ContentGeneration.create_drafts(drafts_attrs)
-      Logger.info("Created #{length(drafts_attrs)} video script drafts")
-    end
-  end
-
-  defp build_social_prompt(product, brief, platform) do
+  defp blog_prompt(product, brief, count) do
     """
-    Generate social media content for #{product.name}.
+    Generate #{count} blog article variants for #{product.name}.
 
     Voice profile: #{product.voice_profile}
 
-    Content brief: #{brief.content}
+    Content brief:
+    #{brief.content}
 
-    Platform: #{platform}
-    Requirements: Short, engaging, platform-appropriate.
-    Include at least one humor variant.
+    Each variant is labeled with one of these angles:
+    #{Enum.join(@blog_angles, ", ")}
 
-    BANNED PHRASES — never use these:
+    At least one variant MUST use angle "humor".
+
+    Every variant opens with an AI Summary Nugget as its first
+    paragraph: 100-250 chars, at least 2 entity tokens (proper
+    nouns or numbers), no hedging language ("sort of",
+    "perhaps", "maybe", "probably", "arguably", "somewhat"),
+    no opening pronouns ("This", "That", "It", "They",
+    "These", "Those", "Here", "There"). The first word must be
+    an entity.
+
+    Respond with a single JSON object:
+
+        {
+          "variants": [
+            {"angle": "how_to", "content": "# Title\\n\\nNugget paragraph...\\n\\n..."},
+            {"angle": "humor",  "content": "..."}
+          ]
+        }
+
+    BANNED PHRASES - never use:
     delve, comprehensive guide, in today's digital landscape, it's worth noting,
     as an AI, in conclusion it's clear, at the end of the day, in the ever-evolving,
     navigate the complexities.
-
-    Use specific numbers and data points wherever possible. Vague claims lose to concrete facts.
     """
   end
 
-  defp build_blog_prompt(product, brief, angle) do
+  # --- video scripts ---------------------------------------------------------
+
+  defp generate_videos(product, brief, count) do
+    prompt = video_prompt(product, brief, count)
+
+    with {:ok, %{text: text, model: model}} <- Anthropic.complete(prompt, system: system_prompt()),
+         {:ok, payload} <- extract_json(text),
+         {:ok, variants} <- Map.fetch(payload, "variants") || {:error, :malformed_llm_output} do
+      descriptor = "anthropic:#{model}"
+
+      drafts =
+        variants
+        |> Enum.filter(&valid_variant?/1)
+        |> Enum.map(fn %{"angle" => angle, "content" => content} ->
+          {:ok, draft} =
+            ContentGeneration.create_draft(%{
+              product_id: product.id,
+              content_brief_id: brief.id,
+              content: content,
+              platform: "youtube",
+              content_type: "video_script",
+              angle: normalize_angle(angle, @video_angles),
+              generating_model: descriptor,
+              status: "draft"
+            })
+
+          draft
+        end)
+
+      {:ok, drafts}
+    end
+  end
+
+  defp video_prompt(product, brief, count) do
     """
-    Generate a blog article for #{product.name}.
+    Generate #{count} short-form video scripts for #{product.name}.
 
     Voice profile: #{product.voice_profile}
 
-    Content brief: #{brief.content}
+    Content brief:
+    #{brief.content}
 
-    Angle: #{angle}
+    Each script is labeled with one of these angles:
+    #{Enum.join(@video_angles, ", ")}
 
-    REQUIRED ELEMENTS — every blog post must include all of these:
+    At least one script MUST use angle "humor".
 
-    1. AI SUMMARY NUGGET: Open the article with a self-contained factual
-       summary as the FIRST paragraph. This is the paragraph an AI
-       assistant would cite when asked about the topic; every word must
-       stand on its own without scrolling further.
-       Format: [Entity]: [key metric], [alternative], [condition]. [recent context/date].
-       Constraints (hard requirements, every one enforced post-generation):
-         - 100-250 characters after whitespace stripping
-         - at least 2 entity tokens (proper nouns or numbers)
-         - no hedging language: never use "sort of", "kind of", "might possibly",
-           "perhaps", "seems to", "could be", "maybe", "probably", "arguably",
-           "somewhat", "fairly", "rather"
-         - no opening pronouns ("This", "That", "It", "They", "These", "Those",
-           "Here", "There") - the first word must be an entity
-       Example: "Tri-Cities HVAC: avg install $4,200, 3-5 day turnaround, Carrier/Lennox brands. Updated Feb 2026."
+    Format each script with Hook / Problem / Solution / CTA
+    sections and time markers (0:00-0:15 hook, etc.). Keep
+    total length around 2-3 minutes.
 
-    2. ORIGINAL RESEARCH BLOCK: Include a section framed as a specific test, analysis, or
-       first-hand observation. Must contain at least one data point, methodology note, or
-       timeframe. Phrase it as "We tested...", "Our data shows...", "We measured...".
-       Content without this block cannot pass quality review.
+    Respond with a single JSON object:
 
-    3. STATISTICS: Include at least 3 specific numbers (percentages, prices, timeframes,
-       measurements). Vague claims like "significant improvement" must be replaced with
-       specific data.
+        {
+          "variants": [
+            {"angle": "educational", "content": "Script text..."},
+            {"angle": "humor",       "content": "..."}
+          ]
+        }
 
-    4. FAST-SCAN ELEMENTS: Include at least one comparison table, one bolded key fact,
-       and one bulleted or numbered list.
-
-    5. FAQ SECTION: End with 3-5 FAQ questions and answers. Include FAQPage JSON-LD schema.
-
-    BANNED PHRASES — never use these:
+    BANNED PHRASES - never use:
     delve, comprehensive guide, in today's digital landscape, it's worth noting,
     as an AI, in conclusion it's clear, at the end of the day, in the ever-evolving,
     navigate the complexities.
-
-    Lead with the answer or key fact in the first sentence — not a question or vague opener.
     """
   end
 
-  # Placeholder content generation - in production this calls OpenClaw API
-  defp generate_social_content(platform, angle, product_name) do
-    sample_content = %{
-      "twitter" => %{
-        "educational" =>
-          "Learn how #{product_name} helps you solve X in 3 simple steps. Thread 🧵",
-        "humor" =>
-          "Me: I'll just check email quickly. Also me: *3 hours later* At least #{product_name} made my life easier 😂",
-        "problem_aware" =>
-          "Still struggling with X? Here's how #{product_name} changed the game for us..."
-      },
-      "linkedin" => %{
-        "educational" => "Here's what we learned about solving X with #{product_name}...",
-        "humor" =>
-          "My team meeting about #{product_name}: 50% actual work, 50% laughing at our past manual processes 🤦‍♂️"
-      },
-      "reddit" => %{
-        "problem_aware" =>
-          "Has anyone used #{product_name}? Looking for real experiences before I commit."
-      },
-      "facebook" => %{
-        "social_proof" => "Check out what our community is saying about #{product_name}! 🌟"
-      },
-      "instagram" => %{
-        "entertaining" => "POV: You just discovered #{product_name} and your productivity went 🚀"
-      }
-    }
+  # --- LLM plumbing ----------------------------------------------------------
 
-    default = "Check out how #{product_name} is changing the game! #innovation"
-
-    get_in(sample_content, [platform, angle]) || default
-  end
-
-  defp generate_blog_content(angle, product_name) do
-    titles = %{
-      "how_to" => "How to Get Started with #{product_name}: A Complete Guide",
-      "educational" => "Understanding #{product_name}: What You Need to Know",
-      "listicle" => "5 Ways #{product_name} Improves Your Workflow",
-      "case_study" => "How Company X Achieved 3x Results with #{product_name}",
-      "problem_aware" => "The Problem #{product_name} Solves (And Why It Matters)",
-      "humor" => "I Tried #{product_name} for a Week: Here's What Happened"
-    }
-
+  defp system_prompt do
     """
-    Title: #{Map.get(titles, angle, "Introduction to #{product_name}")}
-
-    ## Introduction
-    In this article, we'll explore how #{product_name} can help you achieve your goals.
-
-    ## Main Content
-    [Content to be generated by OpenClaw]
-
-    ## Conclusion
-    #{product_name} offers a unique solution to common challenges.
+    You are a senior content strategist producing bulk variants
+    for a specific product. Respond ONLY with the JSON structure
+    requested - no preamble, no explanatory text. Every variant
+    must ground in the supplied brief. Never fabricate metrics.
     """
   end
 
-  defp generate_video_script_content(angle, product_name) do
-    titles = %{
-      "educational" => "Learn #{product_name} in 5 Minutes",
-      "problem_aware" => "The Problem You're Trying to Solve",
-      "demo" => "#{product_name} Walkthrough: Step by Step",
-      "testimonial" => "Customer Success Story with #{product_name}",
-      "how_to" => "Getting Started with #{product_name}",
-      "humor" => "I Used #{product_name} So You Don't Have To (jk)"
-    }
+  defp extract_json(text) when is_binary(text) do
+    trimmed = String.trim(text)
 
-    """
-    Script for: #{Map.get(titles, angle, "#{product_name} Overview")}
+    case JSON.decode(trimmed) do
+      {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
+      _ -> try_fenced(trimmed)
+    end
+  end
 
-    ## Hook (0:00-0:15)
-    [Attention-grabbing opening]
+  defp extract_json(_), do: {:error, :malformed_llm_output}
 
-    ## Problem (0:15-0:45)
-    [Address the viewer's pain point]
+  defp try_fenced(text) do
+    case Regex.run(~r/```(?:json)?\s*(\{.*?\})\s*```/s, text) do
+      [_, inner] ->
+        case JSON.decode(inner) do
+          {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
+          _ -> {:error, :malformed_llm_output}
+        end
 
-    ## Solution (0:45-2:00)
-    [Introduce #{product_name} and key features]
+      _ ->
+        {:error, :malformed_llm_output}
+    end
+  end
 
-    ## Demo (2:00-4:00)
-    [Show #{product_name} in action]
+  defp valid_variant?(%{"angle" => angle, "content" => content})
+       when is_binary(angle) and is_binary(content) and content != "",
+       do: true
 
-    ## Call to Action (4:00-4:30)
-    [Encourage engagement]
-    """
+  defp valid_variant?(_), do: false
+
+  defp normalize_angle(angle, allowed) do
+    if angle in allowed, do: angle, else: "educational"
+  end
+
+  # --- error classification --------------------------------------------------
+
+  defp classify_error({:error, :not_configured}) do
+    Logger.warning(
+      "OpenClawBulkGenerator: LLM unavailable mid-generation; skipping with zero drafts"
+    )
+
+    {:ok, :skipped}
+  end
+
+  defp classify_error({:error, :malformed_llm_output}) do
+    Logger.error("OpenClawBulkGenerator: malformed LLM output; cancelling")
+    {:cancel, "malformed LLM output"}
+  end
+
+  defp classify_error({:error, {:transient, _, _} = reason}) do
+    Logger.warning("OpenClawBulkGenerator: transient LLM error #{inspect(reason)}; retrying")
+    {:error, reason}
+  end
+
+  defp classify_error({:error, {:http_error, status, body}}) do
+    Logger.error("OpenClawBulkGenerator: permanent LLM error #{status}: #{inspect(body)}")
+    {:cancel, "LLM rejected generation request (HTTP #{status})"}
+  end
+
+  defp classify_error({:error, {:unexpected_status, status, _body}}) do
+    Logger.error("OpenClawBulkGenerator: unexpected LLM status #{status}")
+    {:cancel, "LLM returned unexpected HTTP status #{status}"}
+  end
+
+  defp classify_error({:error, reason}) do
+    Logger.error("OpenClawBulkGenerator: unexpected LLM error: #{inspect(reason)}")
+    {:error, reason}
   end
 end

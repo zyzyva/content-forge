@@ -82,6 +82,80 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 14.2c + 11.2L: OpenClaw-unblocked slices
+
+Status: DONE
+Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `d37acc3`. Gate: compile --warnings-as-errors clean, format clean (ran LAST), full test 780/0, credo baseline-diff empty + per-touched-file clean, coverage 61.40% (up from 59.82%).
+
+Two independent slices shipped together because both depended on OpenClaw discovery from 2026-04-23. Different trajectories: 14.2c swaps the SMS dispatcher's fallback-only branch for real agent-turn via shell-out; 11.2L reframes the paused 11.2 caller - OpenClaw is turn-oriented and local, so bulk variant generation moves to Anthropic where batch JSON is native.
+
+**14.2c - Real conversational reply via OpenClaw gateway**:
+
+New module `lib/content_forge/open_claw/agent_gateway.ex`:
+- `agent_turn(message, opts)` shells out via `System.cmd/3` to `<binary> agent --json --agent <id> --session-id <key> --message <text>`. Parses stdout JSON expecting `%{"payloads" => [%{"text" => "..."}], ...}`.
+- `status/0` returns `:ok | :not_configured` by checking binary_path + agent_id + `File.exists?(binary_path)`.
+- Classified error taxonomy: `{:error, :not_configured}` (zero shell call), `{:error, {:transient, :timeout, seconds}}` (subprocess timeout), `{:error, {:transient, :exit_code, code}}` (non-zero exit), `{:error, {:permanent, :malformed_json}}`.
+- Config (`:content_forge, :open_claw_agent`): `:binary_path` (default `/opt/homebrew/bin/openclaw`), `:default_agent_id`, `:default_timeout_seconds` (120), `:shell_impl` (test seam).
+- Session key derived as `"content-forge:<product-id>:<phone>"` so OpenClaw's session threading is stable per phone per product.
+
+`SmsReplyDispatcher` updates (`lib/content_forge/jobs/sms_reply_dispatcher.ex`):
+- New `send_agent_reply_or_fallback/2` replaces the direct `send_fallback/2` call in the happy-path branch. When the gateway is configured, calls `AgentGateway.agent_turn/2`; on `:ok` with non-empty text, sends that text via Twilio; on `{:error, {:permanent, _}}` or `:not_configured` at the gateway level, falls back to the unavailable template; on `{:error, {:transient, _, _}}` returns the error so Oban retries.
+- Agent-id resolution: `product.publishing_targets["sms"]["agent_id"]` if set, otherwise the global `:default_agent_id` from config.
+- Escalation + rate-limit short-circuits run before the agent call (unchanged from 14.2b).
+
+Tests (5 new in `test/content_forge/jobs/sms_reply_dispatcher_test.exs` replacing the deprecated "still ships fallback" test from 14.2b):
+- Happy path: stub returns `{"payloads":[{"text":"..."}],...}` JSON and the Twilio body matches the agent text.
+- Missing agent config: `binary_path` set to non-existent path; shell_impl never fires; falls back.
+- Malformed JSON: stub returns non-JSON; dispatcher falls back (permanent error is not an Oban retry).
+- Non-zero exit: stub returns `{"boom", 1}`; dispatcher returns `{:error, {:transient, :exit_code, 1}}` for Oban retry; Twilio stub set to raise (would never be called).
+- Session key wiring: stub captures `args`, asserts `--session-id content-forge:<product_id>:<phone>`.
+- Stub seam: `:shell_impl` config key accepts a 3-arity function returning `{stdout, exit_code}`. Test uses `binary_path: "/bin/sh"` so `File.exists?/1` passes; the actual subprocess is never spawned because `shell_impl` is called in its place.
+
+**Tool surface explicitly out of scope** (14.2d territory): OpenClaw replies with tool_call payloads would need parsing + dispatch to upload/asset/schedule/escalate tools. This slice sends only the returned text.
+
+**11.2L - Bulk variant generation via LLM clients**:
+
+`ContentForge.Jobs.OpenClawBulkGenerator` rewritten to dispatch through `LLM.Anthropic.complete/2`. Module name kept (avoids route / worker-registry ripples); moduledoc now explains the 11.2L reframe.
+
+Three LLM calls per run, one per content family:
+1. **Social**: one call returning `%{"platforms" => %{"twitter" => [...], "linkedin" => [...], ...}}` across 5 platforms × angle-labeled variants.
+2. **Blog**: one call returning `%{"variants" => [%{"angle":, "content":}, ...]}`. Blog prompt embeds the 12.1 AI Summary Nugget constraints (100-250 chars, 2+ entity tokens, no hedging, no leading pronouns) so the LLM steers toward the shape the post-generation nugget validator will accept.
+3. **Video**: one call returning `%{"variants" => [...]}` for short-form video scripts.
+
+Each variant becomes a `Draft` via `ContentGeneration.create_draft/1` (not bulk `create_drafts/1`) so the Phase 12.1 nugget + 12.2 SEO hooks run on every blog draft. `generating_model` is set to `"anthropic:<real-model-name>"` from the response - no more hardcoded `"openclaw"` marker.
+
+Humor-angle guarantee: every prompt (social / blog / video) explicitly requires at least one variant labeled `angle: "humor"` per family.
+
+JSON decode path reuses the established `decode → fenced-block fallback → reject-without-fabricating` pipeline from `MultiModelRanker` + `AssetBundleDraftGenerator`.
+
+Failure modes (consistent taxonomy):
+- `{:error, :not_configured}` - log + `{:ok, :skipped}`, zero drafts.
+- Malformed JSON / missing keys - `{:cancel, "malformed LLM output"}`.
+- Transient errors - `{:error, reason}` for Oban retry.
+- HTTP 4xx / unexpected status - `{:cancel, reason}`.
+
+Tests (7 new in `test/content_forge/jobs/open_claw_bulk_generator_test.exs`):
+- Happy path creates drafts across all three families from 3 sequenced LLM calls.
+- Humor angle present in every family.
+- `generating_model` starts with `"anthropic:"` on every draft.
+- `:not_configured` returns `:skipped` with zero drafts.
+- Malformed JSON cancels with the literal `"malformed LLM output"` reason.
+- Transient 500 triggers Oban retry.
+- Missing brief cancels.
+
+**Gate discipline (per 12.4 reject lesson)**:
+- Credo ran as both baseline-diff AND per-touched-file; both returned zero new findings.
+- `mix format --check-formatted` ran LAST after credo / test cycles. Caught one wrapping change in `agent_gateway.ex` and one in `sms_reply_dispatcher.ex`; applied format and re-verified.
+
+**What was explicitly NOT changed** (kept out of scope):
+- OpenClaw HTTP direct-to-ACP implementation. The shell-out is the supported surface and insulates Content Forge from ACP protocol changes. Future optimization if the shell-out cost matters.
+- OpenClaw tool-call parsing. Text-only replies this slice; 14.2d if/when needed.
+- xAI provider for MultiModelRanker's third scoring slot (11.2M follow-up concern).
+- `OpenClawBulkGenerator` module rename. Public name stays for backward compatibility; internal semantics reframed in the moduledoc.
+- Gemini as a bulk-gen alternative. Anthropic is the single provider for 11.2L. A future slice could add a per-content-family provider choice if cost/latency profile demands.
+
+**Gate**: compile --warnings-as-errors clean, format clean (ran LAST), full test 780/0 (12 new across 2 files), credo baseline-diff empty + per-touched-file clean, coverage 61.40% (up from 59.82%). Rebased cleanly on master @ `d37acc3`.
+
 ### Phase 12.4: publish gate + override path
 
 Status: DONE

@@ -130,23 +130,126 @@ defmodule ContentForge.Jobs.SmsReplyDispatcherTest do
     end
   end
 
-  describe "OpenClaw configured: still ships fallback this slice" do
-    test "OpenClaw on still sends fallback (14.2c will replace this branch)",
+  describe "OpenClaw agent-turn (14.2c)" do
+    setup do
+      original = Application.get_env(:content_forge, :open_claw_agent, [])
+
+      on_exit(fn ->
+        Application.put_env(:content_forge, :open_claw_agent, original)
+      end)
+
+      :ok
+    end
+
+    test "when AgentGateway returns text, Twilio sends that text instead of the fallback",
          %{product: product, inbound_event: inbound_event} do
-      Application.put_env(:content_forge, @open_claw_key,
-        base_url: "http://openclaw.test",
-        api_key: "oc-test-key"
-      )
+      stub_agent_shell(fn _binary, _args, _opts ->
+        {~s|{"payloads":[{"text":"Hi there, how can I help?"}],"model":"claude-stub"}|, 0}
+      end)
 
       Req.Test.stub(@twilio_stub, fn conn ->
-        Req.Test.json(conn, twilio_sms_response("SMfallback_oc", "queued"))
+        Req.Test.json(conn, twilio_sms_response("SMagent1", "queued"))
       end)
 
       assert {:ok, :unavailable_fallback} = run_dispatch(inbound_event.id)
 
       outbound = Sms.list_events(product.id, direction: "outbound") |> List.first()
-      assert outbound.body == @default_fallback
+      assert outbound.body == "Hi there, how can I help?"
       assert outbound.status == "sent"
+    end
+
+    test "missing agent config falls through to the fallback path without shelling out",
+         %{product: product, inbound_event: inbound_event} do
+      shell_pid = self()
+
+      # Binary path points to a file that does not exist; the
+      # gateway short-circuits with :not_configured and the
+      # shell_impl never fires.
+      Application.put_env(:content_forge, :open_claw_agent,
+        binary_path: "/nonexistent/path",
+        default_agent_id: "agent-test",
+        shell_impl: fn _binary, _args, _opts ->
+          send(shell_pid, :unexpected_shell)
+          {"", 0}
+        end
+      )
+
+      Req.Test.stub(@twilio_stub, fn conn ->
+        Req.Test.json(conn, twilio_sms_response("SMfallback_oc_off", "queued"))
+      end)
+
+      assert {:ok, :unavailable_fallback} = run_dispatch(inbound_event.id)
+      refute_received :unexpected_shell
+
+      outbound = Sms.list_events(product.id, direction: "outbound") |> List.first()
+      assert outbound.body == @default_fallback
+    end
+
+    test "malformed JSON from the agent falls back (permanent error, no Oban retry)",
+         %{product: product, inbound_event: inbound_event} do
+      stub_agent_shell(fn _binary, _args, _opts -> {"not json at all", 0} end)
+
+      Req.Test.stub(@twilio_stub, fn conn ->
+        Req.Test.json(conn, twilio_sms_response("SMfallback_malformed", "queued"))
+      end)
+
+      assert {:ok, :unavailable_fallback} =
+               capture_log(fn -> run_dispatch(inbound_event.id) end)
+               |> then(fn _ -> run_dispatch(inbound_event.id) end)
+
+      outbound = Sms.list_events(product.id, direction: "outbound") |> List.first()
+      assert outbound.body == @default_fallback
+    end
+
+    test "non-zero exit code from the agent returns a transient error for retry",
+         %{inbound_event: inbound_event} do
+      stub_agent_shell(fn _binary, _args, _opts -> {"boom", 1} end)
+
+      # Shouldn't hit Twilio since the transient error propagates
+      # before we get that far.
+      Req.Test.stub(@twilio_stub, fn _conn ->
+        raise "Twilio should not be called on transient agent error"
+      end)
+
+      assert {:error, {:transient, :exit_code, 1}} =
+               capture_log(fn -> run_dispatch(inbound_event.id) end)
+               |> then(fn _ -> run_dispatch(inbound_event.id) end)
+    end
+
+    test "passes session_id that threads product + phone across messages",
+         %{inbound_event: inbound_event} do
+      test_pid = self()
+
+      stub_agent_shell(fn _binary, args, _opts ->
+        send(test_pid, {:shell_args, args})
+        {~s|{"payloads":[{"text":"ok"}]}|, 0}
+      end)
+
+      Req.Test.stub(@twilio_stub, fn conn ->
+        Req.Test.json(conn, twilio_sms_response("SMagent_session", "queued"))
+      end)
+
+      run_dispatch(inbound_event.id)
+
+      assert_received {:shell_args, args}
+      # The session id should include both product id and phone.
+      session_idx = Enum.find_index(args, &(&1 == "--session-id"))
+      session_val = Enum.at(args, session_idx + 1)
+      assert session_val =~ inbound_event.product_id
+      assert session_val =~ inbound_event.phone_number
+    end
+
+    # Configures the OpenClaw AgentGateway with a real-on-disk
+    # binary path (/bin/sh) so File.exists?/1 passes, but swaps
+    # the actual System.cmd call with `fun` via the :shell_impl
+    # test seam.
+    defp stub_agent_shell(fun) do
+      Application.put_env(:content_forge, :open_claw_agent,
+        binary_path: "/bin/sh",
+        default_agent_id: "agent-test",
+        default_timeout_seconds: 5,
+        shell_impl: fun
+      )
     end
   end
 
