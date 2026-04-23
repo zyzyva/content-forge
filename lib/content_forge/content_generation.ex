@@ -188,6 +188,27 @@ defmodule ContentForge.ContentGeneration do
     |> Repo.update()
   end
 
+  def mark_draft_blocked(%Draft{} = draft) do
+    draft
+    |> Draft.changeset(%{status: "blocked"})
+    |> Repo.update()
+  end
+
+  # Blocked drafts (for example, social posts missing their Stage 3.5 image)
+  def list_blocked_drafts(nil) do
+    Draft
+    |> where(status: "blocked")
+    |> order_by(desc: :inserted_at)
+    |> Repo.all()
+  end
+
+  def list_blocked_drafts(product_id) do
+    Draft
+    |> where(product_id: ^product_id, status: "blocked")
+    |> order_by(desc: :inserted_at)
+    |> Repo.all()
+  end
+
   # Ranked drafts for a product (passed 3c ranking)
   def list_ranked_drafts(product_id) do
     Draft

@@ -6,10 +6,12 @@ defmodule ContentForge.Jobs.Publisher do
 
   use Oban.Worker, max_attempts: 3
 
-  alias ContentForge.{Products, Publishing}
+  alias ContentForge.{ContentGeneration, Products, Publishing}
   alias ContentForge.ContentGeneration.Draft
 
   require Logger
+
+  @missing_image_reason "Social post missing required AI-generated image (Stage 3.5)"
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"product_id" => product_id, "platform" => platform}}) do
@@ -35,39 +37,12 @@ defmodule ContentForge.Jobs.Publisher do
             :ok
 
           draft ->
-            # Get credentials for the platform
-            case get_credentials(product, platform) do
-              nil ->
-                Logger.error("Publisher: No credentials for platform #{platform}")
-                {:cancel, "No credentials for platform"}
+            case enforce_image_required(draft) do
+              {:blocked, reason} ->
+                {:cancel, reason}
 
-              credentials ->
-                # Post to the platform
-                opts = build_post_opts(draft, optimal_windows, product)
-                platform_module = get_platform_module(platform)
-
-                case platform_module.post(draft.content, credentials, opts) do
-                  {:ok, %{post_id: post_id, post_url: post_url}} ->
-                    # Record the published post
-                    Publishing.create_published_post(%{
-                      product_id: product_id,
-                      draft_id: draft.id,
-                      platform: platform,
-                      platform_post_id: post_id,
-                      platform_post_url: post_url,
-                      posted_at: DateTime.utc_now()
-                    })
-
-                    # Update draft status
-                    Draft.changeset(draft, %{status: "published"}) |> ContentForge.Repo.update!()
-
-                    Logger.info("Publisher: Published draft #{draft.id} to #{platform}")
-                    :ok
-
-                  {:error, reason} ->
-                    Logger.error("Publisher: Failed to publish to #{platform}: #{reason}")
-                    {:error, reason}
-                end
+              {:ok, draft} ->
+                publish_to_platform(draft, product, platform, optimal_windows)
             end
         end
     end
@@ -93,7 +68,47 @@ defmodule ContentForge.Jobs.Publisher do
     end
   end
 
+  defp publish_to_platform(draft, product, platform, optimal_windows) do
+    case get_credentials(product, platform) do
+      nil ->
+        Logger.error("Publisher: No credentials for platform #{platform}")
+        {:cancel, "No credentials for platform"}
+
+      credentials ->
+        opts = build_post_opts(draft, optimal_windows, product)
+        platform_module = get_platform_module(platform)
+
+        case platform_module.post(draft.content, credentials, opts) do
+          {:ok, %{post_id: post_id, post_url: post_url}} ->
+            Publishing.create_published_post(%{
+              product_id: draft.product_id,
+              draft_id: draft.id,
+              platform: platform,
+              platform_post_id: post_id,
+              platform_post_url: post_url,
+              posted_at: DateTime.utc_now()
+            })
+
+            Draft.changeset(draft, %{status: "published"}) |> ContentForge.Repo.update!()
+
+            Logger.info("Publisher: Published draft #{draft.id} to #{platform}")
+            :ok
+
+          {:error, reason} ->
+            Logger.error("Publisher: Failed to publish to #{platform}: #{reason}")
+            {:error, reason}
+        end
+    end
+  end
+
   defp do_publish(draft, product) do
+    case enforce_image_required(draft) do
+      {:blocked, reason} -> {:cancel, reason}
+      {:ok, draft} -> do_publish_approved(draft, product)
+    end
+  end
+
+  defp do_publish_approved(draft, product) do
     case get_credentials(product, draft.platform) do
       nil ->
         {:cancel, "No credentials for platform"}
@@ -127,6 +142,20 @@ defmodule ContentForge.Jobs.Publisher do
         end
     end
   end
+
+  defp enforce_image_required(%Draft{content_type: "post", image_url: nil} = draft) do
+    Logger.warning("Publisher: publish blocked: missing image for draft #{draft.id}")
+    {:ok, _blocked} = ContentGeneration.mark_draft_blocked(draft)
+    {:blocked, @missing_image_reason}
+  end
+
+  defp enforce_image_required(%Draft{content_type: "post", image_url: ""} = draft) do
+    Logger.warning("Publisher: publish blocked: missing image for draft #{draft.id}")
+    {:ok, _blocked} = ContentGeneration.mark_draft_blocked(draft)
+    {:blocked, @missing_image_reason}
+  end
+
+  defp enforce_image_required(draft), do: {:ok, draft}
 
   defp find_next_draft(product_id, platform) do
     import Ecto.Query
