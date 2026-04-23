@@ -261,7 +261,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 10. Goal: produce content that is AI-retriev
   - Drafts review LiveView adds an "SEO score" column on blog drafts when a checklist exists; clicking the score opens a small drawer listing each check's pass/fail/skip with the note text.
   - Tests cover: the infrastructure dispatch (each check is invoked once per run); the 4 implemented checks each have their own pass + fail case; the stub modules return `:not_applicable`; the aggregate score reflects pass count correctly; re-running a checklist replaces the prior row without duplicating.
 
-- **12.2b SEO checklist mechanical checks (structural + meta)**
+- **12.2b SEO checklist mechanical checks (structural + meta)** ✅ Shipped `cae8b62`.
   - Fill in the structural and meta checks that can be evaluated from content alone, without LLM or external data: H1 count, heading hierarchy no skips, title ≤ 60 chars, meta description 100-155 chars, core answer in first 150 words (already shipped in 12.2a), fast-scan summary in first 200 words (already shipped as the AI Summary Nugget from 12.1, link the two results), FAQ section present, JSON-LD schema block present, image alt text coverage, internal links present, external link count reasonable, keyword density in title, slug length ≤ 75 chars, table of contents for articles over 1500 words, reading time estimate present.
   - Each check is its own module with a `check/1` function. All tests live alongside.
   - Typically 12-14 checks land here; the remaining 10-12 semantic checks are 12.2c.

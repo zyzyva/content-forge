@@ -85,7 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 12.2b: SEO checklist mechanical checks
 
 Status: DONE
-Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `58fb17a`. Gate: compile --warnings-as-errors clean, format clean, full test 715/0, credo baseline-diff empty, coverage 58.44% (up from 57.76%).
+Merged: master @ `cae8b62` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 715-0; coverage 58.44% (+0.68). 14 checks with pattern-match-first dispatch. Cross-slice `FastScanSummaryFirst200` linkage: first head short-circuits to `:pass` when `ai_summary_nugget` is populated (12.1 validator is strictly tighter); fallback head runs heuristic. Regex-interpolation footgun flagged in BUILDLOG for 12.2c. 10 semantic stubs remain for 12.2c.
 Note: Fills in 14 of the 24 stub slots from 12.2a. Each check is its own module under `lib/content_forge/content_generation/seo_checklist/checks/`; behavior is body-content-only (no LLM, no external data). 10 stubs remain for 12.2c (semantic checks).
 
 **Implemented in this slice** (14):
