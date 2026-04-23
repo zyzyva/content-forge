@@ -6,7 +6,13 @@ defmodule ContentForge.Jobs.VideoProducer do
   2. Playwright screen recording - Record walkthrough of live site
   3. HeyGen avatar - Generate avatar video with script
   4. Remotion assembly - Assemble all assets into video
-  5. FFmpeg encode - Normalize and finalize video
+  5. Media Forge video render - Final encoding and format normalization
+     issued against the Media Forge HTTP client (Integration 1). Sync
+     responses persist the R2 key immediately; async responses return a
+     job id that we resolve by polling Media Forge job status until done
+     or failed. When Media Forge is not configured, the step logs the
+     condition and leaves the video job at `assembled` with a dashboard
+     visible error.
   6. YouTube upload - Upload with AI-generated metadata
 
   Each step updates the VideoJob status. Failed steps retry 3x then pause the job.
@@ -14,12 +20,15 @@ defmodule ContentForge.Jobs.VideoProducer do
 
   use Oban.Worker, max_attempts: 3
 
-  alias ContentForge.{Products, Publishing, ContentGeneration}
+  alias ContentForge.{ContentGeneration, MediaForge, Products, Publishing}
   alias ContentForge.Publishing.VideoJob
 
   require Logger
 
   @max_retries 3
+
+  @default_poll_interval_ms 5_000
+  @default_poll_max_attempts 60
 
   # Type definitions
   # The step_result type helps with pattern matching but the compiler
@@ -30,7 +39,6 @@ defmodule ContentForge.Jobs.VideoProducer do
   @dialyzer {:nowarn_function, playwright_record_walkthrough: 2}
   @dialyzer {:nowarn_function, heygen_generate_avatar: 2}
   @dialyzer {:nowarn_function, remotion_assemble: 4}
-  @dialyzer {:nowarn_function, ffmpeg_encode: 2}
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"video_job_id" => video_job_id}}) do
@@ -77,53 +85,57 @@ defmodule ContentForge.Jobs.VideoProducer do
   end
 
   defp execute_pipeline(draft, product, video_job) do
-    # Step 1: Voiceover (ElevenLabs)
-    case produce_voiceover(draft, product, video_job) do
-      {:ok, voiceover_r2_key, video_job} ->
-        # Step 2: Screen Recording (Playwright)
-        case produce_screen_recording(draft, product, video_job, voiceover_r2_key) do
-          {:ok, recording_r2_key, video_job} ->
-            # Step 3: Avatar Video (HeyGen)
-            case produce_avatar_video(draft, product, video_job, recording_r2_key) do
-              {:ok, avatar_r2_key, video_job} ->
-                # Step 4: Assembly (Remotion)
-                case assemble_video(
-                       draft,
-                       product,
-                       video_job,
-                       voiceover_r2_key,
-                       recording_r2_key,
-                       avatar_r2_key
-                     ) do
-                  {:ok, assembled_r2_key, video_job} ->
-                    # Step 5: FFmpeg Encode
-                    case encode_video(draft, product, video_job, assembled_r2_key) do
-                      {:ok, final_r2_key, video_job} ->
-                        # Step 6: YouTube Upload
-                        case upload_to_youtube(draft, product, video_job, final_r2_key) do
-                          {:ok, _video_url, video_job} ->
-                            Logger.info("VideoProducer: Completed job #{video_job.id}")
-                            :ok
+    with {:ok, voice_key, video_job} <-
+           tag_step(:voiceover, produce_voiceover(draft, product, video_job)),
+         {:ok, rec_key, video_job} <-
+           tag_step(
+             :recording,
+             produce_screen_recording(draft, product, video_job, voice_key)
+           ),
+         {:ok, avatar_key, video_job} <-
+           tag_step(:avatar, produce_avatar_video(draft, product, video_job, rec_key)),
+         {:ok, assembled_key, video_job} <-
+           tag_step(
+             :assembly,
+             assemble_video(draft, product, video_job, voice_key, rec_key, avatar_key)
+           ) do
+      finalize(draft, product, video_job, assembled_key)
+    end
+  end
 
-                          {:error, reason, video_job} ->
-                            handle_step_error(video_job, :youtube_upload, reason)
-                        end
-                    end
+  # Wraps a step return so `with` can thread the happy path and funnel the
+  # failure path through handle_step_error/3 with the step atom preserved.
+  defp tag_step(_name, {:ok, _key, _video_job} = ok), do: ok
+  defp tag_step(name, {:error, reason, video_job}), do: handle_step_error(video_job, name, reason)
 
-                  {:error, reason, video_job} ->
-                    handle_step_error(video_job, :assembly, reason)
-                end
+  # Step 5 + Step 6 tail of the pipeline.
+  defp finalize(draft, product, video_job, assembled_r2_key) do
+    case encode_via_media_forge(video_job, assembled_r2_key) do
+      {:ok, final_r2_key, video_job} ->
+        upload_and_finish(draft, product, video_job, final_r2_key)
 
-              {:error, reason, video_job} ->
-                handle_step_error(video_job, :avatar, reason)
-            end
+      {:halt_ok, _reason, _paused_job} ->
+        # Media Forge not configured; video job sits at assembled with a
+        # dashboard-visible error note. Not a retry case.
+        :ok
 
-          {:error, reason, video_job} ->
-            handle_step_error(video_job, :recording, reason)
-        end
+      {:cancel, reason, _failed_job} ->
+        {:cancel, reason}
+
+      {:error, reason, _video_job} ->
+        # Transient; let Oban retry at its max_attempts.
+        {:error, reason}
+    end
+  end
+
+  defp upload_and_finish(draft, product, video_job, final_r2_key) do
+    case upload_to_youtube(draft, product, video_job, final_r2_key) do
+      {:ok, _video_url, video_job} ->
+        Logger.info("VideoProducer: Completed job #{video_job.id}")
+        :ok
 
       {:error, reason, video_job} ->
-        handle_step_error(video_job, :voiceover, reason)
+        handle_step_error(video_job, :youtube_upload, reason)
     end
   end
 
@@ -304,44 +316,179 @@ defmodule ContentForge.Jobs.VideoProducer do
   end
 
   # ============================================
-  # Step 5: FFmpeg Encode
+  # Step 5: Media Forge video render
   # ============================================
 
-  defp encode_video(_draft, product, video_job, assembled_key) do
-    Logger.info("VideoProducer: Step 5 - FFmpeg Encode for job #{video_job.id}")
+  defp encode_via_media_forge(video_job, assembled_key) do
+    Logger.info("VideoProducer: Step 5 - Media Forge render for job #{video_job.id}")
 
-    case ffmpeg_encode(assembled_key, product) do
-      {:ok, final_r2_key} ->
-        updated_keys = Map.put(video_job.per_step_r2_keys || %{}, "final", final_r2_key)
+    request = %{
+      source: assembled_key,
+      metadata: %{video_job_id: video_job.id}
+    }
 
-        # Note: status stays at "assembled" until upload
-        {:ok, updated_video_job} =
-          Publishing.update_video_job(video_job, %{
-            per_step_r2_keys: updated_keys
-          })
+    request
+    |> MediaForge.enqueue_video_render()
+    |> handle_render_response(video_job)
+  end
 
-        Logger.info("VideoProducer: FFmpeg encode complete - #{final_r2_key}")
-        {:ok, final_r2_key, updated_video_job}
+  defp handle_render_response({:ok, body}, video_job) when is_map(body) do
+    case {extract_render_key(body), body["jobId"]} do
+      {key, _} when is_binary(key) ->
+        complete_encoding(video_job, key)
 
-      {:error, _reason} ->
-        {:error, "Service unavailable", video_job}
+      {nil, job_id} when is_binary(job_id) ->
+        Logger.info(
+          "VideoProducer: video job #{video_job.id} awaiting Media Forge render job #{job_id}"
+        )
+
+        poll_until_rendered(job_id, video_job, poll_max_attempts())
+
+      {nil, nil} ->
+        fail_video_job(video_job, "Media Forge returned an unrecognized response")
     end
   end
 
-  @spec ffmpeg_encode(binary(), map()) :: step_result()
-  defp ffmpeg_encode(assembled_key, product) do
-    ffmpeg_config = get_in(product.publishing_targets, ["ffmpeg"]) || %{}
-    enabled = ffmpeg_config["enabled"]
+  defp handle_render_response({:error, :not_configured}, video_job) do
+    pause_at_assembled(video_job, "Media Forge unavailable")
+  end
 
-    if enabled do
-      # Simulate FFmpeg encoding
-      r2_key = "video_jobs/#{:erlang.system_time(:millisecond)}_final.mp4"
-      Logger.info("VideoProducer: Would FFmpeg encode #{assembled_key}")
-      {:ok, r2_key}
-    else
-      Logger.warning("VideoProducer: FFmpeg not enabled")
-      {:error, "FFmpeg not enabled"}
+  defp handle_render_response({:error, {:http_error, status, body}}, video_job) do
+    Logger.error(
+      "VideoProducer: video job #{video_job.id} Media Forge permanent error #{status} #{inspect(body)}"
+    )
+
+    reason = "Media Forge rejected render request (HTTP #{status})"
+    fail_video_job(video_job, reason)
+  end
+
+  defp handle_render_response({:error, {:unexpected_status, status, _body}}, video_job) do
+    reason = "Media Forge returned unexpected HTTP status #{status}"
+    Logger.error("VideoProducer: video job #{video_job.id} #{reason}")
+    fail_video_job(video_job, reason)
+  end
+
+  defp handle_render_response({:error, {:transient, _, _} = reason}, video_job) do
+    Logger.warning(
+      "VideoProducer: video job #{video_job.id} transient Media Forge error #{inspect(reason)}; Oban will retry"
+    )
+
+    {:error, "transient: #{inspect(reason)}", video_job}
+  end
+
+  defp handle_render_response({:error, reason}, video_job) do
+    Logger.error(
+      "VideoProducer: video job #{video_job.id} unexpected Media Forge error #{inspect(reason)}"
+    )
+
+    {:error, inspect(reason), video_job}
+  end
+
+  # --- polling ---------------------------------------------------------------
+
+  defp poll_until_rendered(_job_id, video_job, 0) do
+    fail_video_job(video_job, "Media Forge render job polling timeout")
+  end
+
+  defp poll_until_rendered(job_id, video_job, attempts_left) do
+    job_id
+    |> MediaForge.get_job()
+    |> handle_poll_response(job_id, video_job, attempts_left)
+  end
+
+  defp handle_poll_response({:ok, %{"status" => status} = body}, _job_id, video_job, _attempts)
+       when status in ["done", "completed", "succeeded"] do
+    case extract_render_key(body) do
+      nil ->
+        fail_video_job(video_job, "Media Forge reported done without an output key")
+
+      key ->
+        complete_encoding(video_job, key)
     end
+  end
+
+  defp handle_poll_response({:ok, %{"status" => status} = body}, job_id, video_job, _attempts)
+       when status in ["failed", "error"] do
+    reason = body["error"] || body["message"] || "unknown"
+
+    Logger.error(
+      "VideoProducer: video job #{video_job.id} Media Forge render job #{job_id} failed: #{inspect(reason)}"
+    )
+
+    fail_video_job(video_job, "Media Forge render job failed: #{inspect(reason)}")
+  end
+
+  defp handle_poll_response({:ok, _body}, job_id, video_job, attempts_left) do
+    Process.sleep(poll_interval_ms())
+    poll_until_rendered(job_id, video_job, attempts_left - 1)
+  end
+
+  defp handle_poll_response({:error, :not_configured}, _job_id, video_job, _attempts) do
+    pause_at_assembled(video_job, "Media Forge unavailable (polling)")
+  end
+
+  defp handle_poll_response({:error, reason}, job_id, video_job, _attempts) do
+    Logger.error(
+      "VideoProducer: video job #{video_job.id} poll of Media Forge render job #{job_id} errored: #{inspect(reason)}"
+    )
+
+    {:error, inspect(reason), video_job}
+  end
+
+  # --- persistence helpers ---------------------------------------------------
+
+  defp complete_encoding(video_job, final_r2_key) do
+    {:ok, encoded_job} =
+      Publishing.update_video_job_status(video_job, "encoded", %{"final" => final_r2_key})
+
+    Logger.info("VideoProducer: Media Forge render complete - #{final_r2_key}")
+    {:ok, final_r2_key, encoded_job}
+  end
+
+  defp pause_at_assembled(video_job, reason) do
+    Logger.warning(
+      "VideoProducer: Media Forge unavailable; leaving video job #{video_job.id} at assembled - #{reason}"
+    )
+
+    {:ok, paused_job} = Publishing.update_video_job(video_job, %{error: reason})
+    {:halt_ok, reason, paused_job}
+  end
+
+  defp fail_video_job(video_job, reason) do
+    Logger.error("VideoProducer: marking video job #{video_job.id} failed: #{reason}")
+
+    {:ok, failed_job} =
+      video_job
+      |> Publishing.update_video_job_status("failed", %{})
+      |> then(fn {:ok, job} -> Publishing.update_video_job(job, %{error: reason}) end)
+
+    {:cancel, reason, failed_job}
+  end
+
+  # --- response shape helpers ------------------------------------------------
+
+  defp extract_render_key(%{"result" => %{"output_r2_key" => key}}) when is_binary(key), do: key
+  defp extract_render_key(%{"result" => %{"r2_key" => key}}) when is_binary(key), do: key
+  defp extract_render_key(%{"result" => %{"url" => key}}) when is_binary(key), do: key
+  defp extract_render_key(%{"output_r2_key" => key}) when is_binary(key), do: key
+  defp extract_render_key(%{"r2_key" => key}) when is_binary(key), do: key
+  defp extract_render_key(%{"url" => key}) when is_binary(key), do: key
+  defp extract_render_key(_), do: nil
+
+  # --- config ----------------------------------------------------------------
+
+  defp poll_interval_ms do
+    get_config(:poll_interval_ms, @default_poll_interval_ms)
+  end
+
+  defp poll_max_attempts do
+    get_config(:poll_max_attempts, @default_poll_max_attempts)
+  end
+
+  defp get_config(key, default) do
+    :content_forge
+    |> Application.get_env(:video_producer, [])
+    |> Keyword.get(key, default)
   end
 
   # ============================================

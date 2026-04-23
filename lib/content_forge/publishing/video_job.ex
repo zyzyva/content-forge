@@ -16,6 +16,7 @@ defmodule ContentForge.Publishing.VideoJob do
     recording_done
     avatar_done
     assembled
+    encoded
     uploaded
     failed
     paused
@@ -76,6 +77,9 @@ defmodule ContentForge.Publishing.VideoJob do
 
   def assembled?(%__MODULE__{status: "assembled"}), do: true
   def assembled?(_), do: false
+
+  def encoded?(%__MODULE__{status: "encoded"}), do: true
+  def encoded?(_), do: false
 
   def uploaded?(%__MODULE__{status: "uploaded"}), do: true
   def uploaded?(_), do: false

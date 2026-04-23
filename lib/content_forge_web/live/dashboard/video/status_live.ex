@@ -9,7 +9,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Video.StatusLive do
   alias ContentForge.Products
   alias ContentForgeWeb.Live.Dashboard.Components
 
-  @status_order ~w(script_approved voiceover_done recording_done avatar_done assembled uploaded)
+  @status_order ~w(script_approved voiceover_done recording_done avatar_done assembled encoded uploaded)
 
   @impl true
   def mount(params, _session, socket) do
@@ -132,6 +132,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Video.StatusLive do
   defp format_step_name("recording_done"), do: "Recording"
   defp format_step_name("avatar_done"), do: "Avatar"
   defp format_step_name("assembled"), do: "Assemble"
+  defp format_step_name("encoded"), do: "Encode"
   defp format_step_name("uploaded"), do: "Uploaded"
   defp format_step_name(step), do: step
 
