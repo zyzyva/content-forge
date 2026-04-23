@@ -6,12 +6,13 @@ defmodule ContentForge.ContentGeneration do
   import Ecto.Query
   alias ContentForge.Repo
 
-  alias ContentForge.Products.ContentBrief
-  alias ContentForge.Products.BriefVersion
   alias ContentForge.ContentGeneration.Draft
   alias ContentForge.ContentGeneration.DraftAsset
   alias ContentForge.ContentGeneration.DraftScore
+  alias ContentForge.ContentGeneration.NuggetValidator
   alias ContentForge.ProductAssets.ProductAsset
+  alias ContentForge.Products.BriefVersion
+  alias ContentForge.Products.ContentBrief
 
   # ContentBrief CRUD
 
@@ -186,6 +187,32 @@ defmodule ContentForge.ContentGeneration do
     %Draft{}
     |> Draft.changeset(attrs)
     |> Repo.insert()
+    |> maybe_validate_nugget()
+  end
+
+  # Post-insert hook for the Phase 12.1 AI Summary Nugget.
+  # Runs only on blog drafts; non-blog drafts pass through.
+  defp maybe_validate_nugget({:ok, %Draft{content_type: "blog"} = draft}) do
+    apply_nugget_validation(draft)
+  end
+
+  defp maybe_validate_nugget(result), do: result
+
+  defp apply_nugget_validation(%Draft{content: content} = draft) do
+    case NuggetValidator.validate(content) do
+      {:ok, nugget} ->
+        draft
+        |> Draft.changeset(%{ai_summary_nugget: nugget})
+        |> Repo.update()
+
+      {:error, reasons} ->
+        draft
+        |> Draft.changeset(%{
+          status: "needs_review",
+          error: NuggetValidator.format_reasons(reasons)
+        })
+        |> Repo.update()
+    end
   end
 
   def create_drafts(attrs_list) when is_list(attrs_list) do

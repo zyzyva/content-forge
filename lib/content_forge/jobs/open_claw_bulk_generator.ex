@@ -116,28 +116,32 @@ defmodule ContentForge.Jobs.OpenClawBulkGenerator do
   defp generate_blog_drafts(product, brief, count) do
     angles = ["educational", "how_to", "listicle", "case_study", "problem_aware", "humor"]
 
-    drafts_attrs =
+    # Uses create_draft/1 per angle (not create_drafts/1) so the
+    # Phase 12.1 NuggetValidator hook runs on each blog draft.
+    drafts =
       angles
       |> Enum.take(count)
       |> Enum.map(fn angle ->
         _prompt = build_blog_prompt(product, brief, angle)
         content = generate_blog_content(angle, product.name)
 
-        %{
-          product_id: product.id,
-          content_brief_id: brief.id,
-          content: content,
-          platform: "blog",
-          content_type: "blog",
-          angle: angle,
-          generating_model: "openclaw",
-          status: "draft"
-        }
+        {:ok, draft} =
+          ContentGeneration.create_draft(%{
+            product_id: product.id,
+            content_brief_id: brief.id,
+            content: content,
+            platform: "blog",
+            content_type: "blog",
+            angle: angle,
+            generating_model: "openclaw",
+            status: "draft"
+          })
+
+        draft
       end)
 
-    if drafts_attrs != [] do
-      ContentGeneration.create_drafts(drafts_attrs)
-      Logger.info("Created #{length(drafts_attrs)} blog drafts")
+    if drafts != [] do
+      Logger.info("Created #{length(drafts)} blog drafts")
     end
   end
 
@@ -201,9 +205,19 @@ defmodule ContentForge.Jobs.OpenClawBulkGenerator do
 
     REQUIRED ELEMENTS — every blog post must include all of these:
 
-    1. AI SUMMARY NUGGET: Place this above the H1 in <div class="ai-summary">.
+    1. AI SUMMARY NUGGET: Open the article with a self-contained factual
+       summary as the FIRST paragraph. This is the paragraph an AI
+       assistant would cite when asked about the topic; every word must
+       stand on its own without scrolling further.
        Format: [Entity]: [key metric], [alternative], [condition]. [recent context/date].
-       Maximum 200 characters. Pure facts only — no marketing language.
+       Constraints (hard requirements, every one enforced post-generation):
+         - 100-250 characters after whitespace stripping
+         - at least 2 entity tokens (proper nouns or numbers)
+         - no hedging language: never use "sort of", "kind of", "might possibly",
+           "perhaps", "seems to", "could be", "maybe", "probably", "arguably",
+           "somewhat", "fairly", "rather"
+         - no opening pronouns ("This", "That", "It", "They", "These", "Those",
+           "Here", "There") - the first word must be an entity
        Example: "Tri-Cities HVAC: avg install $4,200, 3-5 day turnaround, Carrier/Lennox brands. Updated Feb 2026."
 
     2. ORIGINAL RESEARCH BLOCK: Include a section framed as a specific test, analysis, or

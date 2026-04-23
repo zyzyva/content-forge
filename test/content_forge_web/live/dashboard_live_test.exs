@@ -750,6 +750,33 @@ defmodule ContentForgeWeb.DashboardLiveTest do
       # archived branch (not the fallback badge-neutral).
       assert html =~ "badge-ghost"
     end
+
+    test "exposes a Needs Review filter tab", %{conn: conn} do
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/drafts")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      html = render(view)
+      assert html =~ ~s|id="filter-tab-needs_review"|
+      assert html =~ "Needs Review"
+    end
+
+    test "renders a needs_review draft with a warning badge", %{conn: conn} do
+      product = create_product()
+      _draft = create_draft(product, %{status: "needs_review"})
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/drafts")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      html = render(view)
+      assert html =~ "NEEDS_REVIEW"
+      assert html =~ "badge-warning"
+    end
   end
 
   describe "Schedule page" do

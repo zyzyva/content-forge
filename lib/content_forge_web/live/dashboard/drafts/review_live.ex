@@ -363,7 +363,8 @@ defmodule ContentForgeWeb.Live.Dashboard.Drafts.ReviewLive do
       {"approved", "Approved"},
       {"rejected", "Rejected"},
       {"blocked", "Blocked"},
-      {"archived", "Archived"}
+      {"archived", "Archived"},
+      {"needs_review", "Needs Review"}
     ]
   end
 

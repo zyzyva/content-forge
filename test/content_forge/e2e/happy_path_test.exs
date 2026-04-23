@@ -226,8 +226,21 @@ defmodule ContentForge.E2E.HappyPathTest do
       platforms = repurposed |> Enum.map(& &1.platform) |> Enum.sort()
       assert platforms == ["blog", "linkedin", "reddit"]
       assert Enum.all?(repurposed, &(&1.generating_model == "repurposing_engine"))
-      assert Enum.all?(repurposed, &(&1.status == "draft"))
       assert Enum.all?(repurposed, &(&1.content_brief_id == winner.content_brief_id))
+
+      # Post-12.1 status split: social repurposed drafts (linkedin,
+      # reddit) stay at "draft"; the blog repurposed draft's
+      # synthetic template content does not satisfy the nugget
+      # validator, so it lands as "needs_review" with a reason on
+      # error. That's the gate working as intended - a human needs
+      # to rewrite the opening paragraph before the blog draft is
+      # publish-eligible.
+      {blog_drafts, social_drafts} =
+        Enum.split_with(repurposed, &(&1.content_type == "blog"))
+
+      assert Enum.all?(social_drafts, &(&1.status == "draft"))
+      assert Enum.all?(blog_drafts, &(&1.status == "needs_review"))
+      assert Enum.all?(blog_drafts, &(&1.error =~ "nugget validation failed"))
     end)
   end
 end

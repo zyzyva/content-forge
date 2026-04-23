@@ -26,6 +26,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Components do
   defp status_badge_classes("rejected"), do: "badge-error"
   defp status_badge_classes("blocked"), do: "badge-error"
   defp status_badge_classes("archived"), do: "badge-ghost"
+  defp status_badge_classes("needs_review"), do: "badge-warning"
   defp status_badge_classes("published"), do: "badge-success"
   defp status_badge_classes("pending"), do: "badge-neutral"
   defp status_badge_classes("completed"), do: "badge-success"

@@ -82,6 +82,54 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 12.1: AI Summary Nugget validator
+
+Status: DONE
+Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `6ae73b3`. Gate: compile --warnings-as-errors clean, format clean, full test 651/0, credo baseline-diff empty, `mix test --cover` overall 56.67% above threshold 10.
+Note: First slice of Phase 12 (SEO Quality Pipeline). Introduces the AI Summary Nugget validator + post-generation hook so every blog draft either has a valid self-contained opening paragraph (stored in `ai_summary_nugget`) or is flagged `"needs_review"` with reasons on `draft.error`. Short-form social posts are exempt.
+
+**Schema + migration**:
+- `priv/repo/migrations/20260503120000_add_ai_summary_nugget_to_drafts.exs` - `alter table(:drafts) add :ai_summary_nugget, :text` nullable. Ran in dev + test.
+- `ContentForge.ContentGeneration.Draft` - added `:ai_summary_nugget` field + cast; extended `status` inclusion list to include `"needs_review"` (now `~w(draft ranked approved rejected published blocked archived needs_review)`).
+
+**Validator** (`lib/content_forge/content_generation/nugget_validator.ex`, new):
+- `validate/1` takes the draft body as a string, extracts the first paragraph (`\n\n` split), strips leading/trailing whitespace, then runs four criteria checks and returns `{:ok, nugget}` or `{:error, [reason]}`.
+- Criteria:
+  - Length 100..250 chars (`:too_short`, `:too_long`).
+  - At least two entity-style tokens (`:insufficient_entity_tokens`). Entity = proper noun OR numeric token. Proper-noun detection requires more than a sentence-leading capital: multi-cap (e.g., `ElevenLabs`), hyphenated (`Tri-Cities`), or not in a common-word blocklist (`This`, `That`, `The`, `It`, `They`, ...). This avoids counting generic sentence-openers as entities.
+  - No disallowed hedging phrases (`:contains_hedging`). Catches "sort of", "kind of", "might possibly", "perhaps", "seems to", "could be", "maybe", "probably", "arguably", "somewhat", "fairly", "rather".
+  - No dangling-pronoun opener (`:outside_pronoun_reference`). Leading word check against `this / that / these / those / it / they / them / he / she / who / which / there / here`. Full coreference resolution is out of scope; the opener check catches the common failure mode where the LLM writes "This is why..." as the nugget.
+- `format_reasons/1` renders a reasons list as `"nugget validation failed: too_short, insufficient_entity_tokens"` for persistence on `draft.error`.
+
+**Post-generation hook** (`lib/content_forge/content_generation.ex`):
+- `create_draft/1` now pipes the insert result through `maybe_validate_nugget/1`. Function head pattern-matches on `content_type: "blog"`; everything else passes through unchanged.
+- On validator `:ok`, updates the draft with `ai_summary_nugget: <trimmed>`.
+- On validator `:error`, updates status to `"needs_review"` and writes the formatted reasons string to `draft.error`.
+- Non-blog drafts skip the hook entirely (zero extra work for short-form social posts).
+
+**Generator wiring** (`lib/content_forge/jobs/open_claw_bulk_generator.ex`):
+- `generate_blog_drafts/3` switched from `ContentGeneration.create_drafts/1` (bulk insert via `Repo.insert_all/3` which bypasses changesets) to per-angle `ContentGeneration.create_draft/1`. This routes each blog draft through the nugget hook.
+- `build_blog_prompt/3` sharpened: the AI SUMMARY NUGGET section now explicitly enumerates the four validator constraints (length band, entity count, banned hedging list, no opening pronouns) so the LLM is steered toward the exact shape the validator will accept. Increases the pass rate without loosening the gate.
+
+**Dashboard surfacing**:
+- `status_badge` component (`lib/content_forge_web/live/dashboard/components.ex`) gained a `"needs_review" -> badge-warning` branch. Yellow, matching the semantic that these drafts need human attention.
+- `status_tabs/0` in `Drafts.ReviewLive` gained `{"needs_review", "Needs Review"}` as the eighth tab.
+
+**Tests**:
+- `test/content_forge/content_generation/nugget_validator_test.exs` (new, 9 tests) - covers happy path (valid nugget + multi-paragraph extraction), length guard (`:too_short`, `:too_long`), entity guard (`:insufficient_entity_tokens` + accepts numbers + proper nouns), hedging guard (`:contains_hedging`), pronoun guard (`:outside_pronoun_reference` + accepts proper-noun openers).
+- `test/content_forge/content_generation/nugget_hook_test.exs` (new, 3 tests) - integration coverage for the post-generation hook: valid blog draft gets `ai_summary_nugget` populated + status stays `"draft"`; invalid blog draft lands as `"needs_review"` with reasons on `error`; non-blog drafts skip the hook entirely.
+- `test/content_forge_web/live/dashboard_live_test.exs` (updated, 2 new tests) - Needs Review filter tab renders with `id="filter-tab-needs_review"` and the label; a `needs_review` draft renders with `"NEEDS_REVIEW"` badge text + `badge-warning` class.
+- `test/content_forge/e2e/happy_path_test.exs` (updated) - the E2E blog-repurposing assertion was split to reflect the new gate: social repurposed drafts stay at `"draft"`, blog repurposed drafts land as `"needs_review"` because the synthetic transform content in `WinnerRepurposingEngine` doesn't include a valid nugget. This is the gate working as intended - a human rewrites the opening before publish-eligibility.
+
+**What was explicitly NOT changed** (kept out of scope):
+- No `ContentGeneration.revalidate_nugget/1` helper for manually re-running the validator after a human edit. Dashboard won't surface a "revalidate" button until 12.4 (dashboard surfacing).
+- No 28-point SEO checklist (12.2). The nugget is the first check; 27 more follow.
+- No Original Research block detection (12.3).
+- No full anaphora / coreference analysis for pronoun detection. Leading-word heuristic only.
+- `create_drafts/1` (bulk insert) still bypasses the hook by design. Only the social-post bulk path uses it; blog drafts always go through `create_draft/1` one at a time.
+
+**Gate**: compile --warnings-as-errors clean, format clean, full test 651/0 (14 new across 3 files plus 1 E2E assertion tightened), credo --strict baseline-diff empty, `mix test --cover` overall 56.67% (up from 56.41%) above threshold 10. Rebased cleanly on master @ `6ae73b3`.
+
 ### Phase 15.3a: coverage uplift triage + initial floor
 
 Status: DONE

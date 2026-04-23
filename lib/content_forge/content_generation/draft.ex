@@ -15,6 +15,7 @@ defmodule ContentForge.ContentGeneration.Draft do
     field :image_url, :string
     field :media_forge_job_id, :string
     field :error, :string
+    field :ai_summary_nugget, :string
 
     belongs_to :product, ContentForge.Products.Product
     belongs_to :content_brief, ContentForge.Products.ContentBrief
@@ -50,12 +51,16 @@ defmodule ContentForge.ContentGeneration.Draft do
       :repurposed_from_id,
       :image_url,
       :media_forge_job_id,
-      :error
+      :error,
+      :ai_summary_nugget
     ])
     |> validate_required([:product_id, :content, :platform, :content_type, :generating_model])
     |> validate_inclusion(:platform, ~w(twitter linkedin reddit facebook instagram blog youtube))
     |> validate_inclusion(:content_type, ~w(post blog video_script))
-    |> validate_inclusion(:status, ~w(draft ranked approved rejected published blocked archived))
+    |> validate_inclusion(
+      :status,
+      ~w(draft ranked approved rejected published blocked archived needs_review)
+    )
     |> validate_inclusion(
       :angle,
       ~w(educational entertaining problem_aware social_proof humor testimonial case_study how_to listicle),
