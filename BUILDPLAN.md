@@ -4,6 +4,31 @@ Wave-by-wave plan for the swarmforge flow. Every slice is sized so the architect
 
 Plain English only — no code. `CONTENT_FORGE_SPEC.md` is the source of truth for feature intent. This document only sequences and slices the remaining work.
 
+## Delivery Mechanism
+
+All remaining phases (10 through 15) ship via the swarmforge tmux flow defined in `swarmforge/`. Per slice:
+
+1. **Architect** reads this plan, picks the next slice, writes the acceptance spec into `CONTENT_FORGE_SPEC.md`, commits on `master`, and notifies the coder.
+2. **Coder** merges from `master`, implements the slice TDD-style in `.worktrees/coder` on the `coder` branch, runs the full local quality gate (`mix compile --warnings-as-errors`, `mix format --check-formatted`, `mix test`; add `mix credo --strict` once it lands), updates `BUILDLOG.md`, commits, and notifies the reviewer.
+3. **Reviewer** merges from `coder`, runs the deep gate (full suite + `mix test --cover`), looks for silent failures and pattern-match-first compliance, refactors small things in place if needed, commits on `reviewer`, and notifies both architect and coder. The architect then merges the reviewer's branch into `master`.
+
+If `mix credo --strict` is not yet wired into the project, the first coder slice should add it (see Bootstrap below). The reviewer must not skip a gate just because it is unconfigured — they should fail back to the architect with a request to wire it.
+
+A slice is "done" only when:
+
+- All quality gates pass on the reviewer's branch.
+- `BUILDLOG.md` reflects the change with role + date + commit hash.
+- `CAPABILITIES.md` is refreshed at end of phase if it has drifted.
+
+## Bootstrap (do before Phase 10)
+
+Two small slices that unlock the rest:
+
+- **B1. Wire `mix credo --strict` into the project.** Add `:credo` to `mix.exs` deps, add a `.credo.exs` config tuned for this project, and commit. The reviewer's gate depends on this. Tiny slice; coder can do it in one loop.
+- **B2. Add a `mix precommit` alias** combining `compile --warnings-as-errors`, `format --check-formatted`, `credo --strict`, and `test`, so the local gate is one command. Mirror the alias from Media Forge.
+
+## Guiding Principles
+
 ## Guiding Principles
 
 - **Bias toward revenue.** Phase 10 (Media Forge wiring) ships working demos faster than any new feature; it goes first.
