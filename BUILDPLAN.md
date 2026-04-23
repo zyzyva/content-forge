@@ -570,10 +570,50 @@ Phase exit criteria: a marketer can text a photo in, get it tagged into a produc
   - Tests: controller rejects missing or bad secret (401); controller dispatches to the right tool module; the create_upload_link module returns a presigned URL that matches the 13.1b format; plugin-shape stub test confirms the Node.js surface matches what OpenClaw expects (invokable via the existing OpenClaw CLI in integration mode).
 
 - **16.2 Read-only tools**
-  - Add tool modules for the query-shaped surface: `list_recent_assets`, `draft_status`, `upcoming_schedule`, `competitor_intel_summary`.
-  - Each is a small tool module calling an existing context function. No side effects. Authorization is minimal at this stage — all callers with a valid session get a read of the product scoped to the session.
-  - Plugin registrations expanded in one patch so OpenClaw sees all new tools in the same config reload.
-  - Tests: happy-path per tool with stubbed context responses; unknown product id returns a structured 404; a session that does not map to any product returns a clear error the agent can render as "I could not find your product."
+  - Scope: four query-shaped tools, all side-effect-free, sharing the product resolution contract from Feature 13 (explicit `product` param OR session-derived via `ProductPhone` on `"sms"`). Each tool module lives at `ContentForge.OpenClawTools.<Name>` with a single `call/2` callback; each is registered in `ContentForge.OpenClawTools.@tools` and in the Node plugin's `registerTool` calls.
+  - **Prerequisite refactor (ships in the same commit as the first new tool, not a separate slice):** extract product resolution out of `ContentForge.OpenClawTools.CreateUploadLink` into `ContentForge.OpenClawTools.ProductResolver` with a single `resolve(ctx, params)` entry point that implements the Feature 13 contract (UUID -> fuzzy name match, session-based fallback when `params["product"]` is missing, `:missing_product_context` when neither path succeeds). `CreateUploadLink` is rewritten to delegate to the resolver and keeps its existing behavior for id/name resolution; the session-based path is new and becomes observable when `create_upload_link` is called from SMS without an explicit `product`. Tests for `CreateUploadLink` that cover the existing id/name paths stay green; one new test asserts SMS session-based resolution works. This avoids four duplicate resolution implementations across the 16.2 tool modules.
+
+  - **Tool: `list_recent_assets`**
+    - Purpose: the agent answers "what have I uploaded recently for Acme?" by listing non-deleted assets for the resolved product. Reuses `ContentForge.ProductAssets.list_assets/2`.
+    - Params: `"product"` (optional, resolved via `ProductResolver`), `"limit"` (optional integer, default 10, clamped to `[1, 50]`), `"media_type"` (optional `"image" | "video"` filter), `"tag"` (optional single tag for overlap filtering, forwarded to the context function).
+    - Result shape: `%{product_id, product_name, count, assets: [%{id, filename, media_type, status, mime_type, byte_size, tags, description, uploaded_at}]}`. `uploaded_at` is an ISO-8601 string (the controller's serializer already handles `DateTime` conversion).
+    - Errors: `:missing_product_context`, `:product_not_found`, `:ambiguous_product`. No HTTP or DB side effects.
+
+  - **Tool: `draft_status`**
+    - Purpose: the agent answers "is the Johnson kitchen post ready?" by returning the current status of a draft. Reuses `ContentForge.ContentGeneration.get_draft/1` (or a narrow-scope query when resolving from a partial hint).
+    - Params (one of the two id-paths is required): `"draft_id"` (exact UUID) OR `"hint"` (free-text fragment the agent lifted from the user's message, matched case-insensitive against draft content/angle within the resolved product scope; the first match wins, ties surface as `:ambiguous_draft` with up to three candidate ids and snippets). `"product"` optional and resolved first via `ProductResolver` (when `draft_id` is supplied, the resolved product must own the draft or the tool returns `:not_found`).
+    - Result shape: `%{draft_id, product_id, product_name, content_type, platform, angle, status, generating_model, approved_at, approval_required, blocker, updated_at}`. `status` is the raw inclusion-list value (`"draft" | "ranked" | "approved" | "rejected" | "published" | "blocked" | "archived"`). `blocker` is a short string surfacing why a blocked draft is held (for example `"awaiting image"`) or `nil`. `approval_required` is `true` when the draft is a blog post gated by the SEO publish-gate and not yet approved.
+    - Errors: `:missing_product_context`, `:product_not_found`, `:ambiguous_product`, `:not_found`, `:ambiguous_draft` (carries `%{candidates: [%{id, snippet, status}]}` so the agent can ask "which one?").
+
+  - **Tool: `upcoming_schedule`**
+    - Purpose: the agent answers "what is going out this week?" by listing drafts that are approved (or blog drafts approved through the publish gate) awaiting publish. Reuses `ContentForge.ContentGeneration.list_approved_drafts/1`. The schema today does not carry a per-draft `scheduled_at`; this tool reflects the dashboard's "approved and queued" semantics rather than inventing schedule timestamps.
+    - Params: `"product"` (optional, resolved via `ProductResolver`), `"limit"` (optional integer, default 10, clamped to `[1, 25]`), `"platform"` (optional filter that post-filters the approved list by the draft's `platform` field).
+    - Result shape: `%{product_id, product_name, count, drafts: [%{id, platform, content_type, angle, snippet, approved_at, status}]}`. `snippet` is the first 200 characters of the draft body so the agent can read a short preview to the user.
+    - Errors: `:missing_product_context`, `:product_not_found`, `:ambiguous_product`. If the approved list is empty the tool returns `%{count: 0, drafts: []}` rather than an error so the agent can render "nothing queued right now."
+    - Note for the agent prompt (plugin `description`): call out that Content Forge does not hold exact per-draft publish timestamps today, so the reply speaks in terms of "queued" rather than "scheduled for Thursday at 10am." This keeps the bot from inventing schedule times.
+
+  - **Tool: `competitor_intel_summary`**
+    - Purpose: the agent answers "what are competitors doing?" by returning the most recent competitor intel record for the product. Reuses `ContentForge.Products.list_competitor_intel_for_product/1` and takes the latest (most-recently-inserted) row.
+    - Params: `"product"` (optional, resolved via `ProductResolver`). No other filters for this slice.
+    - Result shape: `%{product_id, product_name, generated_at, summary, trending_topics, winning_formats, effective_hooks, source_post_count}`. The four content arrays come straight from the `CompetitorIntel` row. `source_post_count` is the count of competitor posts that seeded the synthesis, sourced from the intel row's metadata if available or computed from the join; `nil` when the row does not carry it.
+    - Errors: `:missing_product_context`, `:product_not_found`, `:ambiguous_product`, `:not_found` (no intel row exists for the product yet). Returning `:not_found` rather than an empty payload is deliberate: the bot should say "I do not have competitor data for Acme yet" rather than imply an empty competitive landscape.
+
+  - **Plugin registration:** extend `~/.openclaw/plugins/content-forge/index.js` with one `registerTool` block per new tool. Each block declares the JSON-schema parameters above, a short `description` that tells the agent when to call the tool (with explicit guidance for `upcoming_schedule` about not inventing schedule times), and an `execute` handler that proxies to the existing HTTP surface exactly as `create_upload_link` does. Bundle all four `registerTool` calls into the same plugin commit so an operator reload picks them up in one step. Keep the render helpers brief: a one-line heading plus a small list is enough; agents do their own formatting.
+
+  - **Tests (per tool; all live under `test/content_forge/open_claw_tools/`):**
+    - Happy path: stub the underlying context function with `Mox` or with deterministic fixtures in the test DB, assert the tool's result shape matches the spec exactly (including atom-to-string serialization via the controller test for one representative tool).
+    - Product resolution: one case per tool asserting `:missing_product_context` when no `product` is supplied and the SMS session has no `ProductPhone` match; one case asserting SMS session resolution succeeds when a phone is registered; one case asserting UUID and name paths both land on the same product; one case asserting `:ambiguous_product` when two active products share a substring.
+    - Scoping: `draft_status` returns `:not_found` when the draft id belongs to a different product than the resolved one.
+    - Empty result: `upcoming_schedule` with no approved drafts returns `count: 0` and an empty list (not an error).
+    - Missing intel: `competitor_intel_summary` returns `:not_found` for a product with zero `CompetitorIntel` rows.
+    - `ProductResolver` gets its own small test file covering UUID, fuzzy, session, ambiguous, and missing paths so the resolver contract is locked in independently of any single tool.
+    - Controller: one end-to-end test per tool exercising the full `POST /api/v1/openclaw/tools/:tool_name` path so the serialization layer (atom keys -> strings, `DateTime` -> ISO-8601, atom reasons -> string) stays covered. These can live in the existing controller test file to avoid a new top-level suite.
+
+  - **Out of scope (deferred to later 16 slices):**
+    - No authorization beyond the existing shared-secret header. The per-role `Authorization.require/2` helper lands in 16.3.
+    - No audit logging yet; tools run without touching `ToolInvocationEvent`. Audit wiring lands in 16.5 and backfills all tools then.
+    - No write tools, no confirmation flow, no rate limits. Those are 16.3 and 16.4.
+    - No per-draft `scheduled_at` field in the Draft schema. If a future slice introduces true scheduling, `upcoming_schedule` extends its result shape then.
 
 - **16.3 Light-write tools + role-based authorization framework**
   - Add tool modules for writes that change product state but are reversible: `create_asset_bundle`, `record_memory` (persist a conversation note into a new `ProductMemory` schema scoped to the product), and `add_tag_to_asset`.
