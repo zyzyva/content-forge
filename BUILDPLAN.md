@@ -62,7 +62,7 @@ Both items below landed 2026-04-22 before any Phase 10 work. Retained here as a 
     - Fix the queue-override bug in the image generator's bulk-enqueue path where it currently enqueues child jobs into a queue name that does not exist, instead of using the worker's declared queue. Remove the override.
     - Test expectations: stubbed Media Forge responses only; no live calls. Cover synchronous success, asynchronous success resolved by polling job status, not-configured downgrade with no HTTP call, and transient vs permanent error handling.
 
-- **10.2b Publisher-side missing-image block** (carved out of 10.2 so the swap slice stayed reviewable; the spec intent was documented under 10.2 but the behavior change was deferred)
+- **10.2b Publisher-side missing-image block** ✅ Shipped `b89d89c`. (Carved out of 10.2 so the swap slice stayed reviewable; the spec intent was documented under 10.2 but the behavior change was deferred)
   - The publisher currently publishes a social post whether or not it carries an image. Under the spec, every social post that advances past ranking is required to have an AI-generated image, so publishing without one would push incomplete content to platforms and undermine the image-required rule.
   - Change the publisher to treat a missing image on a social post draft as a blocker: do not call the platform client, log the condition, mark the draft as blocked pending image generation, and (optionally) enqueue a retry of image generation for that draft. Non-social drafts are unaffected.
   - The dashboard drafts queue and publishing schedule view surface blocked drafts distinctly so a human can see why nothing published.
