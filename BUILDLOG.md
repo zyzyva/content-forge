@@ -82,6 +82,35 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 15.4.3: ScriptGate return shape + Draft archived status
+
+Status: DONE
+Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `0a4a51c`. Gate: compile --warnings-as-errors clean, format clean, full test 632/0, credo baseline-diff empty.
+Note: Two small orthogonal fixes the 15.4.2 sweep flagged as out-of-scope. Both land in one slice because the tests for each are best asserted via `Oban.Testing.perform_job/2`, which requires both fixes simultaneously (the return-shape fix unlocks perform_job acceptance; the inclusion-list fix makes the archive assertion meaningful).
+
+**Fix 1: `ScriptGate.perform/1` return shape** (`lib/content_forge/jobs/script_gate.ex`):
+- Was: bare `%{approved: ..., archived: ...}` map at the end of `evaluate_scripts/2`. Oban's worker contract expects one of `:ok`, `{:ok, term}`, `{:error, term}`, `:discard`, `{:cancel, term}`, `{:snooze, seconds}`. Oban 2.21 treats non-conforming returns as success-with-warning, but the contract drift left tests unable to use `perform_job/2`.
+- Now: `{:ok, %{approved: ..., archived: ...}}`. One-line change, no behavioral shift.
+
+**Fix 2: Draft status inclusion list** (`lib/content_forge/content_generation/draft.ex`):
+- Was: `~w(draft ranked approved rejected published blocked)` - `"archived"` was NOT in the list. `ScriptGate`'s archive branch called `ContentGeneration.update_draft_status(script, "archived")` and the cast failed silently via `validate_inclusion`, leaving the draft at its prior `"ranked"` status and dropping the changeset error on the floor.
+- Now: `~w(draft ranked approved rejected published blocked archived)`. One-token change.
+
+**Dashboard wiring for archived status**:
+- `status_badge` component (`lib/content_forge_web/live/dashboard/components.ex`) gained an `"archived"` branch mapping to `badge-ghost`. Refactored the pattern match from a single `case` expression with 12 clauses to 12 function heads on a private `status_badge_classes/1`. This also drops the function below credo's cyclomatic complexity threshold (12) which the added branch had just tipped over.
+- `status_tabs/0` in `Drafts.ReviewLive` gained `{"archived", "Archived"}` as the seventh tab. The existing `list_drafts_by_status` fallback already handles any status string, so no routing / handler changes were needed - the archived filter works for free.
+
+**Tests**:
+- `test/content_forge/jobs/script_gate_test.exs` (updated, 2 tests) - both tests now drive the worker via `perform_job/2` instead of calling `ScriptGate.perform/1` directly. Happy path asserts `{:ok, %{approved: 1, archived: 0}}` and that the draft is promoted + VideoProducer is enqueued. Archive path asserts `{:ok, %{approved: 0, archived: 1}}` AND that `ContentGeneration.get_draft(script.id).status == "archived"` post-transition - this is the assertion that would have caught the silent-archive-failure bug, and is the regression gate for the inclusion-list fix.
+- `test/content_forge_web/live/dashboard_live_test.exs` (updated, 2 new tests in the `"Draft review page"` describe) - one asserts the `Archived` filter tab renders with `id="filter-tab-archived"` so keyboard + screen-reader users can reach it (also confirms the status_tabs/0 update); one creates a draft with `status: "archived"` and asserts the rendered HTML contains both `"ARCHIVED"` (badge text) and `"badge-ghost"` (the new branch's class) - the ghost-class assertion proves the component picked up the new branch rather than falling through to the default neutral badge.
+
+**What was explicitly NOT changed** (kept out of scope):
+- No migration. `status` is a `:string` column with no DB-level enum; the inclusion-list change is purely changeset validation. Existing rows with other statuses are unaffected.
+- No auto-backfill of previously-stuck `"ranked"` scripts that SHOULD have been archived. If any exist in prod, an operator can manually transition them once the inclusion list accepts `"archived"`.
+- `ContentGeneration.list_archived_drafts/1` and similar helpers - the existing `list_drafts_by_status/2` fallback handles the filter, so no new context function needed.
+
+**Gate**: compile --warnings-as-errors clean, format clean, full test 632/0 (2 existing ScriptGate tests now green via perform_job; 2 new dashboard tests), credo --strict baseline-diff empty. Rebased cleanly on master @ `0a4a51c`.
+
 ### Phase 15.4.2: Oban.insert bare-map audit sweep
 
 Status: DONE

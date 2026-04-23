@@ -721,6 +721,35 @@ defmodule ContentForgeWeb.DashboardLiveTest do
       html = render(view)
       assert html =~ "BLOCKED"
     end
+
+    test "exposes an Archived filter tab", %{conn: conn} do
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/drafts")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      html = render(view)
+      assert html =~ ~s|id="filter-tab-archived"|
+      assert html =~ "Archived"
+    end
+
+    test "renders an archived draft with a distinct ARCHIVED badge", %{conn: conn} do
+      product = create_product()
+      _draft = create_draft(product, %{status: "archived"})
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/drafts")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      html = render(view)
+      assert html =~ "ARCHIVED"
+      # Ghost badge class confirms the component picked up the
+      # archived branch (not the fallback badge-neutral).
+      assert html =~ "badge-ghost"
+    end
   end
 
   describe "Schedule page" do

@@ -11,22 +11,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Components do
   attr :class, :string, default: ""
 
   def status_badge(assigns) do
-    status_classes =
-      case assigns.status do
-        "draft" -> "badge-neutral"
-        "ranked" -> "badge-warning"
-        "approved" -> "badge-info"
-        "rejected" -> "badge-error"
-        "blocked" -> "badge-error"
-        "published" -> "badge-success"
-        "pending" -> "badge-neutral"
-        "completed" -> "badge-success"
-        "failed" -> "badge-error"
-        "paused" -> "badge-warning"
-        _ -> "badge-neutral"
-      end
-
-    assigns = assign(assigns, :status_classes, status_classes)
+    assigns = assign(assigns, :status_classes, status_badge_classes(assigns.status))
 
     ~H"""
     <span class={["badge", @status_classes, @class]}>
@@ -34,6 +19,19 @@ defmodule ContentForgeWeb.Live.Dashboard.Components do
     </span>
     """
   end
+
+  defp status_badge_classes("draft"), do: "badge-neutral"
+  defp status_badge_classes("ranked"), do: "badge-warning"
+  defp status_badge_classes("approved"), do: "badge-info"
+  defp status_badge_classes("rejected"), do: "badge-error"
+  defp status_badge_classes("blocked"), do: "badge-error"
+  defp status_badge_classes("archived"), do: "badge-ghost"
+  defp status_badge_classes("published"), do: "badge-success"
+  defp status_badge_classes("pending"), do: "badge-neutral"
+  defp status_badge_classes("completed"), do: "badge-success"
+  defp status_badge_classes("failed"), do: "badge-error"
+  defp status_badge_classes("paused"), do: "badge-warning"
+  defp status_badge_classes(_), do: "badge-neutral"
 
   attr :score, :any, required: true
 

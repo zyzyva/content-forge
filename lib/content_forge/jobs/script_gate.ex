@@ -58,7 +58,7 @@ defmodule ContentForge.Jobs.ScriptGate do
 
     Logger.info("Script gate complete: #{approved_count} approved, #{archived_count} archived")
 
-    %{approved: approved_count, archived: archived_count}
+    {:ok, %{approved: approved_count, archived: archived_count}}
   end
 
   defp promote_to_video(%Draft{} = script, composite, threshold) do

@@ -55,7 +55,7 @@ defmodule ContentForge.ContentGeneration.Draft do
     |> validate_required([:product_id, :content, :platform, :content_type, :generating_model])
     |> validate_inclusion(:platform, ~w(twitter linkedin reddit facebook instagram blog youtube))
     |> validate_inclusion(:content_type, ~w(post blog video_script))
-    |> validate_inclusion(:status, ~w(draft ranked approved rejected published blocked))
+    |> validate_inclusion(:status, ~w(draft ranked approved rejected published blocked archived))
     |> validate_inclusion(
       :angle,
       ~w(educational entertaining problem_aware social_proof humor testimonial case_study how_to listicle),

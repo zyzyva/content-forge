@@ -36,14 +36,14 @@ defmodule ContentForge.Jobs.ScriptGateTest do
       {:ok, script} = insert_ranked_script(product)
       :ok = insert_composite_score(script, 7.5)
 
-      # perform/1 is called directly rather than via perform_job/2
-      # because the worker returns a bare summary map; Oban's
-      # testing helper rejects that shape as invalid. The return
-      # shape is an existing issue, out of scope for the
-      # enqueue-audit slice.
-      assert %{approved: 1, archived: 0} =
-               ScriptGate.perform(%Oban.Job{
-                 args: %{"product_id" => product.id, "threshold" => 6.0}
+      # Oban contract: return must be :ok / {:ok, term} / {:error,
+      # term} / :discard / {:cancel, term} / {:snooze, seconds}.
+      # perform_job/2 enforces that contract, so its acceptance
+      # here is the regression gate for 15.4.3.
+      assert {:ok, %{approved: 1, archived: 0}} =
+               perform_job(ScriptGate, %{
+                 "product_id" => product.id,
+                 "threshold" => 6.0
                })
 
       # Script was promoted + a VideoJob exists.
@@ -52,29 +52,28 @@ defmodule ContentForge.Jobs.ScriptGateTest do
       assert [%{draft_id: ^script_id} = video_job] = list_video_jobs_for_draft(script_id)
 
       # VideoProducer job was enqueued for the new VideoJob, not
-      # for the script directly. This is the contract that the
-      # pre-fix bare-struct enqueue violated.
+      # for the script directly. Locked in by 15.4.2.
       assert_enqueued(worker: VideoProducer, args: %{"video_job_id" => video_job.id})
     end
 
-    test "does not promote or enqueue scripts scoring below threshold",
+    test "archives scripts scoring below threshold and the status transition sticks",
          %{product: product} do
       {:ok, script} = insert_ranked_script(product)
       :ok = insert_composite_score(script, 3.0)
 
-      assert %{approved: 0, archived: 1} =
-               ScriptGate.perform(%Oban.Job{
-                 args: %{"product_id" => product.id, "threshold" => 6.0}
+      assert {:ok, %{approved: 0, archived: 1}} =
+               perform_job(ScriptGate, %{
+                 "product_id" => product.id,
+                 "threshold" => 6.0
                })
 
-      # Sub-threshold scripts do NOT get promoted to "approved"
-      # and do NOT trigger a VideoProducer job. The worker also
-      # attempts to mark them "archived", but that's a separate
-      # schema issue (archived is not in the draft-status
-      # inclusion list) and is out of scope here - we only assert
-      # the enqueue-shape contract: no video production job fires.
+      # Pre-15.4.3 the archive transition failed silently because
+      # "archived" was not in the Draft status inclusion list.
+      # This assertion is what would have caught the silent
+      # failure.
+      assert %{status: "archived"} = ContentGeneration.get_draft(script.id)
+
       refute_enqueued(worker: VideoProducer)
-      refute ContentGeneration.get_draft(script.id).status == "approved"
       assert Publishing.get_video_job_by_draft(script.id) == nil
     end
   end
