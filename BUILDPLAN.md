@@ -52,7 +52,7 @@ Both items below landed 2026-04-22 before any Phase 10 work. Retained here as a 
   - Add a head matching the 3xx range and return an unexpected-status error tuple carrying the status and body. Add a failing test first asserting the tuple shape when the stub responds with 304.
   - The engineering rule requires exhaustive pattern matches; this closes the gap.
 
-- **10.2 Swap image generation onto Media Forge**
+- **10.2 Swap image generation onto Media Forge** ✅ Shipped `613d442`.
   - Remove the local stub from the image generation entry point.
   - Issue generation via Media Forge and wait either by poll or by exposing a signed-webhook receiver.
   - Persist the resulting image bytes or R2 key where the existing schema expects them.
@@ -61,6 +61,17 @@ Both items below landed 2026-04-22 before any Phase 10 work. Retained here as a 
     - Align the Oban queue configuration so the image generation job actually runs in dev and prod. Several workers (content brief generator, bulk variant generator, multi-model ranker, script gate, winner repurposing, site crawler, repo ingestion, competitor scraper and synthesizer, image generator) declare queues that are not present in the current Oban config. Add those queues as a prerequisite so this slice delivers a feature that actually executes instead of dropping jobs into dormant queues.
     - Fix the queue-override bug in the image generator's bulk-enqueue path where it currently enqueues child jobs into a queue name that does not exist, instead of using the worker's declared queue. Remove the override.
     - Test expectations: stubbed Media Forge responses only; no live calls. Cover synchronous success, asynchronous success resolved by polling job status, not-configured downgrade with no HTTP call, and transient vs permanent error handling.
+
+- **10.2b Publisher-side missing-image block** (carved out of 10.2 so the swap slice stayed reviewable; the spec intent was documented under 10.2 but the behavior change was deferred)
+  - The publisher currently publishes a social post whether or not it carries an image. Under the spec, every social post that advances past ranking is required to have an AI-generated image, so publishing without one would push incomplete content to platforms and undermine the image-required rule.
+  - Change the publisher to treat a missing image on a social post draft as a blocker: do not call the platform client, log the condition, mark the draft as blocked pending image generation, and (optionally) enqueue a retry of image generation for that draft. Non-social drafts are unaffected.
+  - The dashboard drafts queue and publishing schedule view surface blocked drafts distinctly so a human can see why nothing published.
+  - Tests: one for each platform path showing that a draft without image_url is not published; one for the happy path that does publish when image_url is present; one asserting the drafts queue view labels the blocked draft.
+
+- **10.2c ImageGenerator test coverage fill**
+  - ImageGenerator coverage after 10.2 is around 66%. Uncovered paths include the persist-or-fail case when Media Forge returns a success without a usable URL, the unrecognized-sync-body branch, the polling path that observes a late `:not_configured` status from Media Forge, and the generic error tuple from an otherwise-unclassified response.
+  - Add focused tests for each uncovered branch using the existing Req.Test stub pattern. No behavior change; pure coverage fill.
+  - Reviewer should see module coverage lift above a target (aim for 90%+) while the overall threshold stays at zero.
 
 - **10.2a Media Forge cost mirror and dashboard surfacing** (split from 10.2 for scope control so the swap above stays reviewable)
   - Cost reporting in the dashboard should read from Media Forge's cost endpoint (or our mirrored record), not placeholder numbers.

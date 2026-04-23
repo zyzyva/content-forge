@@ -109,6 +109,7 @@ Acceptance criteria:
 - [x] Reddit: Submit a text post to a configured subreddit via Reddit API (image optional per subreddit rules)
 - [x] Facebook/Instagram: Post text + image via Meta Graph API
 - [x] All social posts include the AI-generated image from Stage 3.5 -- image is required, not optional
+- [ ] Missing-image enforcement on social posts: when an approved social post draft has no image at publish time, the publisher does not call the platform client. Instead it logs "publish blocked: missing image" for that draft, marks the draft as blocked pending image generation, and the drafts queue and publishing schedule view in the dashboard show the draft with a distinct "blocked" label. A human (or a future automated retry) is expected to re-run image generation for the draft before it will publish. Non-social drafts (blog, video) are unaffected by this rule. (Ships under Phase 10.2b.)
 - [x] Each connector retrieves its OAuth tokens / API keys from 1Password at runtime
 - [x] A failed publish is retried via Oban (up to 3 attempts) and flagged if all retries fail
 - [x] Published posts record the platform post ID, timestamp, and link
