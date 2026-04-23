@@ -9,7 +9,9 @@ defmodule ContentForge.ContentGeneration do
   alias ContentForge.Products.ContentBrief
   alias ContentForge.Products.BriefVersion
   alias ContentForge.ContentGeneration.Draft
+  alias ContentForge.ContentGeneration.DraftAsset
   alias ContentForge.ContentGeneration.DraftScore
+  alias ContentForge.ProductAssets.ProductAsset
 
   # ContentBrief CRUD
 
@@ -208,6 +210,68 @@ defmodule ContentForge.ContentGeneration do
     draft
     |> Draft.changeset(%{status: "blocked"})
     |> Repo.update()
+  end
+
+  # Draft - ProductAsset many-to-many (draft_assets join).
+  # `draft.image_url` remains authoritative for publishing in Phase 13.4;
+  # Phase 13.5 swaps the publisher over to read from this relation.
+
+  @doc """
+  Attaches `asset` to `draft` in the given role (`"featured"` or
+  `"gallery"`, default `"featured"`). Duplicate attaches are idempotent
+  - returns the existing row without raising the unique-constraint
+  error. Accepts either struct or id arguments on both sides.
+  """
+  @spec attach_asset(
+          Draft.t() | Ecto.UUID.t(),
+          ProductAsset.t() | Ecto.UUID.t(),
+          keyword()
+        ) :: {:ok, DraftAsset.t()} | {:error, Ecto.Changeset.t()}
+  def attach_asset(draft, asset, opts \\ [])
+
+  def attach_asset(%Draft{id: draft_id}, %ProductAsset{id: asset_id}, opts) do
+    role = Keyword.get(opts, :role, "featured")
+
+    case Repo.get_by(DraftAsset, draft_id: draft_id, asset_id: asset_id) do
+      %DraftAsset{} = existing ->
+        {:ok, existing}
+
+      nil ->
+        %DraftAsset{}
+        |> DraftAsset.changeset(%{draft_id: draft_id, asset_id: asset_id, role: role})
+        |> Repo.insert()
+    end
+  end
+
+  def attach_asset(draft_id, asset_id, opts) when is_binary(draft_id) and is_binary(asset_id) do
+    attach_asset(get_draft!(draft_id), ProductAsset |> Repo.get!(asset_id), opts)
+  end
+
+  @doc "Detaches `asset` from `draft`. No-op if the pair is not linked."
+  @spec detach_asset(Draft.t(), ProductAsset.t()) :: :ok
+  def detach_asset(%Draft{id: draft_id}, %ProductAsset{id: asset_id}) do
+    case Repo.get_by(DraftAsset, draft_id: draft_id, asset_id: asset_id) do
+      nil -> :ok
+      row -> Repo.delete(row) |> discard_result()
+    end
+  end
+
+  defp discard_result({:ok, _}), do: :ok
+  defp discard_result({:error, _} = err), do: err
+
+  @doc """
+  Lists the `%ProductAsset{}` rows attached to `draft_id`, in attach
+  order (ascending `draft_assets.inserted_at`).
+  """
+  @spec list_assets_for_draft(Ecto.UUID.t()) :: [ProductAsset.t()]
+  def list_assets_for_draft(draft_id) when is_binary(draft_id) do
+    from(da in DraftAsset,
+      where: da.draft_id == ^draft_id,
+      order_by: [asc: da.inserted_at],
+      join: a in assoc(da, :asset),
+      select: a
+    )
+    |> Repo.all()
   end
 
   # Blocked drafts (for example, social posts missing their Stage 3.5 image)

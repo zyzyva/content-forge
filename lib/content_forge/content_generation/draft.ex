@@ -24,6 +24,12 @@ defmodule ContentForge.ContentGeneration.Draft do
 
     has_many :draft_scores, ContentForge.ContentGeneration.DraftScore, on_delete: :delete_all
 
+    has_many :draft_assets, ContentForge.ContentGeneration.DraftAsset,
+      on_delete: :delete_all,
+      preload_order: [asc: :inserted_at]
+
+    has_many :assets, through: [:draft_assets, :asset]
+
     timestamps type: :utc_datetime
   end
 
