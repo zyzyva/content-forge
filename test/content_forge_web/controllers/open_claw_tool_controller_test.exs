@@ -558,6 +558,93 @@ defmodule ContentForgeWeb.OpenClawToolControllerTest do
     end
   end
 
+  describe "16.4b approve_draft end-to-end" do
+    alias ContentForge.ContentGeneration
+    alias ContentForge.ContentGeneration.Draft
+    alias ContentForge.Operators
+
+    setup do
+      {:ok, product} =
+        Products.create_product(%{name: "BlogLand", voice_profile: "warm"})
+
+      {:ok, _} =
+        Operators.create_identity(%{
+          product_id: product.id,
+          identity: "cli:owner",
+          role: "owner"
+        })
+
+      {:ok, draft} =
+        %Draft{}
+        |> Draft.changeset(%{
+          product_id: product.id,
+          content: "Full blog body text for approval review.",
+          platform: "blog",
+          content_type: "blog",
+          generating_model: "stub",
+          status: "ranked",
+          angle: "case_study",
+          seo_score: 30,
+          research_status: "enriched"
+        })
+        |> Repo.insert()
+
+      %{product: product, draft: draft}
+    end
+
+    test "two-turn HTTP cycle: first turn returns envelope, second turn approves",
+         %{conn: conn, product: product, draft: draft} do
+      request_body = %{
+        "session_id" => "http-sess",
+        "channel" => "cli",
+        "sender_identity" => "cli:owner",
+        "params" => %{"product" => product.id, "draft_id" => draft.id}
+      }
+
+      first_conn =
+        conn
+        |> put_req_header("x-openclaw-tool-secret", @secret)
+        |> post(~p"/api/v1/openclaw/tools/approve_draft", request_body)
+
+      assert %{
+               "status" => "confirmation_required",
+               "echo_phrase" => echo,
+               "expires_at" => expires_at,
+               "preview" => %{
+                 "publish_gate" => "passes",
+                 "required_override" => false,
+                 "draft_id" => preview_draft_id
+               }
+             } = json_response(first_conn, 200)
+
+      assert preview_draft_id == draft.id
+      assert is_binary(echo)
+      assert is_binary(expires_at)
+
+      confirm_body =
+        put_in(request_body, ["params", "confirm"], echo)
+
+      second_conn =
+        conn
+        |> put_req_header("x-openclaw-tool-secret", @secret)
+        |> post(~p"/api/v1/openclaw/tools/approve_draft", confirm_body)
+
+      assert %{
+               "status" => "ok",
+               "result" => %{
+                 "draft_id" => result_draft_id,
+                 "status" => "approved",
+                 "approved_via_override" => false
+               }
+             } = json_response(second_conn, 200)
+
+      assert result_draft_id == draft.id
+
+      updated = ContentGeneration.get_draft(draft.id)
+      assert updated.status == "approved"
+    end
+  end
+
   describe "16.4a confirmation_required response" do
     defmodule ConfirmationRequiredStub do
       @moduledoc false
