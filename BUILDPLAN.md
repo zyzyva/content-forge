@@ -514,12 +514,25 @@ Pick up after the feature waves clear. Any of these can be inserted earlier if i
   - Fix findings in small slices, one page at a time.
   - **Slicing note:** One sub-slice per LiveView page. Start with the dashboard entry surfaces (hub + products list + product detail) since those carry the most traffic.
 
-- **15.2a Dashboard hub + products list + product detail accessibility audit**
+- **15.2a Dashboard hub + products list + product detail accessibility audit** ✅ Shipped `e46928c`.
   - Audit three pages: `/dashboard` (`DashboardLive`), `/dashboard/products` (`Products.ListLive`), `/dashboard/products/:id` (`Products.DetailLive`).
   - For each: check color contrast (all text + icon pairs meet WCAG AA 4.5:1 for normal text, 3:1 for large), keyboard focus order is logical and every interactive element is reachable via Tab, visible focus indicator on every button/link/input, semantic landmarks (`<header>`, `<nav>`, `<main>`, `<footer>` or equivalent `role=` attributes), heading hierarchy (single `<h1>` per page, no skipped levels), ARIA labels on icon-only buttons, form inputs have associated `<label>` elements, interactive custom components use proper `role=button` with `tabindex=0` + Enter/Space handlers if not real buttons.
   - Fix findings inline in the same slice. Add focus-visible styles where missing, rename non-descriptive button text, add aria-labels to icon buttons, rework color pairs that fail contrast.
   - Tests: a per-page assertion that ensures each page contains the required landmarks and a single h1; optionally run an existing a11y-checker library against the rendered HTML if one is already in the project, otherwise the structural assertions are the regression gate. No screen-reader automation — manual verification is documented in the handoff notes.
   - Explicit scope boundary: drafts review, schedule, video status, performance, clips, providers, and SMS pages are NOT touched in this slice. Each gets its own follow-up 15.2b/c/d/e/f/g/h.
+
+- **15.2b Drafts review + schedule accessibility audit**
+  - Same audit checklist as 15.2a applied to `/dashboard/drafts` (`Drafts.ReviewLive`) and `/dashboard/schedule` (`Schedule.Live` — includes the calendar from 15.1c).
+  - Drafts review is form-heavy (approve/reject/tag/filter controls); pay extra attention to filter tabs' `role=tablist` + `tabindex` management and to the inline tag chip/remove buttons.
+  - Schedule includes the week calendar from 15.1c — that page was already landed with `role=grid` + drawer dialog semantics, so this slice mostly audits the surrounding nav + the per-post rows.
+  - Tests add landmark + single-h1 assertions to both pages, matching the pattern established in 15.2a.
+
+- **15.2c Video + performance + clips accessibility audit**
+  - Same checklist applied to `/dashboard/video` (`Video.StatusLive`), `/dashboard/performance` (`Performance.DashboardLive`), and `/dashboard/clips` (`Clips.QueueLive`).
+  - Video page's override/promote controls from 15.1b are specifically checked (button labels, confirm semantics). Performance metrics tables and charts need table headers and chart alt-text equivalents. Clips queue action buttons need aria-labels since they are per-row.
+
+- **15.2d Providers + SMS accessibility audit**
+  - Final page pair: `/dashboard/providers` (`ProvidersLive` from 15.1a) and `/dashboard/sms` (`SmsLive.NeedsAttention` from 14.5). Both are table-heavy list views; same checklist with emphasis on table semantics (`<th scope="col">`) and row-action button labels.
 
 - **15.3 End-to-end integration tests**
   - At least one multi-step pipeline test per feature: product registered → brief generated → variants ranked → published → metrics collected → winner repurposed.

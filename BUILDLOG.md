@@ -84,8 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 15.2a: WCAG AA audit on dashboard hub + products list + product detail
 
-Status: READY FOR REVIEW
-Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates; one formatter re-pass on a long `<nav>` attribute list), mix test 609/0 (605 prior + 4 new). Credo by content unchanged vs post-15.3.1: zero new findings.
+Status: DONE
+Merged: master @ `e46928c` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 609-0; credo unchanged. Main landmark + h1 wiring consistent across all three pages. Hub→nav, cards→article, detail header→semantic. Input labels fixed per WCAG 3.3.2. Delete confirms interpolate product name. Icon backgrounds aria-hidden. 4 landmark-assert tests. Contrast math and remaining pages documented as follow-ups.
 Note: WCAG AA audit + fixes on the three entry-surface pages per BUILDPLAN 15.2a.
 
 **Pages touched** (only three, per spec; other dashboard pages are separate follow-ups):
