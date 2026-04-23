@@ -195,9 +195,18 @@ Phase exit criteria: end-to-end image generation, image processing, and video re
 
 - **11.4 Brief-rewrite auto-trigger**
   - AUDIT.md previously noted the brief-rewrite trigger "always returns false until metrics flow in." Metrics now flow in. Wire the trigger so brief regeneration fires at the documented threshold (5+ new measurements).
+  - **Slicing note:** Investigation at this wave point shows both 11.4 and 11.5 are already wired in `MetricsPoller` (`check_rewrite_trigger/1` at line 105 enqueues the rewrite job via `ContentBriefGenerator` with `force_rewrite: true`; `trigger_spike_alert/2` at line 301 enqueues `WinnerRepurposingEngine` when outcome is "winner" and delta exceeds 3.0). What is missing is test coverage: grep for the trigger function names across `test/` returns zero hits, so the behavior is de-facto shipped but unverified.
 
 - **11.5 Winner-repurposing auto-trigger**
   - When the scoreboard marks a piece a winner, auto-fire the repurposing pipeline. Currently manual.
+
+- **11.4+11.5 (verify) MetricsPoller auto-triggers tests**
+  - Single verification slice covering both 11.4 and 11.5 since both triggers fire from the same worker and share the same state-to-job-enqueue pattern.
+  - Tests for the rewrite trigger: when `should_trigger_rewrite?` would return true for a product + platform pair (at least five scoreboard entries with `delta < -1.0` within the configured window), a call into `MetricsPoller`'s perform path enqueues a `ContentBriefGenerator` job with `force_rewrite: true` for that product.
+  - Tests for the spike-alert trigger: when a scoreboard update flips the entry's outcome to `"winner"` and the delta exceeds 3.0, a `WinnerRepurposingEngine` job is enqueued for the corresponding draft.
+  - Negative tests: fewer than five poor-performer entries does not enqueue a rewrite; a winner with delta below 3.0 does not enqueue repurposing; the enqueued jobs are idempotent (re-running the same poll does not duplicate jobs for the same state transition).
+  - If writing the tests surfaces a bug in the wired code (for example, a threshold off-by-one, a wrong job-arg key, or a missed enqueue path), the fix ships in the same slice. Bundling is acceptable because the test is the first time behavior is being asserted.
+  - Oban is in `testing: :manual` mode in this project, so tests assert on the enqueued job specs directly rather than running them.
 
 Phase exit criteria: no stubbed external calls remain in production paths; a dashboard "provider status" panel shows which integrations are live vs unavailable; auto-triggers fire deterministically on the documented conditions.
 
