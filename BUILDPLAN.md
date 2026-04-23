@@ -550,6 +550,12 @@ Pick up after the feature waves clear. Any of these can be inserted earlier if i
 - **15.3a Coverage uplift and threshold tightening**
   - Baseline is `test_coverage: [summary: [threshold: 0]]` in `mix.exs` (acknowledged debt, overall ~18%). Pair with 15.3 work: as E2E tests land, raise the per-module threshold in tranches (start at 25, then 50, then back toward Elixir's default of 90).
   - A dedicated cleanup slice at the end of the wave should set the final threshold and update `BUILDLOG.md` with the final coverage number.
+  - **Refined scope (post-15.3.1 + 15.4):** Overall coverage climbed from 18% to 55.7% with the tests added during Phases 11–15. Raising the per-module threshold above 0 immediately would fail the gate on a long tail of 0%-coverage modules (legacy scaffolding, error views, telemetry supervisors) that do not need tests. This slice does the triage:
+    - Grep-and-inventory every module reported at 0% in `mix test --cover`.
+    - For each: decide `exclude` (truly unreachable: error views, application/supervisor boilerplate, dev-only modules), `add-smoke` (one or two sanity tests bring it above 10%), or `defer` (worth covering later but not now).
+    - Configure `test_coverage: [summary: [threshold: 10], ignore_modules: [...]]` with the excluded list and a modest threshold that catches genuine regressions without failing on incidental low-coverage modules.
+    - Document in `BUILDLOG.md` the final overall coverage number, the threshold, and the ignore list with a one-line justification per module so future maintainers can challenge or raise the bar.
+    - Further tranches (toward 50 and 90) are separate follow-ups; this slice sets the initial floor.
 
 - **15.4 Load smoke** ✅ Shipped `8448b08`.
 
@@ -557,7 +563,7 @@ Pick up after the feature waves clear. Any of these can be inserted earlier if i
 
 - **15.4.2 Oban.insert bare-map audit sweep** ✅ Shipped `a7e9bf7`.
 
-- **15.4.3 ScriptGate return shape + Draft archived status**
+- **15.4.3 ScriptGate return shape + Draft archived status** ✅ Shipped `274ff9c`.
   - Two small orthogonal issues surfaced during the 15.4.2 sweep.
     - `ContentForge.Jobs.ScriptGate.perform/1` returns a bare `%{approved: ..., archived: ...}` map. Oban's worker contract expects `:ok`, `{:ok, term}`, `{:error, term}`, `:discard`, `{:cancel, term}`, or `{:snooze, seconds}`. A bare map is neither ok nor error, and Oban's handling of unexpected returns has changed across versions — the current Oban version treats non-conforming returns as success but logs a warning. Fix: wrap the existing map in `{:ok, map}`.
     - `ContentForge.ContentGeneration.Draft` status inclusion list is `~w(draft ranked approved rejected published blocked)`. ScriptGate's archive path tries to transition a draft to `"archived"` but the cast fails silently and the draft stays at its prior status. Add `"archived"` to the inclusion list; extend the shared `status_badge` component with a neutral badge for archived; backfill existing dashboards so the archived filter works.

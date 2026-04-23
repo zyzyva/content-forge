@@ -85,7 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 15.4.3: ScriptGate return shape + Draft archived status
 
 Status: DONE
-Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `0a4a51c`. Gate: compile --warnings-as-errors clean, format clean, full test 632/0, credo baseline-diff empty.
+Merged: master @ `274ff9c` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 632-0; credo unchanged. `Draft.validate_inclusion` now includes `"archived"`; `ScriptGate.perform` returns `{:ok, %{...}}`. Tests drive via `perform_job/2` so archive transition is guarded by a real assertion. Status-badge refactored from 12-arm case to 12 function heads (cyclomatic-keep-under-threshold). Dashboard Archived filter tab added. **All Phase 15.4 Oban-contract follow-ups closed.** Overall coverage now 55.73%.
 Note: Two small orthogonal fixes the 15.4.2 sweep flagged as out-of-scope. Both land in one slice because the tests for each are best asserted via `Oban.Testing.perform_job/2`, which requires both fixes simultaneously (the return-shape fix unlocks perform_job acceptance; the inclusion-list fix makes the archive assertion meaningful).
 
 **Fix 1: `ScriptGate.perform/1` return shape** (`lib/content_forge/jobs/script_gate.ex`):
