@@ -11,6 +11,7 @@ defmodule ContentForge.Products do
   alias ContentForge.Products.CompetitorAccount
   alias ContentForge.Products.CompetitorPost
   alias ContentForge.Products.CompetitorIntel
+  alias ContentForge.Products.ProductMemory
 
   # Product CRUD
 
@@ -206,5 +207,38 @@ defmodule ContentForge.Products do
     %CompetitorIntel{}
     |> CompetitorIntel.changeset(attrs)
     |> Repo.insert()
+  end
+
+  # ProductMemory CRUD (16.3d)
+
+  @doc """
+  Inserts a `%ProductMemory{}` row. Returns `{:ok, memory}` or
+  `{:error, changeset}`. The schema enforces `content` length
+  (1..2000) and per-tag length (1..40); the caller normalizes
+  the tags (trim + lowercase) before handing them in.
+  """
+  @spec create_memory(map()) :: {:ok, ProductMemory.t()} | {:error, Ecto.Changeset.t()}
+  def create_memory(attrs) when is_map(attrs) do
+    %ProductMemory{}
+    |> ProductMemory.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Lists the most recent `%ProductMemory{}` rows for a product,
+  newest first. `limit` defaults to 10 and is clamped at the
+  caller; no upper bound is enforced here so admin tools can
+  paginate through older memories if needed.
+  """
+  @spec list_recent_memories(Ecto.UUID.t(), pos_integer()) :: [ProductMemory.t()]
+  def list_recent_memories(product_id, limit \\ 10)
+      when is_binary(product_id) and is_integer(limit) and limit > 0 do
+    Repo.all(
+      from(m in ProductMemory,
+        where: m.product_id == ^product_id,
+        order_by: [desc: m.inserted_at, desc: m.id],
+        limit: ^limit
+      )
+    )
   end
 end
