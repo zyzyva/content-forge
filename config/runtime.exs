@@ -34,6 +34,28 @@ config :content_forge, :open_claw,
   api_key: System.get_env("OPENCLAW_API_KEY"),
   default_timeout: String.to_integer(System.get_env("OPENCLAW_TIMEOUT_MS", "60000"))
 
+config :content_forge, :apify,
+  base_url: System.get_env("APIFY_BASE_URL", "https://api.apify.com"),
+  token: System.get_env("APIFY_TOKEN"),
+  actors: %{
+    "twitter" => System.get_env("APIFY_ACTOR_TWITTER", "apify~twitter-scraper"),
+    "linkedin" => System.get_env("APIFY_ACTOR_LINKEDIN", "apify~linkedin-post-scraper"),
+    "reddit" => System.get_env("APIFY_ACTOR_REDDIT", "trudax~reddit-scraper"),
+    "facebook" => System.get_env("APIFY_ACTOR_FACEBOOK", "apify~facebook-pages-scraper"),
+    "instagram" => System.get_env("APIFY_ACTOR_INSTAGRAM", "apify~instagram-scraper"),
+    "youtube" => System.get_env("APIFY_ACTOR_YOUTUBE", "apify~youtube-scraper")
+  },
+  poll_interval_ms: String.to_integer(System.get_env("APIFY_POLL_INTERVAL_MS", "3000")),
+  poll_max_attempts: String.to_integer(System.get_env("APIFY_POLL_MAX_ATTEMPTS", "60"))
+
+# Top-level scraper wiring: only in :prod. Test environment leaves both
+# unset so the CompetitorScraper's "discard" path stays observable.
+if config_env() == :prod do
+  config :content_forge,
+    apify_token: System.get_env("APIFY_TOKEN"),
+    scraper_adapter: ContentForge.CompetitorScraper.ApifyAdapter
+end
+
 config :content_forge, :llm,
   anthropic: [
     base_url: System.get_env("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
