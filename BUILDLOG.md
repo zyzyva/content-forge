@@ -85,6 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 16.3c: Light writes on existing schemas (create_asset_bundle + add_tag_to_asset)
 
 Status: DONE
+Merged: master @ `770dc2c` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 898-0, credo 26 vs 44 baseline (zero new in slice-touched files). Coverage CreateAssetBundle 75%, AddTagToAsset 77%. Zero emdashes. Both tools resolve product first, then authorize so `:submitter` is enforced before any write touches the DB; cross-product `asset_id` returns `:not_found` without leaking existence.
 Note: First pair of real light-write tools. Both ride through `Authorization.require(..., :submitter)` and `ProductResolver`, so the plumbing is small: a validation step, a single context call, and a serialization step. Schemas reused verbatim (`AssetBundle` + `ProductAsset`); no migrations in this slice.
 
 **`create_asset_bundle`** (`lib/content_forge/open_claw_tools/create_asset_bundle.ex`):
