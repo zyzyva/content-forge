@@ -82,6 +82,63 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 15.2d: WCAG AA audit on providers + SMS, and arrow-key tablist hook
+
+Status: DONE
+Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `c2a4886`. Gate: compile --warnings-as-errors clean, format clean, full test 620/0, credo baseline-diff empty.
+Note: Final page pair for the Phase 15.2 a11y pass plus the roving-tabindex JS hook deferred from 15.2b/c. Product detail tabs had never had `aria-selected` / `tabindex` state wired (they were outside 15.2a's scope on that file); folded that fix into this slice because the hook needs the state to rove.
+
+**Pages touched**:
+- `/dashboard/providers` (`Live.Dashboard.Providers.StatusLive`)
+- `/dashboard/sms` (`Live.Dashboard.Sms.NeedsAttentionLive`)
+- `/dashboard/products/:id` (`Live.Dashboard.Products.DetailLive`) - tablist a11y state + hook wiring
+- `/dashboard/drafts`, `/dashboard/performance`, `/dashboard/schedule` - `phx-hook="TabList"` applied to the existing tablists
+
+**Findings fixed on /dashboard/providers**:
+- No `<main>` landmark. Added `<main id="main-content" aria-labelledby="page-title">` wrapping the whole page + h1 with `id="page-title"` inside a `<header>`.
+- Integrations card promoted from bare `<div class="card">` to `<section aria-labelledby="integrations-heading">` with the existing `<h2>` gaining the matching id.
+- Provider status table headers were bare `<th>`. Changed every header cell to `<th scope="col">`.
+- Status badges (Available / Configured / Unavailable / Degraded) now carry `aria-label={"Status: #{text}"}` so the badge announces its role, not just its text.
+
+**Findings fixed on /dashboard/sms**:
+- No `<main>` landmark. Same `<main id="main-content" aria-labelledby="page-title">` wrapper + `<header>` + h1.
+- Both data sections promoted to `<section aria-labelledby="escalated-heading">` / `<section aria-labelledby="high-volume-heading">` with their h2s carrying the matching ids.
+- Both tables had bare `<th>` headers. Changed every header cell to `<th scope="col">`. The escalated table's unlabeled actions column got `<th scope="col"><span class="sr-only">Actions</span></th>`.
+- Empty-state messages promoted from bare `<div>` to `<p role="status">` so late-arriving "No escalated sessions" announcements are picked up.
+- Per-row "Mark resolved" button aria-labels were using only the raw session id. Upgraded to interpolate the product name + phone number so the resolve button announces which conversation it acts on.
+
+**Fix on /dashboard/products/:id tablist**:
+- The six product-detail tabs (Overview / Briefs / Drafts / History / Assets / Bundles) had `role="tab"` but no `aria-selected` or `tabindex`. The TabList hook needs `tabindex="0"` on exactly one tab to know which is "active" during keyboard roving, so this had to be fixed before the hook could ship on that tablist.
+- Consolidated the six inline button copies into a single `:for` loop driven by a new `product_tabs/0` helper (six tuples). Matches the `status_tabs/0` pattern from 15.2b on the drafts page.
+- Each tab now renders `aria-selected={"true"|"false"}` + `tabindex={"0"|"-1"}` + `id={"product-tab-#{value}"}` + `type="button"`.
+- The tablist gained `id="product-detail-tablist"` + `aria-label="Product sections"` + `phx-hook="TabList"`.
+
+**TabList JS hook** (`assets/js/hooks/tab_list.js`):
+- New LiveView hook. Attaches a keydown listener on the `role="tablist"` element. Handles `ArrowLeft`/`ArrowUp` (focus previous, wraps), `ArrowRight`/`ArrowDown` (focus next, wraps), `Home` (focus first), `End` (focus last). Enter/Space on non-button tabs forwards to `.click()`; on real `<button>` tabs the native behavior already fires `phx-click` so the hook yields.
+- LiveView retains full ownership of `aria-selected` and `tabindex` state on the server side. The hook only moves DOM focus; LiveView rerenders the state after phx-click returns.
+- `tabs()` queries `[role="tab"]` descendants at each keypress (not cached) so it survives `:for`-loop rerenders without a rebind.
+- `currentIndex()` falls back to the tab with `tabindex="0"` when `document.activeElement` is outside the list (e.g., right after a LiveView patch), so first arrow-press from an un-focused state lands on the active tab + 1.
+- Registered in `assets/js/app.js` alongside existing colocated hooks: `hooks: {...colocatedHooks, TabList}`.
+
+**Hook application**:
+- `/dashboard/drafts` filter tablist - id, `phx-hook="TabList"`.
+- `/dashboard/performance` view tablist - id, `phx-hook="TabList"`.
+- `/dashboard/schedule` view tablist - id, `phx-hook="TabList"`.
+- `/dashboard/products/:id` tablist - id + `aria-label` + `phx-hook="TabList"` (new wiring as above).
+
+**Tests added** (appended to existing `test/content_forge_web/live/dashboard/a11y_landmarks_test.exs`):
+- 2 new page-landmark describe blocks - `/dashboard/providers`, `/dashboard/sms`.
+- 1 new "arrow-key tablist hook wiring" describe block with 4 tests, one per tablist - asserts each role=tablist carries `phx-hook="TabList"` AND retains its aria-label. The product detail test additionally asserts the new aria-selected/tabindex state rolled out (both true and false, both 0 and -1 appear).
+- Tests assert the structural wiring the hook depends on (phx-hook attribute, role=tab children, roving tabindex). The hook itself ships without a JS unit test because there is no JS test harness on the project yet; behavior is documented inline in `tab_list.js`. Adding a JS test harness would be a separate infra slice.
+
+**What was explicitly NOT changed** (kept out of scope):
+- No color-contrast or text-resize sweep. 15.2 phase is landmark + keyboard + screen-reader semantics; visual contrast is a later pass.
+- No global skip-link (`<a href="#main-content">`). Landmarks are now in place so the target anchor is valid; the skip-link itself lands with global nav.
+- No aria-orientation attribute. ARIA defaults role=tablist to horizontal, which matches our layout.
+- No activation-follows-focus JS. The WAI-ARIA pattern allows manual activation (Enter/Space to select) for tablists with cheap tab switches, which matches ours; focus moves independent of selection.
+
+**Gate**: compile --warnings-as-errors clean, format clean, full test 620/0, credo --strict baseline-diff empty. Rebased cleanly on master @ `c2a4886`.
+
 ### Phase 15.2c: WCAG AA audit on video + performance + clips
 
 Status: DONE

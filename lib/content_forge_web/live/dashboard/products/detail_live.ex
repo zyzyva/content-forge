@@ -525,54 +525,25 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
       </header>
       
     <!-- Tabs -->
-      <div role="tablist" class="tabs tabs-boxed">
+      <div
+        id="product-detail-tablist"
+        role="tablist"
+        aria-label="Product sections"
+        class="tabs tabs-boxed"
+        phx-hook="TabList"
+      >
         <button
+          :for={{value, label} <- product_tabs()}
           role="tab"
-          class={["tab", @active_tab == "overview" && "tab-active"]}
+          id={"product-tab-#{value}"}
+          type="button"
+          aria-selected={if @active_tab == value, do: "true", else: "false"}
+          tabindex={if @active_tab == value, do: "0", else: "-1"}
+          class={["tab", @active_tab == value && "tab-active"]}
           phx-click="switch_tab"
-          phx-value-tab="overview"
+          phx-value-tab={value}
         >
-          Overview
-        </button>
-        <button
-          role="tab"
-          class={["tab", @active_tab == "briefs" && "tab-active"]}
-          phx-click="switch_tab"
-          phx-value-tab="briefs"
-        >
-          Briefs
-        </button>
-        <button
-          role="tab"
-          class={["tab", @active_tab == "drafts" && "tab-active"]}
-          phx-click="switch_tab"
-          phx-value-tab="drafts"
-        >
-          Drafts
-        </button>
-        <button
-          role="tab"
-          class={["tab", @active_tab == "history" && "tab-active"]}
-          phx-click="switch_tab"
-          phx-value-tab="history"
-        >
-          History
-        </button>
-        <button
-          role="tab"
-          class={["tab", @active_tab == "assets" && "tab-active"]}
-          phx-click="switch_tab"
-          phx-value-tab="assets"
-        >
-          Assets
-        </button>
-        <button
-          role="tab"
-          class={["tab", @active_tab == "bundles" && "tab-active"]}
-          phx-click="switch_tab"
-          phx-value-tab="bundles"
-        >
-          Bundles
+          {label}
         </button>
       </div>
       
@@ -1297,5 +1268,16 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
       bytes >= 1_024 -> "#{Float.round(bytes / 1_024, 1)} KB"
       true -> "#{bytes} B"
     end
+  end
+
+  defp product_tabs do
+    [
+      {"overview", "Overview"},
+      {"briefs", "Briefs"},
+      {"drafts", "Drafts"},
+      {"history", "History"},
+      {"assets", "Assets"},
+      {"bundles", "Bundles"}
+    ]
   end
 end

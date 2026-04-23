@@ -123,7 +123,13 @@ defmodule ContentForgeWeb.Live.Dashboard.Performance.DashboardLive do
         </label>
       </header>
 
-      <div role="tablist" aria-label="Performance view" class="tabs tabs-boxed">
+      <div
+        id="performance-view-tablist"
+        role="tablist"
+        aria-label="Performance view"
+        class="tabs tabs-boxed"
+        phx-hook="TabList"
+      >
         <button
           role="tab"
           aria-selected={if @active_tab == "overview", do: "true", else: "false"}

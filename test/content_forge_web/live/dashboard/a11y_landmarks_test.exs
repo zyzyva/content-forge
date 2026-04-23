@@ -199,4 +199,93 @@ defmodule ContentForgeWeb.Live.Dashboard.A11yLandmarksTest do
       assert html =~ ~s|id="pending-clips-heading"|
     end
   end
+
+  describe "/dashboard/providers" do
+    test "has one <h1>, a <main> landmark, and table with scope=col headers",
+         %{conn: conn} do
+      {_view, html} = live_at(conn, ~p"/dashboard/providers")
+
+      assert count_matches(html, ~r|<h1\b|) == 1
+      assert count_matches(html, ~r|<main\b|) == 1
+      assert html =~ ~s|id="main-content"|
+      assert html =~ ~s|aria-labelledby="page-title"|
+
+      # Every provider-table column uses scope="col".
+      assert html =~ ~s|<th scope="col">|
+      refute html =~ ~r|<th>[A-Z]|
+    end
+  end
+
+  describe "/dashboard/sms" do
+    test "has one <h1>, a <main> landmark, and table with scope=col headers",
+         %{conn: conn} do
+      {_view, html} = live_at(conn, ~p"/dashboard/sms")
+
+      assert count_matches(html, ~r|<h1\b|) == 1
+      assert count_matches(html, ~r|<main\b|) == 1
+      assert html =~ ~s|id="main-content"|
+      assert html =~ ~s|aria-labelledby="page-title"|
+
+      # Section headings are region-labelled.
+      assert html =~ ~s|id="escalated-heading"|
+      assert html =~ ~s|id="high-volume-heading"|
+    end
+  end
+
+  # Every `role="tablist"` in the dashboard should carry
+  # `phx-hook="TabList"` so the shared JS hook wires up arrow-key
+  # roving focus + Home/End navigation. Tests assert the wiring
+  # (the hook behavior itself ships in assets/js/hooks/tab_list.js).
+  # Structural invariants the hook depends on: the tablist has an
+  # `id` (LV hook requirement) and at least one child `role="tab"`
+  # with `tabindex="0"`.
+  describe "arrow-key tablist hook wiring" do
+    test "drafts review tablist has TabList hook", %{conn: conn} do
+      {_view, html} = live_at(conn, ~p"/dashboard/drafts")
+
+      assert html =~
+               ~r|role="tablist"[^>]*aria-label="Draft status filter"[^>]*phx-hook="TabList"|s or
+               html =~
+                 ~r|phx-hook="TabList"[^>]*role="tablist"[^>]*aria-label="Draft status filter"|s
+
+      assert html =~ ~s|role="tab"|
+      assert html =~ ~s|tabindex="0"|
+    end
+
+    test "performance view tablist has TabList hook", %{conn: conn} do
+      {_view, html} = live_at(conn, ~p"/dashboard/performance")
+
+      assert html =~ ~r|aria-label="Performance view"[^>]*phx-hook="TabList"|s or
+               html =~ ~r|phx-hook="TabList"[^>]*aria-label="Performance view"|s
+    end
+
+    test "schedule view tablist has TabList hook", %{conn: conn} do
+      {_view, html} = live_at(conn, ~p"/dashboard/schedule")
+
+      assert html =~ ~r|aria-label="View mode"[^>]*phx-hook="TabList"|s or
+               html =~ ~r|phx-hook="TabList"[^>]*aria-label="View mode"|s
+    end
+
+    test "product detail tablist has TabList hook + aria-selected + tabindex roving",
+         %{conn: conn} do
+      {:ok, product} =
+        Products.create_product(%{
+          name: "Tablist Product",
+          voice_profile: "professional"
+        })
+
+      {_view, html} = live_at(conn, ~p"/dashboard/products/#{product.id}")
+
+      assert html =~ ~s|role="tablist"|
+      assert html =~ ~s|phx-hook="TabList"|
+
+      # Product detail tabs must now expose aria-selected + tabindex
+      # so the hook has state to rove (15.2c-era fix extended to this
+      # previously-untouched tablist).
+      assert html =~ ~s|aria-selected="true"|
+      assert html =~ ~s|aria-selected="false"|
+      assert html =~ ~s|tabindex="0"|
+      assert html =~ ~s|tabindex="-1"|
+    end
+  end
 end

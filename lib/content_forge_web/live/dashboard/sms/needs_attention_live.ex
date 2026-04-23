@@ -101,35 +101,38 @@ defmodule ContentForgeWeb.Live.Dashboard.Sms.NeedsAttentionLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="space-y-6">
-      <div>
-        <h1 class="text-2xl font-bold">SMS - Needs Attention</h1>
+    <main id="main-content" aria-labelledby="page-title" class="space-y-6">
+      <header>
+        <h1 id="page-title" class="text-2xl font-bold">SMS - Needs Attention</h1>
         <p class="text-base-content/70">
           Conversations awaiting a human response.
         </p>
-      </div>
+      </header>
 
-      <div class="card bg-base-200">
+      <section aria-labelledby="escalated-heading" class="card bg-base-200">
         <div class="card-body">
-          <h2 class="card-title">Escalated ({length(@escalated_sessions)})</h2>
+          <h2 id="escalated-heading" class="card-title">
+            Escalated ({length(@escalated_sessions)})
+          </h2>
 
-          <div
+          <p
             :if={@escalated_sessions == []}
             class="text-center py-8 text-base-content/70"
+            role="status"
           >
             No escalated sessions
-          </div>
+          </p>
 
           <div :if={@escalated_sessions != []} class="overflow-x-auto">
             <table class="table table-sm">
               <thead>
                 <tr>
-                  <th>Product</th>
-                  <th>Phone</th>
-                  <th>Last inbound</th>
-                  <th>Reason</th>
-                  <th>Escalated</th>
-                  <th></th>
+                  <th scope="col">Product</th>
+                  <th scope="col">Phone</th>
+                  <th scope="col">Last inbound</th>
+                  <th scope="col">Reason</th>
+                  <th scope="col">Escalated</th>
+                  <th scope="col"><span class="sr-only">Actions</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -153,7 +156,11 @@ defmodule ContentForgeWeb.Live.Dashboard.Sms.NeedsAttentionLive do
                       class="btn btn-sm btn-primary"
                       phx-click="resolve"
                       phx-value-session-id={session.id}
-                      aria-label={"Mark session #{session.id} resolved"}
+                      aria-label={
+                        "Mark escalated session for " <>
+                          product_name(@product_map, session.product_id) <>
+                          " at " <> session.phone_number <> " resolved"
+                      }
                     >
                       Mark resolved
                     </button>
@@ -163,30 +170,33 @@ defmodule ContentForgeWeb.Live.Dashboard.Sms.NeedsAttentionLive do
             </table>
           </div>
         </div>
-      </div>
+      </section>
 
-      <div class="card bg-base-200">
+      <section aria-labelledby="high-volume-heading" class="card bg-base-200">
         <div class="card-body">
-          <h2 class="card-title">High volume - no reply ({length(@high_volume_sessions)})</h2>
+          <h2 id="high-volume-heading" class="card-title">
+            High volume - no reply ({length(@high_volume_sessions)})
+          </h2>
           <p class="text-xs text-base-content/70">
             Sessions with >= 10 inbound messages in the last 24h and no outbound reply.
           </p>
 
-          <div
+          <p
             :if={@high_volume_sessions == []}
             class="text-center py-8 text-base-content/70"
+            role="status"
           >
             No sessions exceed the high-volume threshold right now
-          </div>
+          </p>
 
           <div :if={@high_volume_sessions != []} class="overflow-x-auto">
             <table class="table table-sm">
               <thead>
                 <tr>
-                  <th>Product</th>
-                  <th>Phone</th>
-                  <th>Last inbound</th>
-                  <th>Last message at</th>
+                  <th scope="col">Product</th>
+                  <th scope="col">Phone</th>
+                  <th scope="col">Last inbound</th>
+                  <th scope="col">Last message at</th>
                 </tr>
               </thead>
               <tbody>
@@ -208,8 +218,8 @@ defmodule ContentForgeWeb.Live.Dashboard.Sms.NeedsAttentionLive do
             </table>
           </div>
         </div>
-      </div>
-    </div>
+      </section>
+    </main>
     """
   end
 

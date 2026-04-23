@@ -37,13 +37,13 @@ defmodule ContentForgeWeb.Live.Dashboard.Providers.StatusLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="space-y-6">
-      <div>
-        <h1 class="text-2xl font-bold">Provider Status</h1>
+    <main id="main-content" aria-labelledby="page-title" class="space-y-6">
+      <header>
+        <h1 id="page-title" class="text-2xl font-bold">Provider Status</h1>
         <p class="text-base-content/70">
           Live read of app config + audit tables. No synthetic probes.
         </p>
-      </div>
+      </header>
 
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div class="stat bg-base-200">
@@ -72,19 +72,19 @@ defmodule ContentForgeWeb.Live.Dashboard.Providers.StatusLive do
         </div>
       </div>
 
-      <div class="card bg-base-200">
+      <section aria-labelledby="integrations-heading" class="card bg-base-200">
         <div class="card-body">
-          <h2 class="card-title">Integrations</h2>
+          <h2 id="integrations-heading" class="card-title">Integrations</h2>
 
           <div class="overflow-x-auto">
             <table class="table table-sm">
               <thead>
                 <tr>
-                  <th>Provider</th>
-                  <th>Status</th>
-                  <th>Last success</th>
-                  <th>Last error</th>
-                  <th>Note</th>
+                  <th scope="col">Provider</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Last success</th>
+                  <th scope="col">Last error</th>
+                  <th scope="col">Note</th>
                 </tr>
               </thead>
               <tbody>
@@ -95,7 +95,14 @@ defmodule ContentForgeWeb.Live.Dashboard.Providers.StatusLive do
                   data-provider-status={row.status}
                 >
                   <td class="font-semibold">{row.name}</td>
-                  <td><span class={badge_classes(row.status)}>{badge_text(row.status)}</span></td>
+                  <td>
+                    <span
+                      class={badge_classes(row.status)}
+                      aria-label={"Status: #{badge_text(row.status)}"}
+                    >
+                      {badge_text(row.status)}
+                    </span>
+                  </td>
                   <td class="text-xs whitespace-nowrap">{format_ts(row.last_success_at)}</td>
                   <td class="text-xs whitespace-nowrap">{format_ts(row.last_error_at)}</td>
                   <td class="text-xs text-base-content/70">{row.note}</td>
@@ -104,8 +111,8 @@ defmodule ContentForgeWeb.Live.Dashboard.Providers.StatusLive do
             </table>
           </div>
         </div>
-      </div>
-    </div>
+      </section>
+    </main>
     """
   end
 

@@ -144,7 +144,13 @@ defmodule ContentForgeWeb.Live.Dashboard.Drafts.ReviewLive do
       </header>
 
       <section aria-label="Filters" class="flex flex-col sm:flex-row gap-4">
-        <div role="tablist" aria-label="Draft status filter" class="tabs tabs-boxed">
+        <div
+          id="drafts-filter-tablist"
+          role="tablist"
+          aria-label="Draft status filter"
+          class="tabs tabs-boxed"
+          phx-hook="TabList"
+        >
           <button
             :for={{value, label} <- status_tabs()}
             role="tab"

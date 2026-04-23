@@ -210,9 +210,11 @@ defmodule ContentForgeWeb.Live.Dashboard.Schedule.Live do
           {format_short_date(@start_date)} - {format_date(@end_date)}
         </div>
         <div
+          id="schedule-view-tablist"
           role="tablist"
           aria-label="View mode"
           class="tabs tabs-boxed tabs-sm"
+          phx-hook="TabList"
         >
           <button
             role="tab"
