@@ -314,6 +314,174 @@ defmodule ContentForge.ProductAssetsTest do
     end
   end
 
+  describe "add_tag/2" do
+    test "appends a new tag and broadcasts asset_updated" do
+      product = create_product!()
+      {:ok, asset} = ProductAssets.create_asset(valid_attrs(product))
+      :ok = ProductAssets.subscribe(product.id)
+
+      assert {:ok, updated} = ProductAssets.add_tag(asset, "launch")
+      assert "launch" in updated.tags
+
+      assert_receive {:asset_updated, ^updated}
+    end
+
+    test "is idempotent: adding an existing tag does not duplicate" do
+      product = create_product!()
+      {:ok, asset} = ProductAssets.create_asset(valid_attrs(product, %{tags: ["hero"]}))
+
+      assert {:ok, updated} = ProductAssets.add_tag(asset, "hero")
+      assert updated.tags == ["hero"]
+    end
+
+    test "trims whitespace and skips empty tags" do
+      product = create_product!()
+      {:ok, asset} = ProductAssets.create_asset(valid_attrs(product))
+
+      assert {:ok, updated} = ProductAssets.add_tag(asset, "   ")
+      assert updated.tags == []
+
+      assert {:ok, updated} = ProductAssets.add_tag(asset, "  hero  ")
+      assert updated.tags == ["hero"]
+    end
+  end
+
+  describe "remove_tag/2" do
+    test "removes a tag and broadcasts asset_updated" do
+      product = create_product!()
+
+      {:ok, asset} =
+        ProductAssets.create_asset(valid_attrs(product, %{tags: ["hero", "launch"]}))
+
+      :ok = ProductAssets.subscribe(product.id)
+
+      assert {:ok, updated} = ProductAssets.remove_tag(asset, "hero")
+      assert updated.tags == ["launch"]
+
+      assert_receive {:asset_updated, ^updated}
+    end
+
+    test "is a no-op when the tag is not present" do
+      product = create_product!()
+      {:ok, asset} = ProductAssets.create_asset(valid_attrs(product, %{tags: ["hero"]}))
+
+      assert {:ok, updated} = ProductAssets.remove_tag(asset, "not-there")
+      assert updated.tags == ["hero"]
+    end
+  end
+
+  describe "list_assets/2 :search filter" do
+    setup do
+      product = create_product!()
+
+      {:ok, hero} =
+        ProductAssets.create_asset(
+          valid_attrs(product, %{
+            storage_key: "products/#{product.id}/h.jpg",
+            tags: ["hero", "launch"],
+            description: "Hero shot for the launch page."
+          })
+        )
+
+      {:ok, demo} =
+        ProductAssets.create_asset(
+          valid_attrs(product, %{
+            storage_key: "products/#{product.id}/d.mp4",
+            media_type: "video",
+            mime_type: "video/mp4",
+            tags: ["demo"],
+            description: "Screen-capture walkthrough."
+          })
+        )
+
+      %{product: product, hero: hero, demo: demo}
+    end
+
+    test "matches a tag substring", %{product: product, hero: hero} do
+      [match] = ProductAssets.list_assets(product.id, search: "laun")
+      assert match.id == hero.id
+    end
+
+    test "matches a description substring (case-insensitive)",
+         %{product: product, demo: demo} do
+      [match] = ProductAssets.list_assets(product.id, search: "WALKTHROUGH")
+      assert match.id == demo.id
+    end
+
+    test "composes with media_type", %{product: product, demo: demo} do
+      [match] =
+        ProductAssets.list_assets(product.id, search: "demo", media_type: "video")
+
+      assert match.id == demo.id
+
+      assert ProductAssets.list_assets(product.id, search: "demo", media_type: "image") ==
+               []
+    end
+
+    test "returns [] when nothing matches", %{product: product} do
+      assert ProductAssets.list_assets(product.id, search: "xyzzy") == []
+    end
+  end
+
+  describe "top_tags/2" do
+    test "returns top tags by count then alphabetically" do
+      product = create_product!()
+
+      {:ok, _} =
+        ProductAssets.create_asset(
+          valid_attrs(product, %{
+            storage_key: "products/#{product.id}/1.jpg",
+            tags: ["hero", "launch"]
+          })
+        )
+
+      {:ok, _} =
+        ProductAssets.create_asset(
+          valid_attrs(product, %{
+            storage_key: "products/#{product.id}/2.jpg",
+            tags: ["hero", "campaign"]
+          })
+        )
+
+      {:ok, _} =
+        ProductAssets.create_asset(
+          valid_attrs(product, %{
+            storage_key: "products/#{product.id}/3.jpg",
+            tags: ["hero"]
+          })
+        )
+
+      assert ProductAssets.top_tags(product.id, 2) == [{"hero", 3}, {"campaign", 1}]
+    end
+
+    test "excludes deleted assets" do
+      product = create_product!()
+
+      {:ok, live_asset} =
+        ProductAssets.create_asset(
+          valid_attrs(product, %{
+            storage_key: "products/#{product.id}/1.jpg",
+            tags: ["alive"]
+          })
+        )
+
+      {:ok, gone} =
+        ProductAssets.create_asset(
+          valid_attrs(product, %{
+            storage_key: "products/#{product.id}/2.jpg",
+            tags: ["dead"]
+          })
+        )
+
+      {:ok, _} = ProductAssets.soft_delete_asset(gone)
+      _ = live_asset
+
+      tags = ProductAssets.top_tags(product.id)
+      assert Enum.any?(tags, fn {t, _} -> t == "alive" end)
+      refute Enum.any?(tags, fn {t, _} -> t == "dead" end)
+    end
+  end
+
   describe "partial unique index on (product_id, storage_key)" do
     test "rejects a duplicate storage_key while the original is still active" do
       product = create_product!()

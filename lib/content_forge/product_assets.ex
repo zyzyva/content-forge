@@ -78,6 +78,7 @@ defmodule ContentForge.ProductAssets do
     |> apply_status_filter(Keyword.get(opts, :status))
     |> apply_tag_filter(Keyword.get(opts, :tag))
     |> apply_media_type_filter(Keyword.get(opts, :media_type))
+    |> apply_search_filter(Keyword.get(opts, :search))
     |> apply_sort(Keyword.get(opts, :sort_by, :uploaded_at))
     |> apply_limit(Keyword.get(opts, :limit))
     |> Repo.all()
@@ -130,6 +131,60 @@ defmodule ContentForge.ProductAssets do
     |> maybe_broadcast(:asset_updated)
   end
 
+  @doc """
+  Adds `tag` to an asset's `tags` array if it is not already present.
+  Returns the updated asset (via `maybe_broadcast/2`) or a changeset
+  error. Broadcasts `:asset_updated` on success so subscribers refresh.
+  """
+  @spec add_tag(ProductAsset.t(), String.t()) ::
+          {:ok, ProductAsset.t()} | {:error, Ecto.Changeset.t()}
+  def add_tag(%ProductAsset{} = asset, tag) when is_binary(tag) do
+    clean = String.trim(tag)
+
+    if clean == "" do
+      {:ok, asset}
+    else
+      new_tags = asset.tags |> Kernel.++([clean]) |> Enum.uniq()
+
+      asset
+      |> ProductAsset.changeset(%{tags: new_tags})
+      |> Repo.update()
+      |> maybe_broadcast(:asset_updated)
+    end
+  end
+
+  @doc """
+  Removes `tag` from an asset's `tags` array. No-op if the tag is not
+  present; still broadcasts so the UI can re-render consistently.
+  """
+  @spec remove_tag(ProductAsset.t(), String.t()) ::
+          {:ok, ProductAsset.t()} | {:error, Ecto.Changeset.t()}
+  def remove_tag(%ProductAsset{} = asset, tag) when is_binary(tag) do
+    new_tags = Enum.reject(asset.tags, &(&1 == tag))
+
+    asset
+    |> ProductAsset.changeset(%{tags: new_tags})
+    |> Repo.update()
+    |> maybe_broadcast(:asset_updated)
+  end
+
+  @doc """
+  Returns the top `limit` (default 8) tags by frequency across the
+  product's non-deleted assets, as `[{tag, count}]` sorted by count
+  descending then alphabetically. Drives the Assets tab's tag-facet row.
+  """
+  @spec top_tags(Ecto.UUID.t(), pos_integer()) :: [{String.t(), non_neg_integer()}]
+  def top_tags(product_id, limit \\ 8) do
+    ProductAsset
+    |> where([a], a.product_id == ^product_id)
+    |> where([a], a.status != "deleted")
+    |> select([a], fragment("unnest(?)", a.tags))
+    |> Repo.all()
+    |> Enum.frequencies()
+    |> Enum.sort_by(fn {tag, count} -> {-count, tag} end)
+    |> Enum.take(limit)
+  end
+
   @doc "Soft-deletes an asset: sets `status = \"deleted\"` without removing the row."
   @spec soft_delete_asset(ProductAsset.t()) ::
           {:ok, ProductAsset.t()} | {:error, Ecto.Changeset.t()}
@@ -158,6 +213,20 @@ defmodule ContentForge.ProductAssets do
 
   defp apply_tag_filter(query, tag) when is_binary(tag) do
     where(query, [a], ^tag in a.tags)
+  end
+
+  defp apply_search_filter(query, nil), do: query
+  defp apply_search_filter(query, ""), do: query
+
+  defp apply_search_filter(query, search) when is_binary(search) do
+    pattern = "%" <> search <> "%"
+
+    where(
+      query,
+      [a],
+      ilike(a.description, ^pattern) or
+        ilike(fragment("array_to_string(?, ' ')", a.tags), ^pattern)
+    )
   end
 
   defp apply_media_type_filter(query, nil), do: query

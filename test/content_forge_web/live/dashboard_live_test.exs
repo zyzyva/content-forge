@@ -120,7 +120,8 @@ defmodule ContentForgeWeb.DashboardLiveTest do
 
       assert html =~ "Upload Assets"
       assert html =~ "Register uploads"
-      assert html =~ "No assets yet"
+      assert html =~ "No assets match"
+      assert html =~ "Search tags or description"
     end
 
     test "Assets tab lists existing product assets with status badges",
@@ -150,6 +151,154 @@ defmodule ContentForgeWeb.DashboardLiveTest do
       assert html =~ "hero.jpg"
       assert html =~ "PENDING"
       assert html =~ "asset-#{asset.id}"
+    end
+
+    test "Assets tab: adding a tag renders a chip and a new facet",
+         %{conn: conn} do
+      product = create_product(%{name: "Tag Product"})
+
+      {:ok, asset} =
+        ContentForge.ProductAssets.create_asset(%{
+          product_id: product.id,
+          storage_key: "products/#{product.id}/assets/a/t.jpg",
+          media_type: "image",
+          filename: "t.jpg",
+          mime_type: "image/jpeg",
+          byte_size: 1024,
+          uploaded_at: DateTime.utc_now()
+        })
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/products/#{product.id}")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      _ = render_click(view, "switch_tab", %{"tab" => "assets"})
+
+      html =
+        render_submit(view, "add_tag", %{"asset-id" => asset.id, "tag" => "launch"})
+
+      assert html =~ ~s|data-asset-tag="launch"|
+      assert html =~ "launch (1)"
+    end
+
+    test "Assets tab: removing a tag drops its chip",
+         %{conn: conn} do
+      product = create_product(%{name: "Remove Tag Product"})
+
+      {:ok, asset} =
+        ContentForge.ProductAssets.create_asset(%{
+          product_id: product.id,
+          storage_key: "products/#{product.id}/assets/a/r.jpg",
+          media_type: "image",
+          filename: "r.jpg",
+          mime_type: "image/jpeg",
+          byte_size: 1024,
+          uploaded_at: DateTime.utc_now(),
+          tags: ["keep", "discard"]
+        })
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/products/#{product.id}")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      _ = render_click(view, "switch_tab", %{"tab" => "assets"})
+
+      html =
+        render_click(view, "remove_tag", %{"asset-id" => asset.id, "tag" => "discard"})
+
+      refute html =~ ~s|data-asset-tag="discard"|
+      assert html =~ ~s|data-asset-tag="keep"|
+    end
+
+    test "Assets tab: search filters by tag substring",
+         %{conn: conn} do
+      product = create_product(%{name: "Search Product"})
+
+      {:ok, _} =
+        ContentForge.ProductAssets.create_asset(%{
+          product_id: product.id,
+          storage_key: "products/#{product.id}/assets/a/hero.jpg",
+          media_type: "image",
+          filename: "hero.jpg",
+          mime_type: "image/jpeg",
+          byte_size: 1024,
+          uploaded_at: DateTime.utc_now(),
+          tags: ["launch"]
+        })
+
+      {:ok, _other} =
+        ContentForge.ProductAssets.create_asset(%{
+          product_id: product.id,
+          storage_key: "products/#{product.id}/assets/a/other.jpg",
+          media_type: "image",
+          filename: "other.jpg",
+          mime_type: "image/jpeg",
+          byte_size: 1024,
+          uploaded_at: DateTime.utc_now(),
+          tags: ["misc"]
+        })
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/products/#{product.id}")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      _ = render_click(view, "switch_tab", %{"tab" => "assets"})
+
+      html =
+        render_change(view, "search_assets", %{"search" => "laun", "media_type" => ""})
+
+      assert html =~ "hero.jpg"
+      refute html =~ "other.jpg"
+    end
+
+    test "Assets tab: clicking a tag facet prefills search and filters",
+         %{conn: conn} do
+      product = create_product(%{name: "Facet Product"})
+
+      {:ok, _} =
+        ContentForge.ProductAssets.create_asset(%{
+          product_id: product.id,
+          storage_key: "products/#{product.id}/assets/a/hero.jpg",
+          media_type: "image",
+          filename: "hero.jpg",
+          mime_type: "image/jpeg",
+          byte_size: 1024,
+          uploaded_at: DateTime.utc_now(),
+          tags: ["launch"]
+        })
+
+      {:ok, _} =
+        ContentForge.ProductAssets.create_asset(%{
+          product_id: product.id,
+          storage_key: "products/#{product.id}/assets/a/demo.mp4",
+          media_type: "video",
+          filename: "demo.mp4",
+          mime_type: "video/mp4",
+          byte_size: 2048,
+          uploaded_at: DateTime.utc_now(),
+          tags: ["walkthrough"]
+        })
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/products/#{product.id}")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      _ = render_click(view, "switch_tab", %{"tab" => "assets"})
+
+      html = render_click(view, "use_facet", %{"tag" => "launch"})
+
+      assert html =~ "hero.jpg"
+      refute html =~ "demo.mp4"
+      # Search input reflects the clicked facet value
+      assert html =~ ~s|value="launch"|
     end
 
     test "PubSub broadcast flips the asset status badge to PROCESSED",

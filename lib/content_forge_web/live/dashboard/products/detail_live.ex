@@ -47,6 +47,10 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
        drafts: drafts,
        published_posts: published_posts,
        assets: assets,
+       asset_search: "",
+       asset_media_filter: "",
+       asset_tag_catalog: ProductAssets.list_distinct_tags(product_id),
+       asset_top_tags: ProductAssets.top_tags(product_id, 8),
        active_tab: "overview"
      )
      |> allow_upload(:assets,
@@ -79,22 +83,89 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
         register_uploaded_asset(socket.assigns.product, meta, entry)
       end)
 
-    assets = ProductAssets.list_assets(socket.assigns.product.id)
-
     socket =
       socket
-      |> assign(assets: assets)
+      |> refresh_assets()
       |> put_flash(:info, "#{length(created)} asset(s) registered")
 
     {:noreply, socket}
   end
 
   @impl true
+  def handle_event("search_assets", %{"value" => search}, socket) do
+    {:noreply, socket |> assign(asset_search: search) |> refresh_assets()}
+  end
+
+  def handle_event("search_assets", %{"search" => search}, socket) do
+    {:noreply, socket |> assign(asset_search: search) |> refresh_assets()}
+  end
+
+  @impl true
+  def handle_event("filter_media_type", %{"media_type" => media_type}, socket) do
+    {:noreply, socket |> assign(asset_media_filter: media_type) |> refresh_assets()}
+  end
+
+  @impl true
+  def handle_event("use_facet", %{"tag" => tag}, socket) do
+    {:noreply, socket |> assign(asset_search: tag) |> refresh_assets()}
+  end
+
+  @impl true
+  def handle_event("add_tag", %{"asset-id" => asset_id, "tag" => tag}, socket) do
+    asset = ProductAssets.get_asset!(asset_id)
+    {:ok, _} = ProductAssets.add_tag(asset, tag)
+    # Refresh synchronously so this session sees the change immediately;
+    # the PubSub broadcast from add_tag/2 keeps other subscribers in sync.
+    {:noreply, socket |> refresh_assets() |> refresh_asset_catalog()}
+  end
+
+  @impl true
+  def handle_event("remove_tag", %{"asset-id" => asset_id, "tag" => tag}, socket) do
+    asset = ProductAssets.get_asset!(asset_id)
+    {:ok, _} = ProductAssets.remove_tag(asset, tag)
+    {:noreply, socket |> refresh_assets() |> refresh_asset_catalog()}
+  end
+
+  @impl true
   def handle_info({event, asset}, socket)
       when event in [:asset_created, :asset_updated, :asset_deleted] do
-    assets = ProductAssets.list_assets(socket.assigns.product.id)
-    {:noreply, assign(socket, assets: assets, last_asset_event: {event, asset.id})}
+    socket =
+      socket
+      |> refresh_assets()
+      |> refresh_asset_catalog()
+      |> assign(last_asset_event: {event, asset.id})
+
+    {:noreply, socket}
   end
+
+  # --- filter application --------------------------------------------------
+
+  defp refresh_assets(socket) do
+    assigns = socket.assigns
+
+    opts =
+      []
+      |> maybe_put_opt(:search, blank_to_nil(assigns[:asset_search]))
+      |> maybe_put_opt(:media_type, blank_to_nil(assigns[:asset_media_filter]))
+
+    assign(socket, assets: ProductAssets.list_assets(assigns.product.id, opts))
+  end
+
+  defp refresh_asset_catalog(socket) do
+    product_id = socket.assigns.product.id
+
+    assign(socket,
+      asset_tag_catalog: ProductAssets.list_distinct_tags(product_id),
+      asset_top_tags: ProductAssets.top_tags(product_id, 8)
+    )
+  end
+
+  defp maybe_put_opt(opts, _key, nil), do: opts
+  defp maybe_put_opt(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp blank_to_nil(nil), do: nil
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(value), do: value
 
   # --- external upload presigning -----------------------------------------
 
@@ -494,8 +565,52 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
         <div class="card bg-base-200">
           <div class="card-body">
             <h2 class="card-title">Assets</h2>
+
+            <form
+              phx-change="search_assets"
+              phx-submit="search_assets"
+              class="flex flex-col sm:flex-row gap-2"
+              role="search"
+            >
+              <input
+                type="search"
+                name="search"
+                value={@asset_search}
+                placeholder="Search tags or description"
+                aria-label="Search assets"
+                class="input input-bordered w-full"
+              />
+              <select
+                name="media_type"
+                phx-change="filter_media_type"
+                class="select select-bordered"
+                aria-label="Filter by media type"
+              >
+                <option value="" selected={@asset_media_filter == ""}>All media</option>
+                <option value="image" selected={@asset_media_filter == "image"}>Images</option>
+                <option value="video" selected={@asset_media_filter == "video"}>Videos</option>
+              </select>
+            </form>
+
+            <div :if={@asset_top_tags != []} class="flex flex-wrap gap-2 items-center">
+              <span class="text-xs text-base-content/70">Top tags:</span>
+              <button
+                :for={{tag, count} <- @asset_top_tags}
+                type="button"
+                phx-click="use_facet"
+                phx-value-tag={tag}
+                class="badge badge-outline badge-sm hover:badge-primary cursor-pointer"
+              >
+                {tag} ({count})
+              </button>
+            </div>
+
+            <datalist id="asset-tag-catalog">
+              <option :for={tag <- @asset_tag_catalog} value={tag} />
+            </datalist>
+
             <div :if={@assets == []} class="text-center py-8 text-base-content/70">
-              No assets yet
+              No assets match
             </div>
             <div :if={@assets != []} class="overflow-x-auto">
               <table class="table table-sm">
@@ -504,6 +619,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
                     <th>Filename</th>
                     <th>Type</th>
                     <th>Size</th>
+                    <th>Tags</th>
                     <th>Status</th>
                     <th>Uploaded</th>
                   </tr>
@@ -517,6 +633,42 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
                     <td class="max-w-xs truncate">{asset.filename}</td>
                     <td>{asset.media_type}</td>
                     <td>{format_bytes(asset.byte_size)}</td>
+                    <td>
+                      <div class="flex flex-wrap gap-1 items-center">
+                        <span
+                          :for={tag <- asset.tags}
+                          class="badge badge-sm gap-1"
+                          data-asset-tag={tag}
+                        >
+                          {tag}
+                          <button
+                            type="button"
+                            class="text-xs hover:text-error"
+                            phx-click="remove_tag"
+                            phx-value-asset-id={asset.id}
+                            phx-value-tag={tag}
+                            aria-label={"Remove tag #{tag}"}
+                          >
+                            ×
+                          </button>
+                        </span>
+                        <form
+                          phx-submit="add_tag"
+                          class="inline-flex"
+                          id={"add-tag-#{asset.id}"}
+                        >
+                          <input type="hidden" name="asset-id" value={asset.id} />
+                          <input
+                            type="text"
+                            name="tag"
+                            list="asset-tag-catalog"
+                            placeholder="+ tag"
+                            class="input input-xs input-bordered w-20"
+                            aria-label={"Add tag to #{asset.filename}"}
+                          />
+                        </form>
+                      </div>
+                    </td>
                     <td>
                       <Components.status_badge status={asset.status} />
                       <span
