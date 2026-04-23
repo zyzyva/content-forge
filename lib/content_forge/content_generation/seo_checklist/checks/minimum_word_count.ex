@@ -1,5 +1,28 @@
 defmodule ContentForge.ContentGeneration.SeoChecklist.Checks.MinimumWordCount do
-  @moduledoc false
-  # Phase 12.2a stub; real implementation lands in 12.2b or 12.2c.
-  def check(_draft), do: {:not_applicable, "check not implemented yet"}
+  @moduledoc """
+  Blog articles must hit a minimum word count for SEO ranking.
+  Default floor is 800 words. Content below the floor fails with
+  the actual count in the note so operators know how far short.
+  """
+
+  @min 800
+
+  def check(%{content: content}) when is_binary(content) do
+    count = count_words(content)
+
+    if count >= @min do
+      {:pass, "#{count} words"}
+    else
+      {:fail, "#{count} words < #{@min}"}
+    end
+  end
+
+  def check(_), do: {:fail, "draft has no content"}
+
+  defp count_words(content) do
+    content
+    |> String.replace(~r/<[^>]+>/, " ")
+    |> String.split(~r/\s+/, trim: true)
+    |> length()
+  end
 end

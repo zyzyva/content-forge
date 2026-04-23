@@ -82,6 +82,46 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 12.2b: SEO checklist mechanical checks
+
+Status: DONE
+Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `58fb17a`. Gate: compile --warnings-as-errors clean, format clean, full test 715/0, credo baseline-diff empty, coverage 58.44% (up from 57.76%).
+Note: Fills in 14 of the 24 stub slots from 12.2a. Each check is its own module under `lib/content_forge/content_generation/seo_checklist/checks/`; behavior is body-content-only (no LLM, no external data). 10 stubs remain for 12.2c (semantic checks).
+
+**Implemented in this slice** (14):
+
+- `HeadingHierarchy` - scans markdown `#` lines and HTML `<h1>..<h6>` tags; fails on level-skip (H1 -> H3) with the exact pair in the note.
+- `FaqPresent` - matches markdown/HTML headings containing "FAQ" / "Frequently Asked Questions", or a `"@type":"FAQPage"` JSON-LD block.
+- `JsonLdSchema` - broad "any structured data present?" check matching `<script type="application/ld+json">{...}`. Narrower schema-type checks are separate.
+- `ImageAltCoverage` - counts `<img>` tags + markdown `![alt](src)` images; pass requires 100% alt coverage. No images -> `:not_applicable`.
+- `InternalLinks` - relative hrefs or markdown `[](/path)`; pure anchor fragments (`#top`) do not count. Pass requires >= 1.
+- `ExternalLinkCount` - absolute-scheme hrefs; pass requires 1..20 inclusive. Zero fails; 21+ fails.
+- `KeywordDensityTitle` - heuristic without an explicit keyword field: longest title word >=4 chars, not a stopword, must appear in the first 300 body words. No H1 -> `:not_applicable`.
+- `SlugLength` - reads `slug:` frontmatter line; pass <= 75 chars. No slug -> `:not_applicable` (12.4 dashboard will let operators set a slug before publish).
+- `TocLongArticles` - word-count gate: under 1500 words is `:not_applicable`; at/over 1500 requires a "Table of Contents" heading, a markdown/HTML `TOC` heading, or a `<nav>` with an embedded list.
+- `ReadingTimeEstimate` - any "X minute read" / "Reading time: X min" phrase.
+- `FastScanSummaryFirst200` - links to the Phase 12.1 nugget: if `draft.ai_summary_nugget` is populated, pass with the nugget length in the note; otherwise fallback to a >=2-complete-sentences check in the first 200 words. This is the first cross-slice integration the architect called out.
+- `BannedPhrases` - exact phrase list from `build_blog_prompt/3`'s banned section (delve, comprehensive guide, in today's digital landscape, it's worth noting, as an AI, in conclusion it's clear, at the end of the day, in the ever-evolving, navigate the complexities). Case-insensitive substring match.
+- `MinimumWordCount` - strips HTML tags, splits on whitespace; pass >= 800 words.
+- `KeywordInFirstParagraph` - same stopword/length filter as the title-density check, but requires the match to land in the first paragraph after the title (not the first 300 body words).
+
+**Deferred to 12.2c** (10 remaining stubs): `information_gain`, `entity_density`, `paa_coverage`, `eeat_signals`, `citation_presence`, `not_for_you_block`, `reading_level`, `outbound_link_authority`, `image_count`, `schema_article`. Most require LLM calls or SERP data. `image_count` and `schema_article` could be mechanical but stay deferred to keep 12.2c's scope coherent.
+
+**Tests** (`test/content_forge/content_generation/seo_checklist/mechanical_checks_test.exs`, new, 40 tests):
+- 2-4 cases per check: positive pass, typical fail mode, `:not_applicable` boundary, and format variants where applicable (markdown vs HTML, frontmatter vs body).
+- Runner test updated: the "implemented" helper now enumerates 18 names (4 from 12.2a + 14 new), and the stub assertion expects exactly 10 remaining `:not_applicable` entries with the sentinel note.
+
+**Regex-interpolation footgun** (worth capturing for future slices):
+- Three of the new checks needed `#{1,6}` character-class counts in their markdown-heading regexes (`heading_hierarchy`, `faq_present`, `toc_long_articles`). Elixir's `~r` sigil interpolates `#{...}`, so the raw form broke compilation with `syntax error before ','`. Fix: escape as `\#{1,6}`, or split a single regex into a disjunction of smaller sigils. Both land in this slice.
+
+**What was explicitly NOT changed** (kept out of scope):
+- No dedicated keyword field on `Draft` / `ContentBrief` yet. The title-density and first-paragraph checks use a longest-substantive-word heuristic. If the architect adds an explicit `target_keyword` field in a future slice, these two checks flip to use it and tighten their notes.
+- `slug_length` only reads frontmatter; no slug-generator from title. That's a publish-flow concern.
+- Banned-phrase list is hard-coded. A per-product blocklist could live on `Product.voice_profile` or a sibling field later; not needed now.
+- No change to the Drafts LiveView drawer - the new checks just appear alongside the 12.2a four, ordered failures-first by the existing helper.
+
+**Gate**: compile --warnings-as-errors clean, format clean, full test 715/0 (40 new), credo --strict baseline-diff empty, `mix test --cover` overall 58.44% above threshold 10. Rebased cleanly on master @ `58fb17a`.
+
 ### Phase 12.2a: SEO checklist infrastructure
 
 Status: DONE

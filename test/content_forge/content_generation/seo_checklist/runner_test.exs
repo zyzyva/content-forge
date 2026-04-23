@@ -87,16 +87,11 @@ defmodule ContentForge.ContentGeneration.SeoChecklist.RunnerTest do
       end)
     end
 
-    test "the 4 implemented checks produce non-stub notes on the good content",
+    test "the implemented checks produce non-stub notes on the good content",
          %{draft: draft} do
       checklist = Runner.get_for_draft(draft.id)
 
-      for name <- [
-            "title_length",
-            "meta_description_length",
-            "single_h1",
-            "core_answer_in_first_150_words"
-          ] do
+      for name <- implemented_check_names() do
         value = checklist.results[name]
 
         refute value["note"] == "check not implemented yet",
@@ -106,22 +101,14 @@ defmodule ContentForge.ContentGeneration.SeoChecklist.RunnerTest do
       end
     end
 
-    test "the 24 stub checks return :not_applicable with the stub note",
+    test "the remaining stub checks return :not_applicable with the stub note",
          %{draft: draft} do
       checklist = Runner.get_for_draft(draft.id)
 
-      implemented = [
-        "title_length",
-        "meta_description_length",
-        "single_h1",
-        "core_answer_in_first_150_words"
-      ]
+      stubs = Map.drop(checklist.results, implemented_check_names())
 
-      stubs =
-        checklist.results
-        |> Map.drop(implemented)
-
-      assert map_size(stubs) == 24
+      # 28 total - 18 implemented (4 from 12.2a + 14 from 12.2b) = 10 stubs.
+      assert map_size(stubs) == 10
 
       Enum.each(stubs, fn {name, value} ->
         assert value["status"] == "not_applicable",
@@ -130,5 +117,33 @@ defmodule ContentForge.ContentGeneration.SeoChecklist.RunnerTest do
         assert value["note"] == "check not implemented yet"
       end)
     end
+  end
+
+  # The union of 12.2a (4 checks) and 12.2b (14 checks). When
+  # 12.2c lands, either extend this helper or flip the test to
+  # an all-implemented assertion.
+  defp implemented_check_names do
+    [
+      # 12.2a
+      "title_length",
+      "meta_description_length",
+      "single_h1",
+      "core_answer_in_first_150_words",
+      # 12.2b
+      "heading_hierarchy",
+      "faq_present",
+      "json_ld_schema",
+      "image_alt_coverage",
+      "internal_links",
+      "external_link_count",
+      "keyword_density_title",
+      "slug_length",
+      "toc_long_articles",
+      "reading_time_estimate",
+      "fast_scan_summary_first_200",
+      "banned_phrases",
+      "minimum_word_count",
+      "keyword_in_first_paragraph"
+    ]
   end
 end
