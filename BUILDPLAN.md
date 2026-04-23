@@ -551,7 +551,13 @@ Pick up after the feature waves clear. Any of these can be inserted earlier if i
   - Baseline is `test_coverage: [summary: [threshold: 0]]` in `mix.exs` (acknowledged debt, overall ~18%). Pair with 15.3 work: as E2E tests land, raise the per-module threshold in tranches (start at 25, then 50, then back toward Elixir's default of 90).
   - A dedicated cleanup slice at the end of the wave should set the final threshold and update `BUILDLOG.md` with the final coverage number.
 
-- **15.4 Load smoke**
+- **15.4 Load smoke** ✅ Shipped `8448b08`.
+
+- **15.4.1 ScheduleController Oban.insert map-shape fix**
+  - `ContentForgeWeb.ScheduleController.schedule_for_platform/2` calls `Oban.insert(%{...})` with a plain map — same broken shape that the 15.3.1 E2E walk surfaced in `WinnerRepurposingEngine`. `Oban.insert/1` accepts only `%Oban.Job{}` structs (or a changeset). Anything that reaches this code path in production errors rather than enqueues.
+  - Fix follows the established pattern: replace the bare-map call with `Publisher.new(args) |> Oban.insert()` (or whichever worker this path is meant to enqueue — inspect the map args and pick the right worker module).
+  - Add a focused test that hits the schedule endpoint with a valid product + platform and asserts the correct Oban job is enqueued (via `assert_enqueued`). That's the test that would have caught this bug; it's also the test that locks in the fix.
+  - Same-class-of-bug slice; keep it to one focused commit.
   - Small load test against the Review API and the publishing endpoints to catch N+1s and session-handling issues before they bite in a real launch.
   - **Slicing note:** Ship as a single slice. Concrete requirements:
     - A new `mix task` or top-level script under `test/load/review_api_smoke.exs` that uses `Task.async_stream/3` and `Finch` (no new deps if possible — use `Req` which is already a dep) to fire a burst of authenticated requests against the Review API endpoints (GET /api/v1/products, GET /api/v1/products/:id/drafts, POST /api/v1/drafts/:id/score, POST /api/v1/drafts/:id/approve) plus the publishing endpoints (POST /api/v1/products/:id/schedule). Concurrency default 50; total requests default 1000; both configurable by env.

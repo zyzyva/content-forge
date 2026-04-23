@@ -85,7 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 15.4: Review API load smoke
 
 Status: DONE
-Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `5d8673f`. Gate: compile --warnings-as-errors clean, format clean, full test 621/0, credo baseline-diff empty.
+Merged: master @ `8448b08` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 621-0; credo unchanged. Per-process query-count correlation via Ecto telemetry on caller process. `register_before_send` emits `x-cf-query-count` header. Idempotent seed. Meta-test runs script on Bandit port 0. Reviewer surfaced another Oban.insert-with-map bug in `ScheduleController.schedule_for_platform` (same class as the `WinnerRepurposingEngine` bug fixed in 15.3.1); queued as 15.4.1.
 Note: Manual-run load smoke script at `test/load/review_api_smoke.exs` backed by `ContentForge.LoadSmoke.ReviewApi`. Not in CI. Script fires concurrent authenticated requests at the Review API + publishing endpoints via `Req` + `Task.async_stream/3`, collects latency + error + query-count telemetry, prints a summary.
 
 **New module** (`lib/content_forge/load_smoke/review_api.ex`):
