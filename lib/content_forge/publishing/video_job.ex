@@ -27,6 +27,7 @@ defmodule ContentForge.Publishing.VideoJob do
     field :per_step_r2_keys, :map
     field :error, :string
     field :feature_flag, :boolean, default: true
+    field :media_forge_job_id, :string
 
     belongs_to :draft, ContentForge.ContentGeneration.Draft
     belongs_to :product, ContentForge.Products.Product
@@ -42,7 +43,8 @@ defmodule ContentForge.Publishing.VideoJob do
       :status,
       :per_step_r2_keys,
       :error,
-      :feature_flag
+      :feature_flag,
+      :media_forge_job_id
     ])
     |> validate_required([:draft_id, :product_id])
     |> validate_inclusion(:status, @statuses)
@@ -50,7 +52,7 @@ defmodule ContentForge.Publishing.VideoJob do
 
   def status_changeset(video_job, attrs) do
     video_job
-    |> cast(attrs, [:status, :per_step_r2_keys, :error])
+    |> cast(attrs, [:status, :per_step_r2_keys, :error, :media_forge_job_id])
     |> validate_inclusion(:status, @statuses)
     |> clear_error_on_status_change()
   end

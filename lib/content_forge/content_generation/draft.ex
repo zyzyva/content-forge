@@ -13,6 +13,8 @@ defmodule ContentForge.ContentGeneration.Draft do
     field :raw_response, :string
     field :status, :string
     field :image_url, :string
+    field :media_forge_job_id, :string
+    field :error, :string
 
     belongs_to :product, ContentForge.Products.Product
     belongs_to :content_brief, ContentForge.Products.ContentBrief
@@ -38,7 +40,9 @@ defmodule ContentForge.ContentGeneration.Draft do
       :raw_response,
       :status,
       :repurposed_from_id,
-      :image_url
+      :image_url,
+      :media_forge_job_id,
+      :error
     ])
     |> validate_required([:product_id, :content, :platform, :content_type, :generating_model])
     |> validate_inclusion(:platform, ~w(twitter linkedin reddit facebook instagram blog youtube))
@@ -53,7 +57,7 @@ defmodule ContentForge.ContentGeneration.Draft do
   end
 
   defp put_default_status(changeset) do
-    case get_change(changeset, :status) do
+    case get_field(changeset, :status) do
       nil -> put_change(changeset, :status, "draft")
       _ -> changeset
     end

@@ -23,6 +23,12 @@ end
 config :content_forge, ContentForgeWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
+config :content_forge, :media_forge,
+  base_url: System.get_env("MEDIA_FORGE_BASE_URL", "http://192.168.1.37:5001"),
+  secret: System.get_env("MEDIA_FORGE_SECRET"),
+  webhook_secret:
+    System.get_env("MEDIA_FORGE_WEBHOOK_SECRET") || System.get_env("MEDIA_FORGE_SECRET")
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||

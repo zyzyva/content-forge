@@ -18,6 +18,7 @@ defmodule ContentForge.Jobs.ImageGenerator do
 
   alias ContentForge.ContentGeneration
   alias ContentForge.MediaForge
+  alias ContentForge.MediaForge.JobResolver
   alias ContentForge.Products
 
   require Logger
@@ -86,21 +87,23 @@ defmodule ContentForge.Jobs.ImageGenerator do
 
   # --- Media Forge response handling -----------------------------------------
 
-  defp handle_generate_response({:ok, %{"image_url" => url}}, draft) when is_binary(url) do
-    persist_image(draft, url)
-  end
-
-  defp handle_generate_response({:ok, %{"url" => url}}, draft) when is_binary(url) do
-    persist_image(draft, url)
-  end
-
-  defp handle_generate_response({:ok, %{"result" => %{"image_url" => url}}}, draft)
+  defp handle_generate_response({:ok, %{"image_url" => url} = body}, draft)
        when is_binary(url) do
-    persist_image(draft, url)
+    apply_sync_done(draft, body)
+  end
+
+  defp handle_generate_response({:ok, %{"url" => url} = body}, draft) when is_binary(url) do
+    apply_sync_done(draft, body)
+  end
+
+  defp handle_generate_response({:ok, %{"result" => %{"image_url" => url}} = body}, draft)
+       when is_binary(url) do
+    apply_sync_done(draft, body)
   end
 
   defp handle_generate_response({:ok, %{"jobId" => job_id}}, draft) when is_binary(job_id) do
     Logger.info("ImageGenerator: draft #{draft.id} awaiting Media Forge job #{job_id}")
+    {:ok, draft} = ContentGeneration.update_draft(draft, %{media_forge_job_id: job_id})
     poll_until_done(job_id, draft, poll_max_attempts())
   end
 
@@ -152,6 +155,20 @@ defmodule ContentForge.Jobs.ImageGenerator do
     {:error, reason}
   end
 
+  defp apply_sync_done(draft, body) do
+    case JobResolver.apply_image_done(draft, body) do
+      {:ok, :done, url} ->
+        Logger.info("ImageGenerator: attached image to draft #{draft.id}")
+        {:ok, url}
+
+      {:ok, :failed, reason} ->
+        {:cancel, reason}
+
+      {:ok, :noop} ->
+        {:ok, draft.image_url || :already_attached}
+    end
+  end
+
   # --- polling ---------------------------------------------------------------
 
   defp poll_until_done(_job_id, _draft, 0), do: {:error, :media_forge_job_poll_timeout}
@@ -164,9 +181,21 @@ defmodule ContentForge.Jobs.ImageGenerator do
 
   defp handle_poll_response({:ok, %{"status" => status} = body}, _job_id, draft, _attempts_left)
        when status in ["done", "completed", "succeeded"] do
-    body
-    |> extract_result_url()
-    |> persist_or_fail(draft, body)
+    case JobResolver.apply_image_done(draft, body) do
+      {:ok, :done, url} ->
+        Logger.info("ImageGenerator: attached image to draft #{draft.id}")
+        {:ok, url}
+
+      {:ok, :failed, reason} ->
+        Logger.error(
+          "ImageGenerator: draft #{draft.id} Media Forge reported done but no image url in #{inspect(body)}"
+        )
+
+        {:cancel, reason}
+
+      {:ok, :noop} ->
+        {:ok, draft.image_url || :already_attached}
+    end
   end
 
   defp handle_poll_response({:ok, %{"status" => status} = body}, job_id, draft, _attempts_left)
@@ -177,7 +206,8 @@ defmodule ContentForge.Jobs.ImageGenerator do
       "ImageGenerator: draft #{draft.id} Media Forge job #{job_id} failed: #{inspect(reason)}"
     )
 
-    {:error, {:media_forge_job_failed, reason}}
+    _ = JobResolver.apply_image_failed(draft, to_string(reason))
+    {:cancel, "Media Forge image job failed: #{inspect(reason)}"}
   end
 
   defp handle_poll_response({:ok, _body}, job_id, draft, attempts_left) do
@@ -199,30 +229,6 @@ defmodule ContentForge.Jobs.ImageGenerator do
     )
 
     err
-  end
-
-  defp extract_result_url(%{"result" => %{"image_url" => url}}) when is_binary(url), do: url
-  defp extract_result_url(%{"result" => %{"url" => url}}) when is_binary(url), do: url
-  defp extract_result_url(%{"image_url" => url}) when is_binary(url), do: url
-  defp extract_result_url(%{"url" => url}) when is_binary(url), do: url
-  defp extract_result_url(_), do: nil
-
-  defp persist_or_fail(nil, draft, body) do
-    Logger.error(
-      "ImageGenerator: draft #{draft.id} Media Forge reported done but no image url in #{inspect(body)}"
-    )
-
-    {:cancel, "Media Forge returned done without an image url"}
-  end
-
-  defp persist_or_fail(url, draft, _body), do: persist_image(draft, url)
-
-  # --- persistence -----------------------------------------------------------
-
-  defp persist_image(draft, url) do
-    {:ok, _} = ContentGeneration.update_draft(draft, %{image_url: url})
-    Logger.info("ImageGenerator: attached image to draft #{draft.id}")
-    {:ok, url}
   end
 
   # --- prompt ----------------------------------------------------------------

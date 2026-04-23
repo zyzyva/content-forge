@@ -21,6 +21,7 @@ defmodule ContentForge.Jobs.VideoProducer do
   use Oban.Worker, max_attempts: 3
 
   alias ContentForge.{ContentGeneration, MediaForge, Products, Publishing}
+  alias ContentForge.MediaForge.JobResolver
   alias ContentForge.Publishing.VideoJob
 
   require Logger
@@ -335,12 +336,15 @@ defmodule ContentForge.Jobs.VideoProducer do
   defp handle_render_response({:ok, body}, video_job) when is_map(body) do
     case {extract_render_key(body), body["jobId"]} do
       {key, _} when is_binary(key) ->
-        complete_encoding(video_job, key)
+        apply_done(video_job, %{"result" => %{"r2_key" => key}})
 
       {nil, job_id} when is_binary(job_id) ->
         Logger.info(
           "VideoProducer: video job #{video_job.id} awaiting Media Forge render job #{job_id}"
         )
+
+        {:ok, video_job} =
+          Publishing.update_video_job(video_job, %{media_forge_job_id: job_id})
 
         poll_until_rendered(job_id, video_job, poll_max_attempts())
 
@@ -384,6 +388,21 @@ defmodule ContentForge.Jobs.VideoProducer do
     {:error, inspect(reason), video_job}
   end
 
+  defp apply_done(video_job, body) do
+    case JobResolver.apply_video_done(video_job, body) do
+      {:ok, :done, key} ->
+        Logger.info("VideoProducer: Media Forge render complete - #{key}")
+        {:ok, key, Publishing.get_video_job(video_job.id)}
+
+      {:ok, :failed, reason} ->
+        {:cancel, reason, Publishing.get_video_job(video_job.id)}
+
+      {:ok, :noop} ->
+        reloaded = Publishing.get_video_job(video_job.id)
+        {:ok, reloaded.per_step_r2_keys["final"], reloaded}
+    end
+  end
+
   # --- polling ---------------------------------------------------------------
 
   defp poll_until_rendered(_job_id, video_job, 0) do
@@ -398,12 +417,26 @@ defmodule ContentForge.Jobs.VideoProducer do
 
   defp handle_poll_response({:ok, %{"status" => status} = body}, _job_id, video_job, _attempts)
        when status in ["done", "completed", "succeeded"] do
-    case extract_render_key(body) do
-      nil ->
-        fail_video_job(video_job, "Media Forge reported done without an output key")
+    case JobResolver.apply_video_done(video_job, body) do
+      {:ok, :done, key} ->
+        Logger.info("VideoProducer: Media Forge render complete - #{key}")
+        {:ok, reloaded} = {:ok, Publishing.get_video_job(video_job.id)}
+        {:ok, key, reloaded}
 
-      key ->
-        complete_encoding(video_job, key)
+      {:ok, :failed, reason} ->
+        {:cancel, reason, Publishing.get_video_job(video_job.id)}
+
+      {:ok, :noop} ->
+        # Already terminal - surface the current state without retry.
+        reloaded = Publishing.get_video_job(video_job.id)
+
+        case reloaded.status do
+          "encoded" ->
+            {:ok, reloaded.per_step_r2_keys["final"], reloaded}
+
+          _ ->
+            {:cancel, reloaded.error || "video job already in terminal state", reloaded}
+        end
     end
   end
 
@@ -415,7 +448,14 @@ defmodule ContentForge.Jobs.VideoProducer do
       "VideoProducer: video job #{video_job.id} Media Forge render job #{job_id} failed: #{inspect(reason)}"
     )
 
-    fail_video_job(video_job, "Media Forge render job failed: #{inspect(reason)}")
+    _ =
+      JobResolver.apply_video_failed(
+        video_job,
+        "Media Forge render job failed: #{inspect(reason)}"
+      )
+
+    {:cancel, "Media Forge render job failed: #{inspect(reason)}",
+     Publishing.get_video_job(video_job.id)}
   end
 
   defp handle_poll_response({:ok, _body}, job_id, video_job, attempts_left) do
@@ -437,14 +477,6 @@ defmodule ContentForge.Jobs.VideoProducer do
 
   # --- persistence helpers ---------------------------------------------------
 
-  defp complete_encoding(video_job, final_r2_key) do
-    {:ok, encoded_job} =
-      Publishing.update_video_job_status(video_job, "encoded", %{"final" => final_r2_key})
-
-    Logger.info("VideoProducer: Media Forge render complete - #{final_r2_key}")
-    {:ok, final_r2_key, encoded_job}
-  end
-
   defp pause_at_assembled(video_job, reason) do
     Logger.warning(
       "VideoProducer: Media Forge unavailable; leaving video job #{video_job.id} at assembled - #{reason}"
@@ -457,10 +489,8 @@ defmodule ContentForge.Jobs.VideoProducer do
   defp fail_video_job(video_job, reason) do
     Logger.error("VideoProducer: marking video job #{video_job.id} failed: #{reason}")
 
-    {:ok, failed_job} =
-      video_job
-      |> Publishing.update_video_job_status("failed", %{})
-      |> then(fn {:ok, job} -> Publishing.update_video_job(job, %{error: reason}) end)
+    _ = JobResolver.apply_video_failed(video_job, reason)
+    failed_job = Publishing.get_video_job(video_job.id)
 
     {:cancel, reason, failed_job}
   end

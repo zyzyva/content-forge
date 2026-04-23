@@ -193,6 +193,12 @@ defmodule ContentForge.Publishing do
     |> Repo.one()
   end
 
+  def get_video_job_by_media_forge_job_id(nil), do: nil
+
+  def get_video_job_by_media_forge_job_id(job_id) when is_binary(job_id) do
+    Repo.get_by(VideoJob, media_forge_job_id: job_id)
+  end
+
   def create_video_job(attrs) do
     %VideoJob{}
     |> VideoJob.changeset(attrs)

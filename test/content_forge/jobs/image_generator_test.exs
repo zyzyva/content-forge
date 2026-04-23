@@ -84,7 +84,7 @@ defmodule ContentForge.Jobs.ImageGeneratorTest do
       assert Agent.get(counter, & &1) == 4
     end
 
-    test "stops polling and returns an error when the Media Forge job reports failure",
+    test "stops polling, marks the draft blocked, and cancels when the job reports failure",
          %{draft: draft} do
       Req.Test.stub(@stub_key, fn conn ->
         respond_failed_async(conn)
@@ -92,14 +92,19 @@ defmodule ContentForge.Jobs.ImageGeneratorTest do
 
       log =
         capture_log(fn ->
-          assert {:error, {:media_forge_job_failed, "provider timed out"}} =
+          assert {:cancel, reason} =
                    perform_job(ImageGenerator, %{"draft_id" => draft.id})
+
+          assert reason =~ "Media Forge image job failed"
+          assert reason =~ "provider timed out"
         end)
 
       assert log =~ "failed"
 
       updated = ContentGeneration.get_draft!(draft.id)
       assert updated.image_url == nil
+      assert updated.status == "blocked"
+      assert updated.error =~ "provider timed out"
     end
 
     test "returns an error after exhausting poll_max_attempts without a terminal state",
@@ -395,12 +400,14 @@ defmodule ContentForge.Jobs.ImageGeneratorTest do
 
       log =
         capture_log(fn ->
-          assert {:cancel, "Media Forge returned done without an image url"} =
+          assert {:cancel, "Media Forge reported done without an image url"} =
                    perform_job(ImageGenerator, %{"draft_id" => draft.id})
         end)
 
       assert log =~ "reported done but no image url"
-      assert ContentGeneration.get_draft!(draft.id).image_url == nil
+      updated = ContentGeneration.get_draft!(draft.id)
+      assert updated.image_url == nil
+      assert updated.status == "blocked"
     end
 
     test "poll done response with top-level image_url persists it", %{draft: draft} do

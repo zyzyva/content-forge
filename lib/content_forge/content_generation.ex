@@ -152,6 +152,12 @@ defmodule ContentForge.ContentGeneration do
 
   def get_draft(id), do: Repo.get(Draft, id)
 
+  def get_draft_by_media_forge_job_id(nil), do: nil
+
+  def get_draft_by_media_forge_job_id(job_id) when is_binary(job_id) do
+    Repo.get_by(Draft, media_forge_job_id: job_id)
+  end
+
   def create_draft(attrs \\ %{}) do
     %Draft{}
     |> Draft.changeset(attrs)

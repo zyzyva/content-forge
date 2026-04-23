@@ -18,6 +18,16 @@ defmodule ContentForgeWeb.Router do
     plug ContentForgeWeb.Plugs.ApiAuth
   end
 
+  pipeline :media_forge_webhook do
+    plug :accepts, ["json"]
+    plug ContentForgeWeb.Plugs.MediaForgeWebhookVerifier
+  end
+
+  scope "/webhooks", ContentForgeWeb do
+    pipe_through :media_forge_webhook
+    post "/media_forge", MediaForgeWebhookController, :handle
+  end
+
   scope "/", ContentForgeWeb do
     pipe_through :browser
 
