@@ -84,8 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 15.1c: Schedule calendar visualization
 
-Status: READY FOR REVIEW
-Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates; one formatter re-pass on HEEx comment indentation + single-child `:for` inline collapse), mix test 604/0 (598 prior + 6 new). Credo by content unchanged vs post-15.1b: zero new findings.
+Status: DONE
+Merged: master @ `514f8c6` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 604-0; credo unchanged. Accessibility passes: role=grid/gridcell, role=dialog + aria-modal, aria-label on interactives, aria-hidden on decorative icons, focus rings, real buttons not div handlers. 12 pattern-matched function heads. Dead code cleanup. **Phase 15.1 UX pass complete.**
 Note: Week-view calendar + draft preview drawer on the existing Schedule LiveView per BUILDPLAN 15.1c.
 
 **Week-view** added under `@view == "calendar"` (replacing the old simple 22-day grid):

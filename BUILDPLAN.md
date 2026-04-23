@@ -506,7 +506,7 @@ Pick up after the feature waves clear. Any of these can be inserted earlier if i
 - **15.1b Script-gate threshold view on video page** ✅ Shipped `416eb1a`.
   - Add a view on the existing video status page that shows each candidate script's composite score alongside the current gate threshold, with a clear Promote/Override control. A script with score below threshold can still be manually promoted, with the override recorded on the `VideoJob` and surfaced in the status board.
 
-- **15.1c Schedule calendar visualization**
+- **15.1c Schedule calendar visualization** ✅ Shipped `514f8c6`.
   - Add a week-view calendar on the schedule page showing upcoming publishes by day + platform. Each cell shows the platform icon + draft snippet; clicking opens the draft preview. Mobile view collapses to a stacked daily list.
 
 - **15.2 WCAG AA audit**
@@ -516,6 +516,14 @@ Pick up after the feature waves clear. Any of these can be inserted earlier if i
 - **15.3 End-to-end integration tests**
   - At least one multi-step pipeline test per feature: product registered → brief generated → variants ranked → published → metrics collected → winner repurposed.
   - Against stubbed externals; live smoke is a separate manual runbook.
+  - **Slicing note:** One end-to-end happy-path test first (15.3.1) to prove the pipeline hangs together with shared stub helpers; follow-ups add edge-case paths (15.3.2+) if gaps appear during the happy-path run. Coverage uplift (15.3a) is a separate slice that trails 15.3.
+
+- **15.3.1 End-to-end happy-path: product → brief → variants → rank → publish → metrics → repurpose**
+  - Single integration test that walks the whole spine: create a product with a voice profile, stub `LLM.Anthropic` + `LLM.Gemini` to return deterministic brief and variant content, stub `MultiModelRanker`'s per-model stub to return scores that make one draft clearly best, stub the platform publisher clients (Twitter + LinkedIn) to accept, stub `MetricsPoller`'s platform calls to report engagement that labels the draft a winner, and assert that `WinnerRepurposingEngine` eventually enqueues cross-platform repurposed drafts from the original winner.
+  - Shared test helpers at `test/support/e2e_stubs.ex` set up `Req.Test` stubs for every external client the pipeline touches in one call. Individual tests opt into which stubs they need. No live HTTP anywhere in the suite.
+  - Test runs through `Oban.Testing.perform_job/2` calls for each worker in order (`ContentBriefGenerator`, `OpenClawBulkGenerator` is skipped since it's blocked — the test hand-creates drafts or uses `AssetBundleDraftGenerator` instead, `MultiModelRanker`, `Publisher`, `MetricsPoller`, `WinnerRepurposingEngine`) rather than relying on Oban's actual dispatcher, so the test is deterministic without sleeps.
+  - Assertions: at each stage the draft has the expected status (`draft → ranked → approved → published → winner`), the right records exist (`ContentBrief`, `DraftScore` rows per model, `PublishedPost`, `ScoreboardEntry`, repurposed `Draft` rows), and no synthetic data leaked to the DB on any step.
+  - Test does NOT exercise OpenClaw bulk generation, real Media Forge calls, or SMS — those are separate E2E slices if/when their externals are available.
 
 - **15.3a Coverage uplift and threshold tightening**
   - Baseline is `test_coverage: [summary: [threshold: 0]]` in `mix.exs` (acknowledged debt, overall ~18%). Pair with 15.3 work: as E2E tests land, raise the per-module threshold in tranches (start at 25, then 50, then back toward Elixir's default of 90).
