@@ -142,7 +142,7 @@ Phase exit criteria: end-to-end image generation, image processing, and video re
   - On transient errors let Oban retry. On permanent errors, cancel the job with the error recorded; no retry until the upstream is fixed.
   - Tests: happy-path brief generation, missing-key skip that records no brief, transient error triggers retry, permanent error cancels the job. Stubbed Anthropic responses only.
 
-- **11.1b (infra) Google Gemini LLM client module**
+- **11.1b (infra) Google Gemini LLM client module** ✅ Shipped `c90aa38`.
   - Mirror of 11.1 (infra) for Anthropic, targeting Google's Generative Language API.
   - Public function shape is the same as Anthropic's completion function so both providers are substitutable at the call site. Config namespace lives at `:content_forge, :llm, :gemini` with `:api_key`, `:default_model`, `:max_tokens`. API key authentication follows Google's header or URL-param convention as currently documented; the slice picks whichever keeps the client idiomatic with Req.
   - Error classification matches Anthropic and MediaForge: 5xx and 429 transient, 4xx permanent, timeout and connection failure transient-network, 3xx unexpected-status, catch-all pass-through. Missing API key returns `{:error, :not_configured}` with zero HTTP I/O.
