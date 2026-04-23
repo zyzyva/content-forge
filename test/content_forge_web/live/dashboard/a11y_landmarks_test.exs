@@ -101,4 +101,52 @@ defmodule ContentForgeWeb.Live.Dashboard.A11yLandmarksTest do
       assert html =~ ~s|aria-label="Back to products list"|
     end
   end
+
+  describe "/dashboard/drafts" do
+    test "has one <h1>, a <main> landmark, tablist filter, labeled product select",
+         %{conn: conn} do
+      {_view, html} = live_at(conn, ~p"/dashboard/drafts")
+
+      assert count_matches(html, ~r|<h1\b|) == 1
+      assert count_matches(html, ~r|<main\b|) == 1
+      assert html =~ ~s|id="main-content"|
+      assert html =~ ~s|aria-labelledby="page-title"|
+
+      # Filter tabs: role=tablist + aria-label + at least one
+      # aria-selected="true" among the tabs.
+      assert html =~ ~s|role="tablist"|
+      assert html =~ ~s|aria-label="Draft status filter"|
+      assert html =~ ~s|role="tab"|
+      assert html =~ ~s|aria-selected="true"|
+      assert html =~ ~s|aria-selected="false"|
+
+      # Product-filter select has an accessible name.
+      assert html =~ ~s|aria-label="Filter by product"|
+    end
+  end
+
+  describe "/dashboard/schedule" do
+    test "has one <h1>, a <main> landmark, date-nav aria-labels, role=tablist view switcher",
+         %{conn: conn} do
+      {_view, html} = live_at(conn, ~p"/dashboard/schedule")
+
+      assert count_matches(html, ~r|<h1\b|) == 1
+      assert count_matches(html, ~r|<main\b|) == 1
+      assert html =~ ~s|id="main-content"|
+      assert html =~ ~s|aria-labelledby="page-title"|
+
+      # Icon-only date navigation buttons have aria-labels.
+      assert html =~ ~s|aria-label="Previous week"|
+      assert html =~ ~s|aria-label="Next week"|
+      assert html =~ ~s|aria-label="Jump to today"|
+
+      # View switcher is a real tablist.
+      assert html =~ ~s|aria-label="View mode"|
+      assert html =~ ~s|role="tab"|
+      assert html =~ ~s|aria-selected="true"|
+
+      # Product-filter select has an accessible name.
+      assert html =~ ~s|aria-label="Filter by product"|
+    end
+  end
 end

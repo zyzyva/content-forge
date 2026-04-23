@@ -137,70 +137,43 @@ defmodule ContentForgeWeb.Live.Dashboard.Drafts.ReviewLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="space-y-6">
-      <div>
-        <h1 class="text-2xl font-bold">Draft Review Queue</h1>
+    <main id="main-content" aria-labelledby="page-title" class="space-y-6">
+      <header>
+        <h1 id="page-title" class="text-2xl font-bold">Draft Review Queue</h1>
         <p class="text-base-content/70">Review and approve generated drafts</p>
-      </div>
-      
-    <!-- Filters -->
-      <div class="flex flex-col sm:flex-row gap-4">
-        <div class="tabs tabs-boxed">
+      </header>
+
+      <section aria-label="Filters" class="flex flex-col sm:flex-row gap-4">
+        <div role="tablist" aria-label="Draft status filter" class="tabs tabs-boxed">
           <button
-            class={["tab", @filter == "all" && "tab-active"]}
+            :for={{value, label} <- status_tabs()}
+            role="tab"
+            id={"filter-tab-#{value}"}
+            aria-selected={if @filter == value, do: "true", else: "false"}
+            tabindex={if @filter == value, do: "0", else: "-1"}
+            class={["tab", @filter == value && "tab-active"]}
             phx-click="filter"
-            phx-value-filter="all"
+            phx-value-filter={value}
           >
-            All
-          </button>
-          <button
-            class={["tab", @filter == "draft" && "tab-active"]}
-            phx-click="filter"
-            phx-value-filter="draft"
-          >
-            Draft
-          </button>
-          <button
-            class={["tab", @filter == "ranked" && "tab-active"]}
-            phx-click="filter"
-            phx-value-filter="ranked"
-          >
-            Ranked
-          </button>
-          <button
-            class={["tab", @filter == "approved" && "tab-active"]}
-            phx-click="filter"
-            phx-value-filter="approved"
-          >
-            Approved
-          </button>
-          <button
-            class={["tab", @filter == "rejected" && "tab-active"]}
-            phx-click="filter"
-            phx-value-filter="rejected"
-          >
-            Rejected
-          </button>
-          <button
-            class={["tab", @filter == "blocked" && "tab-active"]}
-            phx-click="filter"
-            phx-value-filter="blocked"
-          >
-            Blocked
+            {label}
           </button>
         </div>
 
-        <select
-          class="select select-bordered"
-          name="product"
-          phx-change="filter_product"
-        >
-          <option value="">All Products</option>
-          <option :for={product <- @products} value={product.id}>
-            {product.name}
-          </option>
-        </select>
-      </div>
+        <label class="form-control">
+          <span class="label-text sr-only">Filter by product</span>
+          <select
+            class="select select-bordered"
+            name="product"
+            aria-label="Filter by product"
+            phx-change="filter_product"
+          >
+            <option value="">All Products</option>
+            <option :for={product <- @products} value={product.id}>
+              {product.name}
+            </option>
+          </select>
+        </label>
+      </section>
       
     <!-- Stats -->
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -230,54 +203,83 @@ defmodule ContentForgeWeb.Live.Dashboard.Drafts.ReviewLive do
       
     <!-- Drafts List -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div class="space-y-2">
-          <h2 class="font-semibold">Drafts ({length(@drafts)})</h2>
-          <div class="overflow-y-auto max-h-[600px] space-y-2">
-            <div
-              :for={item <- @drafts}
-              class={"card bg-base-200 hover:bg-base-300 cursor-pointer transition-colors #{if @selected_draft && @selected_draft.draft.id == item.draft.id, do: "border-2 border-primary"}"}
-              phx-click="select_draft"
-              phx-value-id={item.draft.id}
-            >
-              <div class="card-body p-4">
-                <div class="flex justify-between items-start">
-                  <div>
-                    <div class="flex items-center gap-2">
-                      <span class="font-semibold">{item.draft.platform}</span>
-                      <span class="badge badge-sm">{item.draft.content_type}</span>
+        <section aria-labelledby="drafts-list-heading" class="space-y-2">
+          <h2 id="drafts-list-heading" class="font-semibold">
+            Drafts ({length(@drafts)})
+          </h2>
+          <ul class="overflow-y-auto max-h-[600px] space-y-2">
+            <li :for={item <- @drafts} class="list-none">
+              <button
+                type="button"
+                class={[
+                  "w-full text-left card bg-base-200 hover:bg-base-300 transition-colors focus:outline-none focus:ring focus:ring-primary",
+                  @selected_draft && @selected_draft.draft.id == item.draft.id &&
+                    "border-2 border-primary"
+                ]}
+                phx-click="select_draft"
+                phx-value-id={item.draft.id}
+                aria-label={"Select draft on #{item.draft.platform} from #{item.draft.generating_model}"}
+                aria-pressed={
+                  if @selected_draft && @selected_draft.draft.id == item.draft.id,
+                    do: "true",
+                    else: "false"
+                }
+              >
+                <div class="card-body p-4">
+                  <div class="flex justify-between items-start">
+                    <div>
+                      <div class="flex items-center gap-2">
+                        <span class="font-semibold">{item.draft.platform}</span>
+                        <span class="badge badge-sm">{item.draft.content_type}</span>
+                      </div>
+                      <p class="text-xs text-base-content/70 mt-1">
+                        {item.draft.generating_model} | {Components.format_datetime(
+                          item.draft.inserted_at
+                        )}
+                      </p>
                     </div>
-                    <p class="text-xs text-base-content/70 mt-1">
-                      {item.draft.generating_model} | {Components.format_datetime(
-                        item.draft.inserted_at
-                      )}
-                    </p>
-                  </div>
-                  <div class="text-right">
-                    <Components.status_badge status={item.draft.status} />
-                    <div :if={item.composite} class="mt-2">
-                      <Components.score_display score={item.composite} />
+                    <div class="text-right">
+                      <Components.status_badge status={item.draft.status} />
+                      <div :if={item.composite} class="mt-2">
+                        <Components.score_display score={item.composite} />
+                      </div>
                     </div>
                   </div>
+                  <p class="text-sm mt-2 line-clamp-2">
+                    {String.slice(item.draft.content || "", 0, 150)}...
+                  </p>
                 </div>
-                <p class="text-sm mt-2 line-clamp-2">
-                  {String.slice(item.draft.content || "", 0, 150)}...
-                </p>
-              </div>
-            </div>
+              </button>
+            </li>
+          </ul>
 
-            <div :if={length(@drafts) == 0} class="text-center py-8 text-base-content/70">
-              No drafts found
-            </div>
-          </div>
-        </div>
+          <p
+            :if={length(@drafts) == 0}
+            class="text-center py-8 text-base-content/70"
+            role="status"
+          >
+            No drafts found
+          </p>
+        </section>
         
     <!-- Detail Panel -->
-        <div :if={@selected_draft} class="card bg-base-200 sticky top-4">
+        <aside
+          :if={@selected_draft}
+          role="region"
+          aria-labelledby="draft-details-heading"
+          class="card bg-base-200 sticky top-4"
+        >
           <div class="card-body">
             <div class="flex justify-between items-start">
-              <h2 class="card-title">Draft Details</h2>
-              <button phx-click="close_detail" class="btn btn-ghost btn-sm btn-circle">
-                <.icon name="hero-x" class="size-4" />
+              <h2 id="draft-details-heading" class="card-title">Draft Details</h2>
+              <button
+                phx-click="close_detail"
+                class="btn btn-ghost btn-sm btn-circle"
+                aria-label="Close draft details"
+              >
+                <span aria-hidden="true">
+                  <.icon name="hero-x" class="size-4" />
+                </span>
               </button>
             </div>
             
@@ -341,10 +343,21 @@ defmodule ContentForgeWeb.Live.Dashboard.Drafts.ReviewLive do
               </button>
             </div>
           </div>
-        </div>
+        </aside>
       </div>
-    </div>
+    </main>
     """
+  end
+
+  defp status_tabs do
+    [
+      {"all", "All"},
+      {"draft", "Draft"},
+      {"ranked", "Ranked"},
+      {"approved", "Approved"},
+      {"rejected", "Rejected"},
+      {"blocked", "Blocked"}
+    ]
   end
 
   defp avg_score([]), do: "—"

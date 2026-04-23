@@ -82,6 +82,44 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 15.2b: WCAG AA audit on drafts review + schedule
+
+Status: READY FOR REVIEW
+Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates), mix test 611/0 (609 prior + 2 new). Credo by content unchanged vs post-15.2a: zero new findings.
+Note: WCAG AA audit + fixes on the two dashboard listing/timeline pages per BUILDPLAN 15.2b. Three remaining pages (video / performance / clips / sms / providers) are separate follow-up slices.
+
+**Pages touched**:
+- `/dashboard/drafts` (`Live.Dashboard.Drafts.ReviewLive`)
+- `/dashboard/schedule` (`Live.Dashboard.Schedule.Live`)
+
+**Findings fixed on /dashboard/drafts**:
+- No `<main>` landmark. Added `<main id="main-content" aria-labelledby="page-title">` wrapping the whole page + h1 with `id="page-title"`.
+- Six filter buttons lived inside a plain `<div class="tabs tabs-boxed">` with no ARIA metadata — not a real tablist to assistive tech. Replaced with a proper `<div role="tablist" aria-label="Draft status filter">` containing `<button role="tab" aria-selected="true|false" tabindex="0|-1">` for each status. `tabindex` rolls to `0` only on the active tab so keyboard users tab into the group once and then navigate inside it; tests confirm the initial render has exactly one `aria-selected="true"`.
+- Consolidated the six inline tab buttons into a single `:for` loop driven by a new `status_tabs/0` helper (six tuples). Cleaner + matches future follow-up slices that will share the pattern.
+- Product-filter `<select>` had no label. Wrapped in `<label>` with `sr-only` label-text + `aria-label="Filter by product"`.
+- Draft cards in the list were `<div phx-click>` (not keyboard-operable). Promoted to real `<button type="button">` elements inside a `<ul>`/`<li>` list with `aria-pressed={selected?}`, dynamic `aria-label` interpolating platform + generating_model, and `focus:outline-none focus:ring focus:ring-primary` for visible focus.
+- "No drafts found" empty-state `<div>` promoted to `<p role="status">` so assistive tech announces when the filter empties the list.
+- Detail panel was a `<div>`; promoted to `<aside role="region" aria-labelledby="draft-details-heading">` with the h2 carrying `id="draft-details-heading"`.
+- Detail close button was icon-only; now `aria-label="Close draft details"` + icon wrapped in `<span aria-hidden="true">`.
+
+**Findings fixed on /dashboard/schedule**:
+- No `<main>` landmark. Same pattern: `<main id="main-content" aria-labelledby="page-title">`, h1 with id.
+- Product filter `<select>` wrapped in `<label>` with `sr-only` label-text + `aria-label="Filter by product"`.
+- Date-navigation buttons (prev/next chevrons) were icon-only. Now `aria-label="Previous week"` / `aria-label="Next week"` with icons wrapped in `<span aria-hidden="true">`. The "Today" button picked up `aria-label="Jump to today"` since the visible word alone could be ambiguous to screen-reader users outside context.
+- Timeline/Calendar view switcher was a plain `<div class="tabs">`. Now `<div role="tablist" aria-label="View mode">` with each tab `role="tab" aria-selected aria-tabindex`-managed the same way as the drafts page.
+- Date-range display gets `aria-live="polite"` so the text read on forward/back navigation is announced.
+- Date nav section wrapped in `<nav aria-label="Date navigation">` so the whole region is a rotor entry point.
+
+**Heading hierarchy** verified on both pages: exactly one `<h1>`, `<h2>`/`<h3>` for sub-regions, no level skips. Sections that had no visible heading picked up an `sr-only` heading so `aria-labelledby` has a concrete target.
+
+**2 new tests** in `test/content_forge_web/live/dashboard/a11y_landmarks_test.exs` (the file already hosts the 15.2a landmark tests): for each of drafts + schedule, assert exactly one `<h1>`, one `<main>`, `id="main-content"`, `aria-labelledby="page-title"`, plus page-specific load-bearing assertions:
+- drafts: `role="tablist"` + `aria-label="Draft status filter"` + at least one `aria-selected="true"` AND at least one `aria-selected="false"`, and the product-filter `aria-label="Filter by product"`.
+- schedule: icon-only date nav aria-labels ("Previous week", "Next week", "Jump to today"), view-switcher `aria-label="View mode"` + `role="tab"` + `aria-selected="true"`, and `aria-label="Filter by product"`.
+
+**Not in scope this slice** (documented as follow-up territory): contrast math verification; full keyboard-arrow navigation inside the tablists (ARIA pattern says left/right arrows should move focus between tabs within a tablist — the `tabindex` roving is wired but the JS side of the arrow-key handler isn't, and that's 15.2d territory); remaining dashboard pages (video/performance/clips/sms/providers) are separate slices.
+
+Touched files: `lib/content_forge_web/live/dashboard/drafts/review_live.ex` (main + tablist + labeled select + kbd-operable cards + aria-hidden close icon + status_tabs helper), `lib/content_forge_web/live/dashboard/schedule/live.ex` (main + tablist + labeled select + aria-labeled icon nav buttons + date nav landmark + aria-live on range display), `test/content_forge_web/live/dashboard/a11y_landmarks_test.exs` (2 new describe blocks), `BUILDLOG.md`.
+
 ### Phase 15.2a: WCAG AA audit on dashboard hub + products list + product detail
 
 Status: DONE

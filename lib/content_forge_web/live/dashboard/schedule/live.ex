@@ -152,42 +152,73 @@ defmodule ContentForgeWeb.Live.Dashboard.Schedule.Live do
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="space-y-6">
-      <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+    <main id="main-content" aria-labelledby="page-title" class="space-y-6">
+      <header class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h1 class="text-2xl font-bold">Schedule</h1>
+          <h1 id="page-title" class="text-2xl font-bold">Schedule</h1>
           <p class="text-base-content/70">Calendar and timeline of posts</p>
         </div>
         <div class="flex gap-2">
-          <select
-            class="select select-bordered"
-            name="product"
-            phx-change="filter_product"
-          >
-            <option value="">All Products</option>
-            <option :for={product <- @products} value={product.id}>
-              {product.name}
-            </option>
-          </select>
+          <label class="form-control">
+            <span class="label-text sr-only">Filter by product</span>
+            <select
+              class="select select-bordered"
+              name="product"
+              aria-label="Filter by product"
+              phx-change="filter_product"
+            >
+              <option value="">All Products</option>
+              <option :for={product <- @products} value={product.id}>
+                {product.name}
+              </option>
+            </select>
+          </label>
         </div>
-      </div>
-      
-    <!-- Date Navigation -->
-      <div class="flex items-center justify-between">
+      </header>
+
+      <nav aria-label="Date navigation" class="flex items-center justify-between">
         <div class="flex gap-2">
-          <button class="btn btn-ghost btn-sm" phx-click="navigate_dates" phx-value-direction="prev">
-            <.icon name="hero-chevron-left" class="size-4" />
+          <button
+            class="btn btn-ghost btn-sm"
+            phx-click="navigate_dates"
+            phx-value-direction="prev"
+            aria-label="Previous week"
+          >
+            <span aria-hidden="true">
+              <.icon name="hero-chevron-left" class="size-4" />
+            </span>
           </button>
-          <button class="btn btn-ghost btn-sm" phx-click="today">Today</button>
-          <button class="btn btn-ghost btn-sm" phx-click="navigate_dates" phx-value-direction="next">
-            <.icon name="hero-chevron-right" class="size-4" />
+          <button
+            class="btn btn-ghost btn-sm"
+            phx-click="today"
+            aria-label="Jump to today"
+          >
+            Today
+          </button>
+          <button
+            class="btn btn-ghost btn-sm"
+            phx-click="navigate_dates"
+            phx-value-direction="next"
+            aria-label="Next week"
+          >
+            <span aria-hidden="true">
+              <.icon name="hero-chevron-right" class="size-4" />
+            </span>
           </button>
         </div>
-        <div class="text-sm">
+        <div class="text-sm" aria-live="polite">
           {format_short_date(@start_date)} - {format_date(@end_date)}
         </div>
-        <div class="tabs tabs-boxed tabs-sm">
+        <div
+          role="tablist"
+          aria-label="View mode"
+          class="tabs tabs-boxed tabs-sm"
+        >
           <button
+            role="tab"
+            id="view-tab-timeline"
+            aria-selected={if @view == "timeline", do: "true", else: "false"}
+            tabindex={if @view == "timeline", do: "0", else: "-1"}
             class={["tab", @view == "timeline" && "tab-active"]}
             phx-click="switch_view"
             phx-value-view="timeline"
@@ -195,6 +226,10 @@ defmodule ContentForgeWeb.Live.Dashboard.Schedule.Live do
             Timeline
           </button>
           <button
+            role="tab"
+            id="view-tab-calendar"
+            aria-selected={if @view == "calendar", do: "true", else: "false"}
+            tabindex={if @view == "calendar", do: "0", else: "-1"}
             class={["tab", @view == "calendar" && "tab-active"]}
             phx-click="switch_view"
             phx-value-view="calendar"
@@ -202,7 +237,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Schedule.Live do
             Calendar
           </button>
         </div>
-      </div>
+      </nav>
       
     <!-- Stats -->
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -462,7 +497,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Schedule.Live do
           </p>
         </div>
       </aside>
-    </div>
+    </main>
     """
   end
 
