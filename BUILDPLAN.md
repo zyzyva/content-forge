@@ -547,7 +547,7 @@ Pick up after the feature waves clear. Any of these can be inserted earlier if i
   - Assertions: at each stage the draft has the expected status (`draft → ranked → approved → published → winner`), the right records exist (`ContentBrief`, `DraftScore` rows per model, `PublishedPost`, `ScoreboardEntry`, repurposed `Draft` rows), and no synthetic data leaked to the DB on any step.
   - Test does NOT exercise OpenClaw bulk generation, real Media Forge calls, or SMS — those are separate E2E slices if/when their externals are available.
 
-- **15.3a Coverage uplift and threshold tightening**
+- **15.3a Coverage uplift and threshold tightening** ✅ Shipped `915835c`.
   - Baseline is `test_coverage: [summary: [threshold: 0]]` in `mix.exs` (acknowledged debt, overall ~18%). Pair with 15.3 work: as E2E tests land, raise the per-module threshold in tranches (start at 25, then 50, then back toward Elixir's default of 90).
   - A dedicated cleanup slice at the end of the wave should set the final threshold and update `BUILDLOG.md` with the final coverage number.
   - **Refined scope (post-15.3.1 + 15.4):** Overall coverage climbed from 18% to 55.7% with the tests added during Phases 11–15. Raising the per-module threshold above 0 immediately would fail the gate on a long tail of 0%-coverage modules (legacy scaffolding, error views, telemetry supervisors) that do not need tests. This slice does the triage:

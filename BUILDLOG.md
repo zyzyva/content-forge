@@ -85,7 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 15.3a: coverage uplift triage + initial floor
 
 Status: DONE
-Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `65b4aa6`. Gate: compile --warnings-as-errors clean, format clean, full test 637/0, credo baseline-diff empty, `mix test --cover` summary total 56.41%.
+Merged: master @ `915835c` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 637-0; `mix test --cover` passes at 56.41% with per-module threshold 10. `ignore_modules` scoped to 12 framework/boilerplate entries (all defensible, see `mix.exs`). Add-smoke took two 0% modules (WebhookDelivery changeset + MetricsJSON view-shape) over the floor for 5 tests. 16-module defer list enumerated in BUILDLOG. Threshold can be raised in tranches as follow-up work lands.
 Note: First tranche of the coverage-uplift wave. Inventoried every 0%-coverage module from `mix test --cover`, categorized each as `exclude` / `add-smoke` / `defer`, and set `test_coverage: [summary: [threshold: 10], ignore_modules: [...]]` in `mix.exs`. Further tranches toward 50% and 90% are separate slices.
 
 **Final overall coverage**: 56.41% (up from 55.73% baseline on master @ `65b4aa6`).
