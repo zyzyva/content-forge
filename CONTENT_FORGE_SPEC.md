@@ -309,6 +309,68 @@ Acceptance criteria:
 
 ---
 
+### Feature 13: OpenClaw Tool Surface
+
+**Purpose:** Expose Content Forge's operations as a stable set of named tools that the OpenClaw agent can invoke from any channel it talks to — SMS, the OpenClaw CLI, Telegram, and any future conversational surface. A tool is registered once with the agent and is immediately available across every channel; the channel only handles inbound text and outbound delivery. This turns Content Forge from "a dashboard operators click through" into "the orchestration brain any conversational surface can drive."
+
+**Why this matters:** Content Forge already exposes its operations through a LiveView dashboard and a Review API. Agencies using SMS submission need the same operations invokable by the bot (create an upload link, list recent assets, check a draft's status, schedule a post, approve a blog). Without a shared tool surface, every new channel would re-implement its own subset, drift in auth and error handling, and force tool logic to live inside channel-specific handlers. The tool surface is also the extension point other ecosystem apps (contacts4us, Media Forge consumers, the chatbot consultancy) use to plug into the same agent: they register their own plugins against the gateway, and the agent ends up with a unified ecosystem tool surface.
+
+**Registration pattern:**
+- [ ] The OpenClaw gateway loads a Node.js plugin at `~/.openclaw/plugins/content-forge/index.js` that declares each tool's name, human-readable label, description (copy the agent reads when deciding whether to call the tool), and JSON-schema parameters. The plugin's `execute` handler forwards every invocation to the Content Forge HTTP surface and serializes the tool result into the chat payload the gateway expects.
+- [ ] Content Forge exposes a single HTTP endpoint for all tool invocations at `POST /api/v1/openclaw/tools/:tool_name`. The controller (`ContentForgeWeb.OpenClawToolController`) is thin: it authenticates, builds the invocation context, delegates to `ContentForge.OpenClawTools.dispatch/3`, and serializes the response. Per-tool logic lives in per-tool modules; the controller does not grow a case statement of business rules.
+- [ ] Tool modules live under `ContentForge.OpenClawTools.<Name>` and implement a `call/2` callback `(ctx, params) :: {:ok, map()} | {:error, term()}`. They have no other public surface.
+- [ ] The dispatch table (`ContentForge.OpenClawTools.@tools`) maps tool names to modules. Adding a new tool means adding one module plus one line in the map, and adding the matching `registerTool` call in the Node plugin so the gateway knows its schema.
+
+**Authentication:**
+- [ ] Every request to the tool endpoint must carry an `X-OpenClaw-Tool-Secret` header whose value equals the configured `:content_forge, :open_claw_tool_secret` env (sourced from `OPENCLAW_TOOL_SECRET` at runtime). The auth plug (`ContentForgeWeb.Plugs.OpenClawToolAuth`) compares via `Plug.Crypto.secure_compare/2`.
+- [ ] Missing env, missing header, and mismatched secrets all return an identical bland `401 Unauthorized`. No error text distinguishes the three cases so probing cannot tell which one fired. The secret itself is never logged.
+- [ ] The tool endpoint is the only surface authenticated this way; the Review API bearer token, the Twilio HMAC, and the Media Forge webhook signature all live on different pipelines.
+
+**Invocation context (ctx map, present on every tool call):**
+- [ ] `:session_id` — the OpenClaw agent session id so tools that persist conversation memory (Phase 16.3 onward) scope to the right thread.
+- [ ] `:channel` — a short identifier for the originating surface: `"sms"`, `"cli"`, `"telegram"`, etc. Tools use this when they need channel-specific behavior (for example, an authorization helper reaches for `ProductPhone` on `"sms"` and an `OperatorIdentity` on `"cli"`).
+- [ ] `:sender_identity` — the caller's channel-specific identifier: E.164 phone number for SMS, operator id for CLI, handle for Telegram. Product resolution and role checks pivot on this when an explicit `product` param is not supplied.
+
+**Request body shape:**
+- [ ] Every POST body contains four top-level fields: `session_id` (string), `channel` (string), `sender_identity` (string or null), `params` (object). The controller builds the ctx map from the first three and passes `params` through to the tool module unchanged.
+
+**Response shape:**
+- [ ] Success — `200 {"status":"ok","result": <tool payload>}`. Result values are JSON-safe (atoms serialized to strings, `DateTime` values to ISO-8601).
+- [ ] Unknown tool — `404 {"status":"error","error":"unknown_tool","tool_name":"..."}`. Any tool name not in the dispatch map returns this shape so the agent can render "I do not know that tool."
+- [ ] Tool error — `422 {"status":"error","error":"<reason>"}`. The controller converts atoms and `{kind, details}` tuples to a human-readable reason string. The reason is the single canonical field the agent uses to decide how to phrase the failure to the user.
+
+**Product resolution contract (shared across tools):**
+- [ ] Every tool that operates on a product supports two resolution paths. If `params["product"]` is present it is resolved first: treat as a UUID against `Products.get_product/1`; on cast failure or no row, fall through to a case-insensitive substring match against `Products.list_products/0` by name. A single match returns `{:ok, product}`; zero matches returns `{:error, :product_not_found}`; multiple matches returns `{:error, :ambiguous_product}` carrying the candidate names the agent should echo back.
+- [ ] If `params["product"]` is absent or empty and the channel is phone-based (`"sms"` today), resolve via `Sms.lookup_phone_by_number(sender_identity)`. A single active `ProductPhone` row yields `{:ok, product}`; zero or multiple active rows yield `{:error, :missing_product_context}` so the agent can ask the user which product they mean.
+- [ ] If neither path yields a product the tool returns `{:error, :missing_product_context}` with no side effects. The controller maps that reason to the 422 response so the agent can render "I could not find your product. Which product are you asking about?".
+- [ ] Product resolution is shared between tool modules via `ContentForge.OpenClawTools.ProductResolver`. New tools that need a product reach for the resolver; they do not re-implement the UUID / fuzzy / session paths inline.
+
+**Error taxonomy (the canonical reasons tools return):**
+- [ ] `:product_not_found`, `:ambiguous_product`, `:missing_product_context` — product resolution outcomes described above.
+- [ ] `:not_found` — a specific record (draft, asset, bundle) identified by id does not exist or is not owned by the resolved product. Tools that accept an id always scope the lookup to the product.
+- [ ] `{:presign_failed, reason}` — storage adapter rejection for upload-link-style tools.
+- [ ] `:forbidden` — reserved for the authorization framework that 16.3 introduces. Read-only tools in 16.2 do not return this reason; any future write tool that calls the authorization helper surfaces forbidden through this reason.
+- [ ] Classified HTTP errors from downstream clients (Media Forge, LLM providers) surface as the same `{:transient, ...}` / `{:http_error, ...}` shapes the clients already use. Tools do not rewrap them.
+
+**Cross-channel invariants:**
+- [ ] Tool semantics do not branch on channel. A tool returns the same payload whether called from SMS, CLI, or a future Telegram surface; the channel only changes how the reply is rendered to the user. Tools that need channel-aware authorization delegate to a helper (introduced in 16.3) rather than inlining channel checks.
+- [ ] The tool surface never fabricates data when a downstream dependency is unavailable. Missing credentials on any downstream (Media Forge, LLM, Twilio) surface through the standard `:not_configured` -> `:missing_*_context` pattern rather than silently synthesizing a plausible result.
+
+**Acceptance criteria (phase-level, refined per slice in `BUILDPLAN.md`):**
+- [x] `create_upload_link` ships end-to-end on SMS and CLI (16.1).
+- [ ] `list_recent_assets`, `draft_status`, `upcoming_schedule`, `competitor_intel_summary` ship as read-only tools (16.2) so the agent can answer status and reconnaissance questions.
+- [ ] `create_asset_bundle`, `record_memory`, `add_tag_to_asset` ship as light writes under the shared authorization helper (16.3).
+- [ ] `generate_drafts_from_bundle`, `schedule_reminder_change`, `approve_draft` ship as heavy writes behind a two-turn confirmation envelope (16.4).
+- [ ] Every tool invocation is recorded in a unified `ToolInvocationEvent` surface with a dashboard view and REST mirror (16.5).
+- [ ] `escalate_to_human` ships as a first-class tool the agent self-invokes on ambiguity, cost, or complaint (16.6), generalizing the SMS-scoped escalation primitive from Feature 12.
+
+**Out of scope (for the tool surface as a whole):**
+- [ ] Streaming tool results. The current shape is request/response; long-running tools that need progress updates should enqueue Oban jobs and return an acknowledgement reason the agent surfaces as "I started that, I will let you know when it finishes."
+- [ ] Channel discovery or reply-sending tools. Outbound reply delivery is owned by the SMS dispatcher (Feature 12) and by whichever delivery path the future channel wires up; the agent does not need a `send_reply` tool because the gateway fans its response out.
+- [ ] Cross-product or cross-tenant operations. Tools operate on a single product scoped by resolution. An agency-wide dashboard answer that spans products is a dashboard operation, not a tool.
+
+---
+
 ### Integration 1: Media Forge HTTP Client
 
 **Purpose:** Provide a single named client module that every Content Forge caller uses to talk to the Media Forge service. The module centralizes the base URL, the shared secret header, retry semantics, and transient-versus-permanent error classification so individual features (image generation, final video encoding, image processing, platform renditions) do not each reinvent them. Every future Media Forge call in the codebase goes through this module; nothing else touches the underlying HTTP layer for Media Forge URLs.

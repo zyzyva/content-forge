@@ -146,6 +146,28 @@ response go back to OpenClaw.
 - **`product_not_found`**: confirm the product exists in the DB
   and that its name contains the phrase the user said.
 
+## Currently registered tools
+
+The plugin ships these tools. Each corresponds to a module under
+`lib/content_forge/open_claw_tools/` in the Phoenix app.
+
+- **`create_upload_link`** — generate a presigned PUT URL for
+  direct-to-storage asset upload (Phase 16.1).
+- **`list_recent_assets`** — list a product's recent non-deleted
+  assets with media type + tag filters (Phase 16.2).
+- **`draft_status`** — report a single draft's status; accepts
+  either `draft_id` or a free-text `hint`. Returns
+  `ambiguous_draft` when the hint matches more than one draft
+  (Phase 16.2).
+- **`upcoming_schedule`** — list approved drafts queued for
+  publish. Content Forge does not hold per-draft schedule
+  timestamps today, so the bot speaks in terms of "queued" rather
+  than "scheduled for a day/time" (Phase 16.2).
+- **`competitor_intel_summary`** — return the most recent
+  competitor intel synthesis (summary, trending topics, winning
+  formats, effective hooks). Returns `not_found` when no intel
+  row exists (Phase 16.2).
+
 ## Future tools (ship pattern)
 
 Each new tool goes under
@@ -154,10 +176,8 @@ in the dispatch map in `ContentForge.OpenClawTools`, and gets a
 matching entry in the plugin's `index.js` with its own schema.
 The runbook above carries over unchanged for new tools.
 
-Phases 16.2 through 16.6 add:
+Phases 16.3 through 16.6 add:
 
-- **16.2** Read-only tools (list_recent_assets, draft_status,
-  upcoming_schedule, competitor_intel_summary).
 - **16.3** Light writes + role-based auth framework.
 - **16.4** Heavy writes with two-turn confirmation.
 - **16.5** Unified tool-invocation audit + dashboard.

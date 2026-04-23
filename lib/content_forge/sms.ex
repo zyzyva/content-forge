@@ -104,6 +104,24 @@ defmodule ContentForge.Sms do
     )
   end
 
+  @doc """
+  Lists every active `%ProductPhone{}` row matching the given phone
+  number across all products. Used by the OpenClaw tool surface
+  (Phase 16) to resolve a caller's product context on the SMS
+  channel when no explicit product param is supplied. Zero results
+  means "phone not whitelisted anywhere"; more than one means the
+  phone spans multiple products and the caller must disambiguate.
+  """
+  @spec list_active_phones_by_number(String.t()) :: [ProductPhone.t()]
+  def list_active_phones_by_number(phone_number) when is_binary(phone_number) do
+    Repo.all(
+      from(p in ProductPhone,
+        where: p.phone_number == ^phone_number and p.active == true,
+        order_by: [asc: p.inserted_at]
+      )
+    )
+  end
+
   # ---- SMS events (audit log) --------------------------------------------
 
   @doc "Inserts an audit row for an inbound or outbound message."
