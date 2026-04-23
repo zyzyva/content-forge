@@ -14,14 +14,18 @@ defmodule ContentForge.OpenClawTools.Authorization do
     * `ctx.channel == "sms"` looks up
       `(sender_identity, product.id)` in `ProductPhone`; active
       rows yield the string `role` from the row.
-    * Any other channel looks up
+    * `ctx.channel == "cli"` looks up
       `(sender_identity, product.id)` in `OperatorIdentity` via
       `ContentForge.Operators.lookup_active_identity/2`.
+    * Any other channel (including `"telegram"` and future
+      surfaces) is fail-closed: `:forbidden` with zero DB I/O.
+      New channels are onboarded by adding a `resolve/3` clause,
+      not by extending the catch-all.
     * Missing ctx fields (`channel`, `sender_identity`,
-      `product`), empty sender, unknown channels, inactive rows,
-      rows registered under another product, and unknown required
-      roles all collapse to `{:error, :forbidden}` with zero DB
-      I/O where possible.
+      `product`), empty sender, inactive rows, rows registered
+      under another product, and unknown required roles all
+      collapse to `{:error, :forbidden}` with zero DB I/O where
+      possible.
 
   Failures are never distinguishable in the returned reason.
   The controller maps `:forbidden` to a uniform 422 response so
