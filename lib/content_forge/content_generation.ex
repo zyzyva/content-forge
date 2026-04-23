@@ -10,6 +10,7 @@ defmodule ContentForge.ContentGeneration do
   alias ContentForge.ContentGeneration.DraftAsset
   alias ContentForge.ContentGeneration.DraftScore
   alias ContentForge.ContentGeneration.NuggetValidator
+  alias ContentForge.ContentGeneration.ResearchEnricher
   alias ContentForge.ContentGeneration.SeoChecklist
   alias ContentForge.ProductAssets.ProductAsset
   alias ContentForge.Products.BriefVersion
@@ -221,12 +222,30 @@ defmodule ContentForge.ContentGeneration do
     end
   end
 
-  defp maybe_run_seo_checklist({:ok, %Draft{content_type: "blog"} = draft} = result) do
+  defp maybe_run_seo_checklist({:ok, %Draft{content_type: "blog"} = draft}) do
     _ = SeoChecklist.Runner.run(draft)
-    result
+    maybe_enrich_research(draft)
   end
 
   defp maybe_run_seo_checklist(result), do: result
+
+  # Research enrichment runs AFTER the SEO checklist so the
+  # checks see the un-enriched draft shape. The enricher appends
+  # an Original Research block without mutating anything the SEO
+  # checklist already evaluated. Result shape stays
+  # `{:ok, draft}` for blog drafts - enrichment outcomes are
+  # visible via `research_status` on the reloaded draft.
+  defp maybe_enrich_research(draft) do
+    draft = Repo.reload(draft)
+
+    case ResearchEnricher.enrich(draft) do
+      {:ok, %Draft{} = updated} -> {:ok, updated}
+      {:ok, :no_data, %Draft{} = updated} -> {:ok, updated}
+      {:error, :lost_data_point, %Draft{} = updated} -> {:ok, updated}
+      {:error, :not_configured} -> {:ok, draft}
+      {:error, _reason} -> {:ok, draft}
+    end
+  end
 
   def create_drafts(attrs_list) when is_list(attrs_list) do
     Repo.insert_all(Draft, attrs_list, returning: true)

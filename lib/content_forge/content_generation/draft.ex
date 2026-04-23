@@ -17,6 +17,8 @@ defmodule ContentForge.ContentGeneration.Draft do
     field :error, :string
     field :ai_summary_nugget, :string
     field :seo_score, :integer
+    field :research_status, :string, default: "none"
+    field :research_source, :string
 
     belongs_to :product, ContentForge.Products.Product
     belongs_to :content_brief, ContentForge.Products.ContentBrief
@@ -54,7 +56,9 @@ defmodule ContentForge.ContentGeneration.Draft do
       :media_forge_job_id,
       :error,
       :ai_summary_nugget,
-      :seo_score
+      :seo_score,
+      :research_status,
+      :research_source
     ])
     |> validate_required([:product_id, :content, :platform, :content_type, :generating_model])
     |> validate_inclusion(:platform, ~w(twitter linkedin reddit facebook instagram blog youtube))
@@ -62,6 +66,10 @@ defmodule ContentForge.ContentGeneration.Draft do
     |> validate_inclusion(
       :status,
       ~w(draft ranked approved rejected published blocked archived needs_review)
+    )
+    |> validate_inclusion(
+      :research_status,
+      ~w(none enriched no_data lost_data_point skipped)
     )
     |> validate_inclusion(
       :angle,

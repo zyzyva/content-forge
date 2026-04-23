@@ -82,6 +82,58 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 12.3: ResearchEnricher (Original Research block)
+
+Status: DONE
+Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `fb04efc`. Gate: compile --warnings-as-errors clean, format clean, full test 751/0, credo baseline-diff empty, coverage 59.47% (up from 59.06%). Format check landed LAST per the 12.2c reject lesson.
+
+Note: Post-generation hook for blog drafts that injects an Original Research block sourced from real data. Tries three sources in priority order, first hit wins; hallucination guard flips draft to `needs_review` if the LLM drops the data point; returns cleanly when no source has data or the LLM is unconfigured. Never fabricates.
+
+**Schema + migration**:
+- `priv/repo/migrations/20260505120000_add_research_status_to_drafts.exs` - adds `research_status :string NOT NULL DEFAULT "none"` and `research_source :string` nullable to `drafts`.
+- `Draft` schema gained both fields; changeset cast + `validate_inclusion(:research_status, ~w(none enriched no_data lost_data_point skipped))`.
+
+**Enricher module** (`lib/content_forge/content_generation/research_enricher.ex`):
+- Public `enrich/1` takes a blog `Draft`, dispatches on `content_type: "blog"` via a function-head match. Non-blog drafts return `{:ok, draft}` unchanged.
+- Short-circuits on `LLM.Anthropic.status() == :not_configured` with `{:error, :not_configured}` - no DB write, no data-point search.
+- Data-source chain via `with/1`:
+  1. `Metrics.list_scoreboard_entries(product_id:, outcome: "winner", limit: 1)` - produces a data point like `"2.5 points above average engagement on twitter"` from `delta` + `platform`.
+  2. `Products.list_competitor_intel_for_product/1` - first `trending_topics` entry (verbatim phrase).
+  3. `Products.list_product_snapshots_for_product/1` - latest `content_summary`.
+  All three misses -> `:no_data`.
+- On data hit, calls the LLM with a prompt that instructs: "Cite the following data point verbatim, word for word... The data point string must appear in your response exactly as given". Keeps block under 400 chars.
+- Hallucination guard: `String.contains?(response_text, data_point)`. If the substring is absent, flips draft to `status: "needs_review"`, `research_status: "lost_data_point"`, and appends a reason to `draft.error` (preserving any existing nugget-validation error).
+- Injection: appends `\n\n## Original Research\n\n{text}\n` to `draft.content`. Keeps the nugget + SEO-checklist-evaluated body intact above.
+
+**LLM adapter indirection** (`Application.get_env(:content_forge, :research_enricher_llm, :default)`):
+- Default is production `LLM.Anthropic`.
+- Tests override with `{TestStub, opts}`; stub modules implement `status/1` and `complete/3`.
+- No Req.Test plug wiring needed - the adapter seam is at the semantic boundary, which is clearer for readers than HTTP-plug stubbing for this use case.
+
+**Hook wiring** (`ContentGeneration.create_draft/1`):
+- Runs AFTER the SEO checklist, in `maybe_enrich_research/1`. Ordering matters: SEO checks see the pre-enrichment draft shape, then enrichment appends without invalidating stored check results.
+- Result normalization: the hook converts every enricher outcome back to `{:ok, draft}` so callers of `create_draft/1` continue to pattern-match on the existing contract. Outcomes are visible via `draft.research_status` on the reloaded record. `:not_configured` and other transient errors leave the draft unchanged but still return `{:ok, draft}` so failed LLM paths don't break the generator.
+- Uses `Repo.reload(draft)` before running the enricher so any persistence done by the SEO checklist (notably `draft.seo_score` via `Runner.run/1`) is visible.
+
+**Tests** (`test/content_forge/content_generation/research_enricher_test.exs`, new, 7 tests):
+- Happy path per source (scoreboard, competitor_intel, product_snapshot): assert `research_status == "enriched"`, `research_source` matches, and the verbatim data point appears in `draft.content` under the `## Original Research` header.
+- Hallucination guard: LLM stub returns generic text without the data point. Assert `{:error, :lost_data_point, draft}`, `research_status == "lost_data_point"`, `status == "needs_review"`, error contains `"lost_data_point"`, AND the content was NOT mutated with a research block.
+- No data: all three sources empty. LLM stub is wired with a `flunk` response so the test fails loudly if the enricher calls the LLM. Assert `{:ok, :no_data, draft}`, `research_status == "no_data"`.
+- LLM not configured: stub's `status/1` returns `:not_configured`. Asserts `{:error, :not_configured}` and reloaded draft's `research_status` stays `"none"`.
+- Non-blog drafts pass through unchanged.
+
+**Scoreboard fixture gotcha** (worth surfacing for future test slices):
+- `Metrics.ScoreboardEntry`'s changeset has a `calculate_delta/1` step that recomputes `delta = normalize_engagement(actual) - composite_ai_score` whenever both scores are present. Passing `actual_engagement_score: 87.5, composite_ai_score: 75.0, delta: 12.5` does NOT produce delta=12.5; the changeset overrides it with `log10(88.5)*3 - 75.0 = -73.1`, clamped to -10. And `determine_outcome/1` then flips `outcome` based on the overridden delta, so a fixture passing `outcome: "winner"` ends up as "loser".
+- Workaround: pass only `delta` + `outcome` (leave composite/actual nil). `calculate_delta/1`'s `if ai_score && actual_score` branch leaves the supplied values alone, and `determine_outcome/1` re-derives outcome from `delta`.
+
+**What was explicitly NOT changed** (kept out of scope):
+- No `{{research_block}}` placeholder in the blog-generation prompt. The enricher always appends after the body. When a future slice adds the placeholder to the prompt, the injection point can swap from "append" to "replace placeholder".
+- No dashboard surfacing of `research_source` / `research_status` in the drafts drawer. That's Phase 12.4 territory (dashboard surfacing).
+- No retry logic for transient LLM errors. The enricher's `{:error, reason}` branch returns the error verbatim; the create_draft hook swallows it into `{:ok, draft}` so the generator continues. Retries can be added when we know the real LLM's error shape.
+- `:skipped` status exists in the inclusion list but isn't produced yet. Reserved for a future "user-skipped enrichment" operator control.
+
+**Gate**: compile --warnings-as-errors clean, format clean, full test 751/0 (7 new), credo --strict baseline-diff empty, `mix test --cover` overall 59.47% above threshold 10. Format check ran LAST after all other gates, as the corrected habit from the 12.2c reject. Rebased cleanly on master @ `fb04efc`.
+
 ### Phase 12.2c: SEO checklist semantic checks
 
 Status: DONE
