@@ -149,7 +149,7 @@ Phase exit criteria: end-to-end image generation, image processing, and video re
   - Response parsing extracts the text from the first candidate's content parts.
   - `Req.Test` stub from day one. Tests: happy-path completion, 429 transient, 500 transient, 400 permanent, missing-key no-HTTP downgrade.
 
-- **11.1c Brief generator synthesis across providers**
+- **11.1c Brief generator synthesis across providers** ✅ Shipped `7398d71`.
   - Update the brief generator to query both Anthropic and Gemini in parallel when both are configured, then synthesize the two drafts into a single brief. Satisfies the "at least 2 smart models" acceptance criterion on Feature 3 Stage 1.
   - Synthesis logic is the simplest thing that works: feed both drafts as context back into one final Anthropic completion that produces the synthesized brief. More sophisticated merging is deferred until performance data says it matters.
   - When only one provider is configured, the brief is generated from that one provider alone (no synthesis step). When neither is configured, the existing skip path fires (no brief record). When one provider succeeds and the other errors transiently, the brief still generates from the successful provider with a note on the brief metadata; neither error escalates if at least one draft succeeded.
@@ -159,6 +159,25 @@ Phase exit criteria: end-to-end image generation, image processing, and video re
   - Configure the live OpenClaw endpoint for bulk variant generation.
   - Remove mock variant returns.
   - Gate off with "unavailable" if OpenClaw is not configured.
+  - **Slicing note:** Expands into an infra slice and a caller slice following the 11.1 pattern.
+
+- **11.2 (infra) OpenClaw HTTP client module**
+  - Ship a named client module at `ContentForge.OpenClaw` under `lib/content_forge/open_claw/` (or a single file if no helpers emerge), wrapping OpenClaw's bulk-generation endpoint.
+  - One public function on the shape of `generate_variants(request, opts)` that accepts a request map (product brief, platform, angle, count, content_type) and returns a success tuple carrying the list of generated variants, or a classified error tuple.
+  - Config namespace at `:content_forge, :open_claw` with `:base_url`, `:api_key`, `:default_timeout`. API key sourced from env at runtime via `config/runtime.exs`.
+  - Error classification mirrors Integrations 1 and 3: 5xx transient, 4xx permanent, timeout transient, connection refusal transient-network, 3xx unexpected-status, catch-all. Missing API key or base URL returns `{:error, :not_configured}` with zero HTTP I/O.
+  - Authentication header attached inside the client per OpenClaw's convention (bearer token or custom header, coder confirms against the running OpenClaw instance at the time of the slice). Coder records the chosen header name in the module docstring and the BUILDLOG handoff.
+  - If OpenClaw's bulk endpoint is still being finalized at slice time, the client ships against a documented target shape and its tests stub that shape. Switching to a different shape is a one-call-site fix, not a client rewrite.
+  - `Req.Test` stub from day one. Tests: happy-path batch generation, 429 transient, 500 transient, 400 permanent, missing-config no-HTTP downgrade.
+
+- **11.2 (caller) OpenClawBulkGenerator swap onto the client**
+  - Remove the hardcoded sample-content maps (`generate_social_content`, `generate_blog_content`, `generate_video_script_content`) and their surrounding placeholder scaffolding from the bulk generator job.
+  - Build the prompt payload per platform and per content-type from the brief + product context (the existing `build_social_prompt`, `build_blog_prompt`, etc. can stay; only the call that consumes them changes).
+  - Call the new OpenClaw client with the appropriate request shape for each content type (social, blog, video script).
+  - On `{:error, :not_configured}`: log "OpenClaw unavailable", return a skipped result, do not create any Draft records. No synthetic variants ever reach the database.
+  - On transient errors let Oban retry. On permanent errors, cancel the job with the error recorded; no retry until the upstream is fixed.
+  - Each returned variant becomes a Draft record with its platform, angle, content, generating model set to the OpenClaw model name echoed in the response, and status `draft`. The existing humor-variant guarantee (at least one per content type per batch) remains a brief-instruction concern, not a post-filter in this slice.
+  - Tests: happy-path batch for social + blog + video scripts, missing-config skip with zero Drafts created, transient retry, permanent cancel, humor-angle presence when brief includes the humor instruction.
 
 - **11.3 Apify competitor scraping audit**
   - Confirm scrapers hit real Apify actors with real API tokens (per-platform actor selection).

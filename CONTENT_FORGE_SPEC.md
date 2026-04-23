@@ -63,7 +63,7 @@ Acceptance criteria:
 - Stage 5 (Winner repurposing): When performance metrics confirm a published piece is a winner (above rolling average), automatically queue cross-platform variants. A winning Twitter post spawns LinkedIn, Reddit, and blog expansion drafts. A winning blog post spawns social post variants and a video script. Repurposed variants enter Stage 2 with a "repurposed_from" link to the original and go through normal ranking. This is how one hit becomes 10 pieces of content.
 
 Acceptance criteria:
-- [ ] Content brief generation queries at least 2 smart models and stores the synthesized brief per product with a timestamp and version number
+- [x] Content brief generation queries at least 2 smart models and stores the synthesized brief per product with a timestamp and version number
 - [ ] On subsequent runs (when performance data exists), the content brief is fully rewritten by a smart model that receives: product snapshot, performance scoreboard, and previous brief. The rewrite replaces the previous brief (old versions are kept in a brief_versions table for history)
 - [ ] When ranking drafts, each smart model receives the performance scoreboard alongside the drafts, including that model's own calibration data (predicted score vs actual engagement for past content it scored)
 - [ ] OpenClaw is the designated bulk generation model — its API endpoint is configurable so it can be swapped
@@ -477,6 +477,40 @@ Acceptance criteria:
 **Out of scope for this slice:**
 - [ ] Changing any caller to use the new client. The brief-generator synthesis swap is its own slice (11.1c).
 - [ ] Streaming, function calling, or multi-modal inputs. The slice ships a single text completion surface.
+
+---
+
+### Integration 5: OpenClaw Client
+
+**Purpose:** Provide a named HTTP client for the ecosystem's OpenClaw bulk-generation service. OpenClaw is the "fast, cheap, high-volume" first-draft generator that seeds every batch; the smart LLMs (Anthropic, Gemini, eventually xAI and OpenAI) rank and critique afterward. Today the bulk generator returns hardcoded sample text per platform / angle, which violates the no-synthetic-data-in-production rule.
+
+**Why this matters:** Without a real OpenClaw wiring, every draft on the dashboard is boilerplate. Ranking runs against fake content, and human review decisions are meaningless. This is the single biggest remaining gap in the content pipeline after the brief generator swap.
+
+**Module location and shape:**
+- [ ] Public module is `ContentForge.OpenClaw` at `lib/content_forge/open_claw.ex` (or a subdirectory if helpers emerge). Callers outside this module reference only the public functions.
+- [ ] The public surface exposes bulk-generation functions shaped around the three content kinds currently served (social post variants, blog drafts, video scripts). A minimal interface is one function per kind, or one `generate_variants/2` that takes a content-type in the request map; the coder picks whichever keeps the callers clean.
+
+**Configuration:**
+- [ ] Base URL, API key, and default timeout live at `:content_forge, :open_claw` in application config. Production sources the key and URL from environment variables at runtime. Test leaves them unset by default so missing-config behavior is observable.
+- [ ] When base URL or API key are missing, the client returns `{:error, :not_configured}` immediately with zero HTTP I/O. Upstream callers treat this as a graceful downgrade: log "OpenClaw unavailable", skip the step, surface the unavailability in the dashboard rather than fabricating drafts.
+
+**Authentication:**
+- [ ] An auth header is attached inside the client on every request. The header name and token format follow OpenClaw's current convention (bearer token or custom header as OpenClaw documents it). The coder records the chosen header in the module docstring and in the BUILDLOG handoff for future reference.
+
+**Request and response shape:**
+- [ ] The request body carries: content brief text, product context (name, voice profile, site summary), platform (for social), angle (for the variant being generated), desired variant count, and any performance insights Content Forge wants to feed in. The exact JSON shape is aligned with OpenClaw's endpoint at the time the slice ships.
+- [ ] The success response is parsed into a list of variant maps, each containing at minimum the generated text and a model identifier. Metadata (token usage, provider model name) is preserved so the calling Draft record can store it.
+
+**Error classification:**
+- [ ] Same rules as Integrations 1, 3, 4: 5xx transient, 4xx permanent, timeout transient, connection refusal transient-network, 3xx unexpected-status, catch-all pass-through. No silent rescues. The client does not retry internally; Oban owns retry policy.
+
+**Test stance:**
+- [ ] `Req.Test` stubbed from day one. Tests cover a happy-path batch for each content kind, 429 transient, 500 transient, 400 permanent, and missing-config no-HTTP downgrade.
+
+**Out of scope for this slice:**
+- [ ] Changing any caller to use the new client. The bulk-generator swap is its own slice (11.2 caller).
+- [ ] Streaming responses or incremental delivery; the slice ships a single request-per-batch surface.
+- [ ] Feeding performance scoreboard data into generation prompts; that wiring lives in 11.4.
 
 
 
