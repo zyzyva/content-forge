@@ -531,7 +531,7 @@ Pick up after the feature waves clear. Any of these can be inserted earlier if i
   - Same checklist applied to `/dashboard/video` (`Video.StatusLive`), `/dashboard/performance` (`Performance.DashboardLive`), and `/dashboard/clips` (`Clips.QueueLive`).
   - Video page's override/promote controls from 15.1b are specifically checked (button labels, confirm semantics). Performance metrics tables and charts need table headers and chart alt-text equivalents. Clips queue action buttons need aria-labels since they are per-row.
 
-- **15.2d Providers + SMS accessibility audit**
+- **15.2d Providers + SMS accessibility audit** ✅ Shipped `ff29e63`.
   - Final page pair: `/dashboard/providers` (`ProvidersLive` from 15.1a) and `/dashboard/sms` (`SmsLive.NeedsAttention` from 14.5). Both are table-heavy list views; same checklist with emphasis on table semantics (`<th scope="col">`) and row-action button labels.
   - **Additionally: arrow-key roving tabindex JS hook across all tablist widgets.** 15.2b and 15.2c both documented this deferral explicitly — the static `tabindex` state is correct (keyboard Tab works), but Left/Right arrow navigation between tabs in a tablist requires a small JS hook. Ship a single reusable Phoenix LiveView JS hook (`Hooks.TabList` or similar) that listens for Left/Right/Home/End on any element under `role=tablist`, moves focus to the appropriate sibling, and fires the existing `phx-click` semantics on Enter/Space so selection remains in-sync with focus. Apply the hook across every `role=tablist` in the dashboard (drafts filter tabs, product detail tab bar, any newly-added ones). Include a test that simulates arrow-key navigation and asserts focus + selection updates.
 
@@ -553,6 +553,13 @@ Pick up after the feature waves clear. Any of these can be inserted earlier if i
 
 - **15.4 Load smoke**
   - Small load test against the Review API and the publishing endpoints to catch N+1s and session-handling issues before they bite in a real launch.
+  - **Slicing note:** Ship as a single slice. Concrete requirements:
+    - A new `mix task` or top-level script under `test/load/review_api_smoke.exs` that uses `Task.async_stream/3` and `Finch` (no new deps if possible — use `Req` which is already a dep) to fire a burst of authenticated requests against the Review API endpoints (GET /api/v1/products, GET /api/v1/products/:id/drafts, POST /api/v1/drafts/:id/score, POST /api/v1/drafts/:id/approve) plus the publishing endpoints (POST /api/v1/products/:id/schedule). Concurrency default 50; total requests default 1000; both configurable by env.
+    - The script prints a summary: requests per second, p50/p95/p99 latency, error count by status class, total DB query count if Ecto telemetry is enabled during the run.
+    - Seed-a-test-dataset step: the script boots the app, runs an idempotent seed (100 products, 50 drafts per product, one approved per), fires the load, tears down. Runs against `MIX_ENV=dev` with a local DB or `MIX_ENV=load` if a separate load env is configured; tests do NOT run this automatically in CI.
+    - N+1 detection: hook `Ecto.Adapters.SQL.Sandbox` or `Ecto.LogEntry` to count queries per request; if any request executes more than 20 queries print it to the report. Exact threshold configurable.
+    - Does not replace CI unit + integration tests. This is a manual-run smoke that developers invoke before a release or when touching a hot-path endpoint.
+    - Tests: one unit test that runs the script with concurrency 2 + requests 10 against the test-env server to prove the script itself works. CI does not run the full 1000-request sweep.
 
 ## Open Risks and Unknowns
 

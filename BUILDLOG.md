@@ -85,7 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 15.2d: WCAG AA audit on providers + SMS, and arrow-key tablist hook
 
 Status: DONE
-Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `c2a4886`. Gate: compile --warnings-as-errors clean, format clean, full test 620/0, credo baseline-diff empty.
+Merged: master @ `ff29e63` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 620-0; credo unchanged. TabList hook architecture: JS owns keyboard (Arrow/Home/End + Enter-Space activation forwards phx-click); LiveView retains aria-selected + tabindex as single source of truth. Wired to 4 tablists including product detail folded in from a 15.2a miss. Per-row Mark-resolved aria-label now interpolates product+phone. **Phase 15.2 WCAG AA audit complete.**
 Note: Final page pair for the Phase 15.2 a11y pass plus the roving-tabindex JS hook deferred from 15.2b/c. Product detail tabs had never had `aria-selected` / `tabindex` state wired (they were outside 15.2a's scope on that file); folded that fix into this slice because the hook needs the state to rove.
 
 **Pages touched**:
