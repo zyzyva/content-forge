@@ -192,6 +192,25 @@ Phase exit criteria: end-to-end image generation, image processing, and video re
 - **11.3 Apify competitor scraping audit**
   - Confirm scrapers hit real Apify actors with real API tokens (per-platform actor selection).
   - Replace any remaining mocked returns and verify the intel synthesis step receives real post payloads.
+  - **Slicing note:** Investigation at this wave point shows `CompetitorScraper` and `CompetitorIntelSynthesizer` are correctly gated behind `:apify_token` + `:scraper_adapter` and `:intel_model` config respectively, and both discard rather than fabricate when unconfigured. What is missing is the actual adapter implementations. Carves into two slices below.
+
+- **11.3a Apify scraper adapter module**
+  - Build `ContentForge.CompetitorScraper.ApifyAdapter` implementing `fetch_posts/1` that the existing `CompetitorScraper` already dispatches to via the `:scraper_adapter` config.
+  - Public surface: a single `fetch_posts(%CompetitorAccount{})` function that returns a success tuple carrying a list of post maps (each with post_id, content text, post_url, likes_count, comments_count, shares_count, posted_at) or a classified error tuple on the same shapes used elsewhere in the codebase.
+  - Per-platform actor routing: a config map under `:content_forge, :apify, :actors` that maps platform names (twitter, linkedin, reddit, facebook, instagram, youtube) to Apify actor ids. Missing actor for a requested platform returns `{:error, :unsupported_platform}` without an HTTP call. The module's moduledoc records which actor id was chosen per platform at slice time so future readers can tell.
+  - Apify HTTP interactions run through a thin internal client that wraps Req: run an actor (POST `/v2/acts/{actor}/runs`), poll the run until terminal (GET `/v2/actor-runs/{run_id}`), then fetch dataset items (GET `/v2/datasets/{default_dataset_id}/items`). Polling uses a capped retry count and a configurable interval mirroring the MediaForge + ImageGenerator pattern.
+  - Output parsing is per-platform: each actor returns its own JSON shape, and the adapter normalizes to the `CompetitorScraper` expected post map. Parse failures for individual items are logged and counted but do not fail the whole scrape; a partial result is acceptable. Complete parse failure (zero posts normalized) returns a classified error so the caller can retry or discard.
+  - Error classification mirrors Integration 1 patterns: 5xx transient, 429 transient, 4xx permanent, timeout transient, connection refusal transient-network, 3xx unexpected-status, catch-all pass-through. Missing API token returns `{:error, :not_configured}` with zero HTTP I/O.
+  - `Req.Test` stubbed from day one; no live Apify calls from the suite. Tests cover: one happy-path scrape per supported platform with a realistic stubbed actor output shape, rate-limit transient, permanent 4xx, timeout transient, missing-token short-circuit, unsupported-platform short-circuit, partial-parse success.
+  - The slice also sets the runtime config wiring in `config/runtime.exs` so `APIFY_TOKEN` in the environment flows through to `:content_forge, :apify, :token`, and `:content_forge, :scraper_adapter` defaults to `ContentForge.CompetitorScraper.ApifyAdapter` in prod (leaves it unset in test so the discard path stays observable).
+
+- **11.3b Intel synthesizer LLM adapter module**
+  - Build `ContentForge.CompetitorIntelSynthesizer.LLMAdapter` implementing `summarize/1` that the existing synthesizer already dispatches to via the `:intel_model` config.
+  - Public surface: a single `summarize([%CompetitorPost{}])` function that returns a success tuple carrying a map with the summary text, trending topics, winning formats, and effective hooks per the `CompetitorIntel` schema, or a classified error tuple on failure.
+  - The adapter internally calls `LLM.Anthropic.complete/2` with a structured prompt that asks for a JSON response matching the intel schema shape. JSON parsing mirrors the MultiModelRanker pattern: direct decode, fenced-block regex fallback, reject-malformed-without-fabricating-fallback.
+  - `:not_configured` passes through from the LLM client; the synthesizer discards on that path already, so no extra handling is needed. Transient errors propagate so Oban can retry.
+  - The slice sets the runtime config wiring so `:content_forge, :intel_model` defaults to the new adapter in prod, unset in test.
+  - Tests: happy-path synthesis returning a parsed intel map, malformed JSON rejected without fabrication, missing-LLM-key returns `{:error, :not_configured}`, transient LLM error propagates for retry.
 
 - **11.4 Brief-rewrite auto-trigger**
   - AUDIT.md previously noted the brief-rewrite trigger "always returns false until metrics flow in." Metrics now flow in. Wire the trigger so brief regeneration fires at the documented threshold (5+ new measurements).
@@ -200,7 +219,7 @@ Phase exit criteria: end-to-end image generation, image processing, and video re
 - **11.5 Winner-repurposing auto-trigger**
   - When the scoreboard marks a piece a winner, auto-fire the repurposing pipeline. Currently manual.
 
-- **11.4+11.5 (verify) MetricsPoller auto-triggers tests**
+- **11.4+11.5 (verify) MetricsPoller auto-triggers tests** ✅ Shipped `62e1391`.
   - Single verification slice covering both 11.4 and 11.5 since both triggers fire from the same worker and share the same state-to-job-enqueue pattern.
   - Tests for the rewrite trigger: when `should_trigger_rewrite?` would return true for a product + platform pair (at least five scoreboard entries with `delta < -1.0` within the configured window), a call into `MetricsPoller`'s perform path enqueues a `ContentBriefGenerator` job with `force_rewrite: true` for that product.
   - Tests for the spike-alert trigger: when a scoreboard update flips the entry's outcome to `"winner"` and the delta exceeds 3.0, a `WinnerRepurposingEngine` job is enqueued for the corresponding draft.

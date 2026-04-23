@@ -84,7 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 11.4+11.5 (verify): MetricsPoller auto-triggers tests
 
-Status: IN PROGRESS (coder handoff)
+Status: DONE
+Merged: master @ `62e1391` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 251-0; credo 7 baseline resolved, 0 new. `maybe_trigger_spike/2` two-head pattern match with strict `> 3.0` guard (boundary test asserts `== 3.0` does not fire). Oban `unique:` (24h rewrite, `:infinity` spike) prevents duplicate enqueues; idempotency tested both directions. Bundled public-fn, extraction, unique-config, and dropped-unused-platform-arg changes all load-bearing for assertable testing plus latent idempotency-bug fixes.
 Note: Verification slice for both auto-triggers that were already wired in `MetricsPoller` but unverified. Two small behaviour changes shipped alongside the tests so the triggers are idempotent and testable:
 
 1. `MetricsPoller.check_rewrite_trigger/1` and a new `MetricsPoller.maybe_trigger_spike/2` are now public. Both were previously `defp`; neither is a hot path, and exposing them is the minimum surface for test-level assertion on the enqueued job specs (the alternative would have been routing through `perform_job` with full platform-client HTTP stubs). Moduledocs on both functions note they are test-accessible and still called internally by `poll_product_metrics/2` and `measure_and_record_post/2`.
