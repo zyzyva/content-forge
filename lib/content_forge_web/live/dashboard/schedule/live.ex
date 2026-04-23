@@ -28,7 +28,8 @@ defmodule ContentForgeWeb.Live.Dashboard.Schedule.Live do
        posts: posts,
        scheduled_drafts: scheduled_drafts,
        blocked_drafts: blocked_drafts,
-       view: Map.get(params, "view", "timeline")
+       view: Map.get(params, "view", "timeline"),
+       preview_draft: nil
      )}
   end
 
@@ -73,6 +74,19 @@ defmodule ContentForgeWeb.Live.Dashboard.Schedule.Live do
        end_date: end_date,
        posts: posts
      )}
+  end
+
+  @impl true
+  def handle_event("preview_draft", %{"draft-id" => draft_id}, socket) do
+    case ContentGeneration.get_draft(draft_id) do
+      nil -> {:noreply, put_flash(socket, :error, "Draft not found")}
+      draft -> {:noreply, assign(socket, preview_draft: draft)}
+    end
+  end
+
+  @impl true
+  def handle_event("close_preview", _params, socket) do
+    {:noreply, assign(socket, preview_draft: nil)}
   end
 
   @impl true
@@ -320,43 +334,136 @@ defmodule ContentForgeWeb.Live.Dashboard.Schedule.Live do
         </div>
       </div>
       
-    <!-- Calendar View -->
+    <!-- Calendar View (week) -->
       <div :if={@view == "calendar"} class="card bg-base-200">
         <div class="card-body">
-          <h2 class="card-title">Calendar</h2>
-          <div class="grid grid-cols-7 gap-1 text-center text-sm">
-            <div class="font-semibold p-2">Sun</div>
-            <div class="font-semibold p-2">Mon</div>
-            <div class="font-semibold p-2">Tue</div>
-            <div class="font-semibold p-2">Wed</div>
-            <div class="font-semibold p-2">Thu</div>
-            <div class="font-semibold p-2">Fri</div>
-            <div class="font-semibold p-2">Sat</div>
-
-            <%= for day <- days_in_range(@start_date, @end_date) do %>
-              <div class={[
-                "p-2 min-h-20 border border-base-300 rounded",
-                Date.compare(day, Date.utc_today()) == :eq && "bg-base-300",
-                Date.compare(day, Date.utc_today()) == :lt && "opacity-50"
-              ]}>
-                <div class="font-semibold text-xs">{day.day}</div>
-                <div class="space-y-1 mt-1">
-                  <div :for={post <- posts_for_day(@posts, day)} class="text-xs truncate">
-                    <span class="badge badge-xs badge-primary">{post.platform}</span>
-                  </div>
-                </div>
+          <h2 class="card-title">Week</h2>
+          <p class="text-sm text-base-content/70">
+            Upcoming publishes by day + platform. Click any entry to preview the draft.
+          </p>
+          
+    <!-- Desktop / tablet grid (md+) -->
+          <div class="hidden md:grid grid-cols-7 gap-2" role="grid" aria-label="Week calendar">
+            <div
+              :for={day <- week_days(Date.utc_today())}
+              data-week-day={Date.to_iso8601(day)}
+              role="gridcell"
+              class={[
+                "border border-base-300 rounded p-2 min-h-40",
+                today?(day) && "bg-base-300"
+              ]}
+            >
+              <div class="text-xs font-semibold">
+                {day_header(day)}
               </div>
-            <% end %>
+              <ul class="mt-2 space-y-1">
+                <li
+                  :for={entry <- entries_for_day(@posts, @scheduled_drafts, day)}
+                  class="text-xs"
+                >
+                  <button
+                    type="button"
+                    class="w-full text-left flex items-center gap-1 hover:bg-base-100 rounded px-1 py-0.5 focus:outline-none focus:ring focus:ring-primary"
+                    phx-click="preview_draft"
+                    phx-value-draft-id={entry.draft_id}
+                    aria-label={"Preview draft on #{entry.platform} for #{Date.to_iso8601(day)}"}
+                    data-week-entry={entry.draft_id}
+                  >
+                    <span aria-hidden="true">
+                      <.icon name={platform_icon(entry.platform)} class="size-3 shrink-0" />
+                    </span>
+                    <span class="badge badge-xs badge-outline whitespace-nowrap">
+                      {entry.platform}
+                    </span>
+                    <span class="truncate">{snippet(entry.content)}</span>
+                  </button>
+                </li>
+                <li
+                  :if={entries_for_day(@posts, @scheduled_drafts, day) == []}
+                  class="text-xs text-base-content/40"
+                >
+                  —
+                </li>
+              </ul>
+            </div>
+          </div>
+          
+    <!-- Mobile stacked list (< md) -->
+          <div class="md:hidden space-y-3" data-week-calendar-mobile>
+            <section
+              :for={day <- week_days(Date.utc_today())}
+              data-week-day={Date.to_iso8601(day)}
+              aria-label={"Publishes on #{Date.to_iso8601(day)}"}
+              class={[
+                "border border-base-300 rounded p-3",
+                today?(day) && "bg-base-300"
+              ]}
+            >
+              <h3 class="text-sm font-semibold">{day_header(day)}</h3>
+              <ul class="mt-2 space-y-1">
+                <li :for={entry <- entries_for_day(@posts, @scheduled_drafts, day)}>
+                  <button
+                    type="button"
+                    class="w-full text-left flex items-center gap-2 px-2 py-1 rounded hover:bg-base-100 focus:outline-none focus:ring focus:ring-primary"
+                    phx-click="preview_draft"
+                    phx-value-draft-id={entry.draft_id}
+                    aria-label={"Preview draft on #{entry.platform}"}
+                  >
+                    <span aria-hidden="true">
+                      <.icon name={platform_icon(entry.platform)} class="size-4 shrink-0" />
+                    </span>
+                    <span class="badge badge-sm badge-outline whitespace-nowrap">
+                      {entry.platform}
+                    </span>
+                    <span class="text-xs truncate flex-1">{snippet(entry.content)}</span>
+                  </button>
+                </li>
+                <li
+                  :if={entries_for_day(@posts, @scheduled_drafts, day) == []}
+                  class="text-xs text-base-content/60"
+                >
+                  Nothing scheduled
+                </li>
+              </ul>
+            </section>
           </div>
         </div>
       </div>
+      
+    <!-- Draft preview drawer -->
+      <aside
+        :if={@preview_draft}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Draft preview"
+        data-draft-preview={@preview_draft.id}
+        class="card bg-base-200"
+      >
+        <div class="card-body">
+          <div class="flex justify-between items-start">
+            <h2 class="card-title">Draft preview</h2>
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm btn-circle"
+              phx-click="close_preview"
+              aria-label="Close preview"
+            >
+              <.icon name="hero-x" class="size-4" />
+            </button>
+          </div>
+          <div class="text-xs text-base-content/70">
+            <span class="badge badge-outline">{@preview_draft.platform}</span>
+            <span>{@preview_draft.content_type}</span>
+            <Components.status_badge status={@preview_draft.status} />
+          </div>
+          <p class="whitespace-pre-wrap text-sm mt-2">{@preview_draft.content}</p>
+          <p :if={@preview_draft.image_url} class="text-xs text-base-content/70 mt-2">
+            Image: {@preview_draft.image_url}
+          </p>
+        </div>
+      </aside>
     </div>
     """
-  end
-
-  defp days_in_range(start_date, end_date) do
-    days = Date.diff(end_date, start_date) + 1
-    Enum.map(0..(days - 1), fn i -> Date.add(start_date, i) end)
   end
 
   defp format_short_date(%Date{} = date) do
@@ -397,12 +504,81 @@ defmodule ContentForgeWeb.Live.Dashboard.Schedule.Live do
     "#{Enum.at(month_name, date.month - 1)} #{date.day}, #{date.year}"
   end
 
-  defp posts_for_day(posts, day) do
-    Enum.filter(posts, fn post ->
-      case post.posted_at do
-        nil -> false
-        dt -> Date.compare(Date.new!(dt.year, dt.month, dt.day), day) == :eq
-      end
-    end)
+  # --- week-view helpers --------------------------------------------------
+
+  # Seven days starting from the Sunday on or before `anchor`.
+  defp week_days(%Date{} = anchor) do
+    dow = Date.day_of_week(anchor, :sunday)
+    start = Date.add(anchor, -(dow - 1))
+    Enum.map(0..6, &Date.add(start, &1))
   end
+
+  defp today?(%Date{} = d), do: Date.compare(d, Date.utc_today()) == :eq
+
+  @dow_short ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+
+  defp day_header(%Date{} = d) do
+    idx = Date.day_of_week(d, :sunday) - 1
+    "#{Enum.at(@dow_short, idx)} #{d.month}/#{d.day}"
+  end
+
+  # Published-post entries keyed on `posted_at` date; approved drafts
+  # collapse to "today" since we don't have per-draft scheduled_at on
+  # the Draft schema yet.
+  defp entries_for_day(posts, scheduled_drafts, %Date{} = day) do
+    published_entries =
+      posts
+      |> Enum.filter(fn p -> post_on_day?(p, day) end)
+      |> Enum.map(&post_entry/1)
+
+    scheduled_entries =
+      if today?(day) do
+        Enum.map(scheduled_drafts, &draft_entry/1)
+      else
+        []
+      end
+
+    published_entries ++ scheduled_entries
+  end
+
+  defp post_on_day?(post, day) do
+    case post.posted_at do
+      %DateTime{} = dt ->
+        Date.compare(Date.new!(dt.year, dt.month, dt.day), day) == :eq
+
+      _ ->
+        false
+    end
+  end
+
+  defp post_entry(post) do
+    %{
+      draft_id: post.draft_id,
+      platform: post.platform,
+      content: post_content(post)
+    }
+  end
+
+  defp draft_entry(draft) do
+    %{draft_id: draft.id, platform: draft.platform, content: draft.content}
+  end
+
+  defp post_content(post) do
+    post.platform_post_url || post.platform_post_id || ""
+  end
+
+  defp snippet(nil), do: ""
+
+  defp snippet(text) when is_binary(text) do
+    text |> String.slice(0, 60)
+  end
+
+  defp platform_icon("twitter"), do: "hero-hashtag"
+  defp platform_icon("linkedin"), do: "hero-briefcase"
+  defp platform_icon("reddit"), do: "hero-chat-bubble-bottom-center"
+  defp platform_icon("facebook"), do: "hero-user-group"
+  defp platform_icon("instagram"), do: "hero-camera"
+  defp platform_icon("blog"), do: "hero-document-text"
+  defp platform_icon("youtube"), do: "hero-play"
+  defp platform_icon(_), do: "hero-megaphone"
 end

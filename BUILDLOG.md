@@ -82,6 +82,45 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 15.1c: Schedule calendar visualization
+
+Status: READY FOR REVIEW
+Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates; one formatter re-pass on HEEx comment indentation + single-child `:for` inline collapse), mix test 604/0 (598 prior + 6 new). Credo by content unchanged vs post-15.1b: zero new findings.
+Note: Week-view calendar + draft preview drawer on the existing Schedule LiveView per BUILDPLAN 15.1c.
+
+**Week-view** added under `@view == "calendar"` (replacing the old simple 22-day grid):
+
+- `week_days/1` returns the 7 days starting from the Sunday on or before the anchor date. The view always anchors on `Date.utc_today/0` so the visible week is "this week", independent of the existing timeline-navigation state.
+- Desktop layout (`hidden md:grid grid-cols-7`): 7 cells with `role="grid"` + `role="gridcell"`, `data-week-day={iso_date}`, day header ("Sun 4/23"), list of entries with platform icon + badge + truncated snippet, today's cell highlighted with `bg-base-300`. Each entry is a `<button>` (not a `<div>`) with `aria-label` + `focus:ring focus:ring-primary` + `phx-click="preview_draft"` + `phx-value-draft-id` for keyboard + screen-reader access.
+- Mobile layout (`md:hidden`, `data-week-calendar-mobile`): 7 stacked `<section>` elements, same entry button + "Nothing scheduled" fallback copy. Both layouts emit `data-week-day` attributes so tests see 14 total matches (7 unique days x 2 layouts).
+- Entry composition via `entries_for_day/3`: `post_on_day?/2` for published posts keyed on their `posted_at` date + approved drafts collapsed under today's cell (since the Draft schema has no per-draft `scheduled_at` yet). `post_entry/1` and `draft_entry/1` normalize both shapes to `%{draft_id, platform, content}` so the template stays uniform.
+- `platform_icon/1` seven-head maps each platform to a hero-icon name plus a catch-all "hero-megaphone".
+- `snippet/1` two-head caps at 60 chars; nil passes through as empty.
+
+**Draft preview drawer** added as a sibling `<aside role="dialog" aria-modal="true" data-draft-preview={draft.id}>` below the calendar. Shows platform badge + content_type + status_badge + the full pre-wrapped content + image_url hint. `handle_event("preview_draft", %{"draft-id" => id})` loads the Draft into `@preview_draft` (flashes an error if not found); `handle_event("close_preview", _)` clears. Close button carries `aria-label="Close preview"`.
+
+**Accessibility** (WCAG AA):
+- Semantic `<button>` for every interactive entry + `<section>` for mobile day groupings.
+- `aria-label` on every entry button and the close button.
+- `role="grid"`/`gridcell` on the desktop layout + `aria-label="Week calendar"` on the outer grid.
+- `role="dialog" aria-modal="true"` on the drawer.
+- `focus:outline-none focus:ring focus:ring-primary` gives visible focus indicators.
+- Decorative icons wrapped in `<span aria-hidden="true">` since the CoreComponents `<.icon />` helper does not accept arbitrary HTML attributes.
+
+**Test-friendliness**: stable `data-week-day`, `data-week-entry`, `data-week-calendar-mobile`, `data-draft-preview` attributes mean the test suite asserts on DOM markers instead of copy that may shift later.
+
+6 new tests in `test/content_forge_web/live/dashboard/schedule/week_calendar_test.exs` (async: false):
+- Renders 7 unique `data-week-day` ISO dates across both layouts (14 total matches, 7 unique).
+- Published post on today's date shows in today's cell with platform label + draft snippet.
+- Approved draft (no `posted_at`) shows in today's column as upcoming.
+- `preview_draft` event opens the drawer with `data-draft-preview={draft.id}` + full content + platform.
+- `close_preview` clears the drawer.
+- Mobile layout (`md:hidden`) and desktop layout (`md:grid`) both present so each viewport lands on the right layout without JS.
+
+Cleanup: removed the now-unused `days_in_range/2` and `posts_for_day/2` helpers that the old 22-day simple grid relied on. Nothing else referenced them.
+
+Touched files: `lib/content_forge_web/live/dashboard/schedule/live.ex` (calendar view rewrite + drawer + preview_draft / close_preview events + week-view helpers + removed dead helpers), `test/content_forge_web/live/dashboard/schedule/week_calendar_test.exs` (new), `BUILDLOG.md`.
+
 ### Phase 15.1b: Script-gate threshold view on video page
 
 Status: DONE
