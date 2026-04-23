@@ -126,7 +126,7 @@ Phase exit criteria: end-to-end image generation, image processing, and video re
   - Stubbed in tests, live in dev/prod.
   - **Slicing note:** This one BUILDPLAN entry expands into several coder handoffs, mirroring the Phase 10 pattern of "ship an infra client, then swap each caller". The slices below carve up the work.
 
-- **11.1 (infra) Anthropic LLM client module**
+- **11.1 (infra) Anthropic LLM client module** ✅ Shipped `00f9ebc`.
   - Ship a named client module wrapping Anthropic's Messages API: base URL, `x-api-key` header, `anthropic-version` header, JSON body construction, timeout, retry policy, and transient-vs-permanent error classification.
   - One public function on the module shape of `complete(prompt, opts)` returning a success tuple carrying the response text, or a classified error tuple.
   - Configured from application env under `:content_forge, :llm, :anthropic` with `:api_key`, `:default_model`, `:max_tokens`. The API key is sourced from an environment variable at runtime via `config/runtime.exs`. When the key is absent, the client reports an `:not_configured` status and every call returns `{:error, :not_configured}` without any HTTP I/O, mirroring the Media Forge pattern.
