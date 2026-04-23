@@ -343,7 +343,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 11. Leans heavily on Phase 10 Media Forge pl
   - Existing `draft.image_url` stays in place and continues to be authoritative for published output until 13.5 teaches the publisher to resolve a rendition from the attached assets. The two paths coexist: a draft generated before this slice still publishes via `image_url`; a draft generated from a bundle gets `image_url` populated from the featured asset's thumbnail (or primary storage key) as part of the 13.4b worker.
   - Tests cover: attach adds a row and dedupes on repeat, detach removes, cascade-on-draft-delete and cascade-on-asset-delete, the `through: :assets` preload loads in order, and `role` defaults correctly.
 
-- **13.4b AssetBundleDraftGenerator worker**
+- **13.4b AssetBundleDraftGenerator worker** ✅ Shipped `2746f7f`.
   - New Oban worker `ContentForge.Jobs.AssetBundleDraftGenerator` under queue `:content_generation` that consumes a bundle id + a list of target platforms + a per-platform variant count. For each target platform, the worker builds a prompt using the bundle's context text, each asset's tags and description, and the bundle's visual narrative (ordered list of assets by position, with each asset's media type and thumbnail reference).
   - Calls `LLM.Anthropic.complete/2` (via the existing shipped client) with a structured JSON prompt asking for N variants per platform. JSON parsing follows the established pattern (direct decode, fenced-block fallback, reject malformed without fabricating).
   - For each returned variant, creates a Draft with status `"draft"`, the platform, content type `"post"` (or `"video_script"` for video-specific platforms), angle, generating_model set to the Anthropic model name, and a `bundle_id` reference recorded on the draft (new optional column added in this slice's migration). Then attaches the bundle's featured asset to the draft via `attach_asset/3` with role `"featured"`, and sets `image_url` from that asset's primary storage key or thumbnail so existing publisher paths keep working.
@@ -357,6 +357,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 11. Leans heavily on Phase 10 Media Forge pl
 
 - **13.5 Asset renditions on publish**
   - At publish time, Content Forge requests platform-specific renditions from Media Forge (Instagram 1:1, TikTok 9:16, etc.) and attaches the rendition to the platform post.
+  - **Must-fix carryover from 13.4b:** Bundle-generated drafts currently have `image_url` set to the featured asset's internal R2 storage key (not a real URL). The manual `"draft"→"approved"` workflow gates this today, but 13.5 must teach the publisher to resolve the correct URL at publish time from the attached `draft_assets` instead of reading `image_url` blindly. Resolution order: prefer a platform-specific rendition from Media Forge for the attached asset; fall back to the asset's primary storage key converted to a signed or public URL; finally fall back to the legacy `draft.image_url` for pre-13.4 drafts.
 
 Phase exit criteria: a marketer can upload a product photo, tag it, drop it in a bundle, generate a draft around it, and publish per-platform renditions without touching any external tool.
 
