@@ -251,6 +251,223 @@ defmodule ContentForge.Jobs.ImageGeneratorTest do
     end
   end
 
+  describe "coverage fill: alternate sync response shapes" do
+    test "sync response with top-level \"url\" key persists it", %{draft: draft} do
+      Req.Test.stub(@stub_key, fn conn ->
+        Req.Test.json(conn, %{"url" => "https://cdn.example/url-key.png"})
+      end)
+
+      assert {:ok, "https://cdn.example/url-key.png"} =
+               perform_job(ImageGenerator, %{"draft_id" => draft.id})
+
+      assert ContentGeneration.get_draft!(draft.id).image_url ==
+               "https://cdn.example/url-key.png"
+    end
+
+    test "sync response with nested \"result\".\"image_url\" persists it",
+         %{draft: draft} do
+      Req.Test.stub(@stub_key, fn conn ->
+        Req.Test.json(conn, %{
+          "result" => %{"image_url" => "https://cdn.example/nested.png"}
+        })
+      end)
+
+      assert {:ok, "https://cdn.example/nested.png"} =
+               perform_job(ImageGenerator, %{"draft_id" => draft.id})
+    end
+
+    test "unrecognized sync body (no url, no jobId) cancels the job",
+         %{draft: draft} do
+      Req.Test.stub(@stub_key, fn conn ->
+        Req.Test.json(conn, %{"status" => "accepted", "metadata" => %{"provider" => "flux"}})
+      end)
+
+      log =
+        capture_log(fn ->
+          assert {:cancel, "unrecognized Media Forge response"} =
+                   perform_job(ImageGenerator, %{"draft_id" => draft.id})
+        end)
+
+      assert log =~ "unrecognized"
+      assert ContentGeneration.get_draft!(draft.id).image_url == nil
+    end
+  end
+
+  describe "coverage fill: error classification branches" do
+    test "unexpected-status error from Media Forge cancels the job", %{draft: draft} do
+      Req.Test.stub(@stub_key, fn conn ->
+        # 304 reaches classify/1 through MediaForge and becomes :unexpected_status
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(304, "")
+      end)
+
+      log =
+        capture_log(fn ->
+          assert {:cancel, reason} =
+                   perform_job(ImageGenerator, %{"draft_id" => draft.id})
+
+          assert reason =~ "unexpected HTTP status 304"
+        end)
+
+      assert log =~ "unexpected status 304"
+      assert ContentGeneration.get_draft!(draft.id).image_url == nil
+    end
+
+    test "generic error tuple from MediaForge propagates as {:error, reason}",
+         %{draft: draft} do
+      # A redirect loop yields %Req.TooManyRedirectsError{}, which is neither a
+      # TransportError nor a classified HTTP status. MediaForge's classify/1
+      # passes it through its generic catch-all, and ImageGenerator's
+      # handle_generate_response/2 catch-all should forward it as {:error, _}.
+      Req.Test.stub(@stub_key, fn conn ->
+        conn
+        |> Plug.Conn.put_resp_header(
+          "location",
+          "https://media-forge.test/api/v1/generation/images"
+        )
+        |> Plug.Conn.resp(302, "")
+      end)
+
+      log =
+        capture_log(fn ->
+          assert {:error, %Req.TooManyRedirectsError{}} =
+                   perform_job(ImageGenerator, %{"draft_id" => draft.id})
+        end)
+
+      assert log =~ "unexpected Media Forge error"
+      assert ContentGeneration.get_draft!(draft.id).image_url == nil
+    end
+  end
+
+  describe "coverage fill: polling branches" do
+    test "poll observes a late :not_configured from Media Forge and downgrades",
+         %{draft: draft} do
+      # The initial POST returns a jobId so the worker enters the polling
+      # path. The stub clears the Media Forge secret as a side effect of the
+      # POST response, so the subsequent MediaForge.get_job/1 short-circuits
+      # to {:error, :not_configured} without any HTTP call. This matches the
+      # real-world "secret removed mid-job" condition.
+      config = Application.get_env(:content_forge, @media_forge_key)
+
+      Req.Test.stub(@stub_key, fn conn ->
+        case conn.request_path do
+          "/api/v1/generation/images" ->
+            Application.put_env(
+              :content_forge,
+              @media_forge_key,
+              Keyword.put(config, :secret, nil)
+            )
+
+            Req.Test.json(conn, %{"jobId" => "gen-late-skip"})
+
+          path ->
+            flunk("expected no HTTP after secret cleared; got #{path}")
+        end
+      end)
+
+      log =
+        capture_log(fn ->
+          assert {:ok, :skipped} =
+                   perform_job(ImageGenerator, %{"draft_id" => draft.id})
+        end)
+
+      assert log =~ "Media Forge became unavailable while polling"
+      assert ContentGeneration.get_draft!(draft.id).image_url == nil
+    end
+
+    test "poll \"done\" response with no extractable URL cancels the job",
+         %{draft: draft} do
+      Req.Test.stub(@stub_key, fn conn ->
+        case conn.request_path do
+          "/api/v1/generation/images" ->
+            Req.Test.json(conn, %{"jobId" => "gen-no-url"})
+
+          "/api/v1/jobs/gen-no-url" ->
+            # "done" but no image url anywhere in the body
+            Req.Test.json(conn, %{
+              "id" => "gen-no-url",
+              "status" => "done",
+              "result" => %{"metadata" => %{"provider" => "flux"}}
+            })
+        end
+      end)
+
+      log =
+        capture_log(fn ->
+          assert {:cancel, "Media Forge returned done without an image url"} =
+                   perform_job(ImageGenerator, %{"draft_id" => draft.id})
+        end)
+
+      assert log =~ "reported done but no image url"
+      assert ContentGeneration.get_draft!(draft.id).image_url == nil
+    end
+
+    test "poll \"done\" with top-level \"image_url\" persists it", %{draft: draft} do
+      Req.Test.stub(@stub_key, fn conn ->
+        case conn.request_path do
+          "/api/v1/generation/images" ->
+            Req.Test.json(conn, %{"jobId" => "gen-top-image-url"})
+
+          "/api/v1/jobs/gen-top-image-url" ->
+            Req.Test.json(conn, %{
+              "id" => "gen-top-image-url",
+              "status" => "completed",
+              "image_url" => "https://cdn.example/top-image-url.png"
+            })
+        end
+      end)
+
+      assert {:ok, "https://cdn.example/top-image-url.png"} =
+               perform_job(ImageGenerator, %{"draft_id" => draft.id})
+    end
+
+    test "poll \"done\" with \"result\".\"url\" (not image_url) persists it",
+         %{draft: draft} do
+      Req.Test.stub(@stub_key, fn conn ->
+        case conn.request_path do
+          "/api/v1/generation/images" ->
+            Req.Test.json(conn, %{"jobId" => "gen-result-url"})
+
+          "/api/v1/jobs/gen-result-url" ->
+            Req.Test.json(conn, %{
+              "id" => "gen-result-url",
+              "status" => "succeeded",
+              "result" => %{"url" => "https://cdn.example/result-url.png"}
+            })
+        end
+      end)
+
+      assert {:ok, "https://cdn.example/result-url.png"} =
+               perform_job(ImageGenerator, %{"draft_id" => draft.id})
+    end
+
+    test "poll returns a non-:not_configured error tuple and propagates it",
+         %{draft: draft} do
+      Req.Test.stub(@stub_key, fn conn ->
+        case conn.request_path do
+          "/api/v1/generation/images" ->
+            Req.Test.json(conn, %{"jobId" => "gen-poll-err"})
+
+          "/api/v1/jobs/gen-poll-err" ->
+            # 503 during polling -> MediaForge returns {:error, {:transient, 503, body}}
+            conn
+            |> Plug.Conn.put_resp_content_type("application/json")
+            |> Plug.Conn.resp(503, JSON.encode!(%{"error" => "overloaded"}))
+        end
+      end)
+
+      log =
+        capture_log(fn ->
+          assert {:error, {:transient, 503, _body}} =
+                   perform_job(ImageGenerator, %{"draft_id" => draft.id})
+        end)
+
+      assert log =~ "poll of Media Forge job"
+      assert ContentGeneration.get_draft!(draft.id).image_url == nil
+    end
+  end
+
   # --- async stub helpers ----------------------------------------------------
 
   defp handle_async_call(conn, 1) do
