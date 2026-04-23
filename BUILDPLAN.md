@@ -79,7 +79,7 @@ Both items below landed 2026-04-22 before any Phase 10 work. Retained here as a 
   - Add a dashboard card on the performance or schedule page showing cumulative image generation cost per product and a rolling seven-day spend number.
   - Backfill strategy for rows that existed before the mirror began: none; start collecting from slice merge forward.
 
-- **10.3 Swap video pipeline FFmpeg step onto Media Forge**
+- **10.3 Swap video pipeline FFmpeg step onto Media Forge** ✅ Shipped `42db18f`.
   - Video production pipeline currently calls FFmpeg locally in one step. Replace that step with a Media Forge `/api/v1/video/render` (or `/api/v1/video/batch` for multi-platform) call.
   - Remotion is still responsible for the pre-render composition; Media Forge owns final encoding and per-platform rendition.
   - Preserve existing per-step status tracking in the dashboard.
@@ -92,14 +92,22 @@ Both items below landed 2026-04-22 before any Phase 10 work. Retained here as a 
     - On transient errors, the worker returns so Oban retries. On permanent errors (4xx/cancel/unexpected-status), mark the video job `failed` with the error recorded on the `error` field.
     - Tests use `Req.Test` stubs for Media Forge responses and cover: sync success with immediate R2 key, async success resolved by polling, `:not_configured` leaves the job at `assembled`, permanent error fails the job, transient error triggers retry. No live Media Forge calls from the suite.
 
-- **10.4 Swap image processing (EXIF, crops, platform renditions) onto Media Forge**
+- **10.4 Swap image processing (EXIF, crops, platform renditions) onto Media Forge** (folded into Phase 13 / Feature 11)
   - Any place Content Forge manipulates uploaded images (autorotate, EXIF strip, platform crops) moves to Media Forge's `/api/v1/image/*`.
   - This primarily serves Feature 11 (Product Asset Management) when that lands, but upgrade any existing image pre-processing first so Feature 11 inherits the plumbing.
+  - **Deferred-into-13 rationale:** A search at phase time (HEAD `42db18f`) confirmed there are no existing callers doing EXIF, autorotate, crop, or resize work inside Content Forge. The only image touchpoint today is `ImageGenerator` which already routes through `MediaForge.generate_images/1` per 10.2. Because 10.4's acceptance boils down to "swap the zero existing callers", there is nothing to do as a standalone slice. The requirement is folded into the acceptance intent for Feature 11 (Product Asset Management): the first asset-upload caller that wants rotation, EXIF strip, or platform crop must call into the MediaForge image endpoints directly rather than re-introducing a local image library.
 
 - **10.5 Signed-webhook receiver for Media Forge job completion**
   - Endpoint that verifies `X-MediaForge-Signature` (HMAC SHA256, Stripe-style timestamp window, `Plug.Crypto.secure_compare`) and updates the corresponding Content Forge job record.
   - Alternative to polling. Job records should support either mode.
   - This is a prerequisite for the pipeline work above if we want to avoid long poll loops; slice 10.1 through 10.4 can start with polling, then 10.5 upgrades them once shipped.
+  - Additional requirements surfaced during investigation:
+    - The inbound endpoint lives on a new public route that does not go through the API bearer-token pipeline; authentication is HMAC over the raw request body. A body-reader plug captures the raw body before JSON parsing so the signature check can run against the exact bytes that Media Forge signed.
+    - Timestamp window is 300 seconds. Requests with timestamps outside the window are rejected with HTTP 400 and "stale request" in the body. Signature mismatches are rejected with HTTP 401. Both rejections log the condition but do not echo the offending signature.
+    - On a valid signature, the handler parses the JSON body, looks up the matching Content Forge record (the image-generator draft by media forge job id, the video job by media forge job id), and applies the completion. Records already in a terminal state are treated as a no-op and return HTTP 200 so Media Forge does not retry.
+    - Resolution is shared with polling. A single internal function (in `ContentForge.MediaForge` or a small resolution module) handles "job done" / "job failed" state transitions regardless of whether the trigger was a poll or a webhook. The poller and the webhook controller both call that function so state transitions stay identical.
+    - Tests cover: valid webhook updates the draft's `image_url`, valid webhook updates the video job to `encoded`, stale timestamp returns 400, bad signature returns 401, unknown job id returns 404, webhook arriving after polling already resolved returns 200 with a no-op.
+    - No live Media Forge calls from the test suite; the webhook side is exercised directly via `Phoenix.ConnTest` with forged valid signatures.
 
 Phase exit criteria: end-to-end image generation, image processing, and video rendition all run against live Media Forge in dev; tests run against stubs; dashboard shows real cost numbers; no placeholder image URLs anywhere.
 

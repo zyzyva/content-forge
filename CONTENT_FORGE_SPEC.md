@@ -356,3 +356,44 @@ Acceptance criteria:
 - [ ] The signed-webhook receiver for asynchronous job completion is Phase 10.5. The client's async enqueue functions return a job identifier that can be either polled via the job status function or resolved by a webhook once the receiver lands; this slice does not build the receiver.
 - [ ] No dashboard or LiveView surface changes in this slice. "Media Forge unavailable" messaging is a caller-side concern handled when each existing feature is swapped over.
 
+---
+
+### Integration 2: Media Forge Webhook Receiver
+
+**Purpose:** Give Media Forge a first-class path to notify Content Forge that an asynchronous job has finished. Today every async call (image generation, video render) is resolved by polling `get_job/1` until the remote status flips to done or failed. Polling is correct but expensive in wall-clock time and wasteful of retries. The webhook receiver is an alternative faster path: Media Forge posts a signed completion notice to a Content Forge endpoint, and Content Forge applies the exact same state transition the poller would have applied. Polling continues to exist as a fallback for deployments where inbound webhooks cannot reach Content Forge.
+
+**Why this matters:** With only polling, a production workflow that enqueues ten video renders and ten image generations spends minutes in waiting loops even when Media Forge finished its work in seconds. The webhook closes that gap, shortens time-to-publish, and reduces the chance of Oban retries timing out on long jobs.
+
+**Endpoint and routing:**
+- [ ] The receiver is exposed as a single public HTTP route whose path is stable and reserved for Media Forge: `POST /webhooks/media_forge`. The route lives outside the `/api/v1` namespace so it does not inherit the bearer-token pipeline. A dedicated pipeline applies only what this endpoint needs: raw body capture and HMAC signature verification.
+- [ ] The route accepts JSON. The success response is HTTP 200 with an empty or trivial JSON body. Every non-success response is a specific status code with a plain-text reason: 400 for malformed payloads or stale timestamps, 401 for bad or missing signatures, 404 for job identifiers that do not match any known Content Forge record. The body never echoes the offending signature or any secret.
+
+**Signature verification:**
+- [ ] The header `X-MediaForge-Signature` has the Stripe-style shape `t=<unix-timestamp>,v1=<hex>`. The `v1` value is HMAC SHA256 of the exact byte sequence `<timestamp>.<raw-body>` computed with the Media Forge shared secret.
+- [ ] A body-reader plug captures the raw request body before any JSON parsing consumes the stream. The verifier compares signatures using `Plug.Crypto.secure_compare/2` to avoid timing-leak side channels.
+- [ ] The allowed timestamp window is 300 seconds in either direction from server time. Requests outside the window are rejected as stale even if the signature would otherwise verify.
+- [ ] The shared secret is read from application configuration (same namespace as the outbound client's secret, or a separate `:webhook_secret` key if operations prefer to rotate them independently; the spec allows either as long as it is documented in `config/runtime.exs`). If no secret is configured, every inbound webhook is rejected 401 rather than accepting unsigned input.
+
+**Payload and dispatch:**
+- [ ] The JSON body must identify the Media Forge job by id, the event type (for example `job.done` or `job.failed`), and carry a result payload appropriate to the event. Content Forge looks up the matching internal record (image-generation-backed draft, video job) by Media Forge job id.
+- [ ] Dispatch is single-function: a shared resolution helper is called by both the poller (in the async enqueue/poll loop) and the webhook controller. The helper reads the current state of the internal record and applies the terminal transition exactly once. Records already in a terminal state produce a 200 no-op response so Media Forge does not retry.
+- [ ] For an image-generation draft: on `job.done`, `draft.image_url` is persisted from the payload and the draft status returns to `ranked` (or whatever it was before generation started) so it can progress to scheduling. On `job.failed`, the draft is marked blocked with an error note surfaced in the dashboard. For a video job: on `job.done`, the final R2 key is recorded under the final-encode step in the per-step storage map and the job transitions from `assembled` to `encoded`. On `job.failed`, the job transitions to `failed` with the error recorded.
+- [ ] Idempotency: if the poller already resolved the job in the same state, the webhook handler returns 200 and applies no change. If the webhook resolves first, the poller sees a terminal state on its next check and exits cleanly.
+
+**Testing:**
+- [ ] Tests are `Phoenix.ConnTest`-based with forged valid signatures for the happy paths and deliberately broken signatures / timestamps for the rejection paths. No live Media Forge is involved; the webhook side is pure inbound verification.
+- [ ] Minimum required tests:
+  - [ ] A valid signed `job.done` for an image draft updates `image_url` and transitions status, returns 200.
+  - [ ] A valid signed `job.done` for a video job records the R2 key and transitions the job to `encoded`, returns 200.
+  - [ ] A valid signed `job.failed` for an image draft marks it blocked with an error note.
+  - [ ] A valid signed `job.failed` for a video job transitions it to `failed`.
+  - [ ] A timestamp outside the 300-second window returns 400 "stale request" regardless of signature validity.
+  - [ ] An invalid signature returns 401.
+  - [ ] An unknown Media Forge job id returns 404.
+  - [ ] A repeat webhook for a record already in a terminal state returns 200 and makes no change (asserted by examining the record before and after).
+
+**Out of scope for this slice:**
+- [ ] No changes to the outbound client beyond extracting the shared resolution helper if that makes the two call paths simpler to test.
+- [ ] Dashboard surfacing of webhook vs. polling as the resolution source is not part of this slice; the dashboard simply sees the resulting state transitions.
+- [ ] No backward-compatibility shim for a pre-webhook Media Forge; the spec assumes Media Forge always signs its webhooks as described.
+
