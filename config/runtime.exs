@@ -29,6 +29,11 @@ config :content_forge, :media_forge,
   webhook_secret:
     System.get_env("MEDIA_FORGE_WEBHOOK_SECRET") || System.get_env("MEDIA_FORGE_SECRET")
 
+config :content_forge, :open_claw,
+  base_url: System.get_env("OPENCLAW_BASE_URL"),
+  api_key: System.get_env("OPENCLAW_API_KEY"),
+  default_timeout: String.to_integer(System.get_env("OPENCLAW_TIMEOUT_MS", "60000"))
+
 config :content_forge, :llm,
   anthropic: [
     base_url: System.get_env("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
