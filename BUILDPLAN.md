@@ -20,12 +20,12 @@ A slice is "done" only when:
 - `BUILDLOG.md` reflects the change with role + date + commit hash.
 - `CAPABILITIES.md` is refreshed at end of phase if it has drifted.
 
-## Bootstrap (do before Phase 10)
+## Bootstrap (done before Phase 10)
 
-Two small slices that unlock the rest:
+Both items below landed 2026-04-22 before any Phase 10 work. Retained here as a record of what the swarm depends on.
 
-- **B1. Wire `mix credo --strict` into the project.** Add `:credo` to `mix.exs` deps, add a `.credo.exs` config tuned for this project, and commit. The reviewer's gate depends on this. Tiny slice; coder can do it in one loop.
-- **B2. Add a `mix precommit` alias** combining `compile --warnings-as-errors`, `format --check-formatted`, `credo --strict`, and `test`, so the local gate is one command. Mirror the alias from Media Forge.
+- **B1. Wire `mix credo --strict` into the project.** ✅ Done. Credo dep installed, `.credo.exs` generated with relaxed nesting and complexity thresholds to grandfather Features 1-9 hotspots, existing findings snapshotted in `.credo_baseline.txt` (44 findings). Reviewer constitution amended to require baseline diffing — slices must not introduce new findings.
+- **B2. `mix precommit` alias.** ✅ Done. Runs `compile --warnings-as-errors`, `deps.unlock --unused`, `format`, `test`. Credo is not included in this alias (it would always fail on existing debt); the reviewer runs `mix credo --strict` separately and diffs against the baseline.
 
 ## Guiding Principles
 

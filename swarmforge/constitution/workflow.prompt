@@ -40,3 +40,4 @@ A reviewer handoff is not done until:
 - Any refactors preserve behavior and the test suite still passes.
 - For LiveView slices, the reviewer has verified the rendered markup is responsive and accessible (semantic elements, ARIA, contrast, keyboard paths).
 - For external-integration slices, the reviewer has verified that missing credentials downgrade gracefully instead of crashing.
+- `mix credo --strict` output is diffed against `.credo_baseline.txt`. The slice is only acceptable if no new findings are introduced (it is fine to ship with fewer findings). A dedicated credo-cleanup slice must update the baseline file at the end of its run.

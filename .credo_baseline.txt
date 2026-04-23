@@ -1,0 +1,44 @@
+[D] ↘ lib/content_forge_web/components/core_components.ex:204:9 Nested modules could be aliased at the top of the invoking module.
+[D] ↘ lib/content_forge_web/controllers/draft_controller.ex:142:30 Nested modules could be aliased at the top of the invoking module.
+[D] ↘ lib/content_forge_web/controllers/draft_controller.ex:144:30 Nested modules could be aliased at the top of the invoking module.
+[D] ↘ lib/content_forge/jobs/competitor_scraper.ex:144:8 Nested modules could be aliased at the top of the invoking module.
+[D] ↘ lib/content_forge/jobs/metrics_poller.ex:380:14 Nested modules could be aliased at the top of the invoking module.
+[D] ↘ lib/content_forge/jobs/metrics_poller.ex:418:8 Nested modules could be aliased at the top of the invoking module.
+[D] ↘ lib/content_forge/jobs/metrics_poller.ex:426:8 Nested modules could be aliased at the top of the invoking module.
+[D] ↘ test/support/data_case.ex:39:11 Nested modules could be aliased at the top of the invoking module.
+[D] ↘ test/support/data_case.ex:40:19 Nested modules could be aliased at the top of the invoking module.
+[F] ↗ lib/content_forge/jobs/image_generator.ex:53:5 Unless conditions should avoid having an `else` block.
+[F] → lib/content_forge/jobs/metrics_poller.ex:386:30 Function body is nested too deep (max depth is 3, was 4).
+[F] ↗ lib/content_forge/jobs/open_claw_bulk_generator.ex:39:5 Unless conditions should avoid having an `else` block.
+[F] ↗ lib/content_forge/jobs/open_claw_bulk_generator.ex:84:25 Avoid negated conditions in if-else blocks.
+[F] → lib/content_forge/jobs/publisher.ex:224:8 Function is too complex (cyclomatic complexity is 19, max is 12).
+[F] → lib/content_forge/jobs/publisher.ex:49:17 Function body is nested too deep (max depth is 3, was 4).
+[F] → lib/content_forge/jobs/site_crawler.ex:118:52 Function body is nested too deep (max depth is 3, was 4).
+[F] → lib/content_forge/jobs/video_producer.ex:103:25 Function body is nested too deep (max depth is 3, was 6).
+[F] ↗ lib/content_forge/jobs/video_producer.ex:45:12 Avoid negated conditions in if-else blocks.
+[F] → lib/content_forge/publishing/twitter.ex:124:17 Function body is nested too deep (max depth is 3, was 4).
+[F] → test/content_forge/jobs/publisher_test.exs:134:8 Function is too complex (cyclomatic complexity is 19, max is 12).
+[R] ↘ lib/content_forge_web.ex:91:13 The alias `Phoenix.LiveView.JS` is not alphabetically ordered among its group.
+[R] ↘ lib/content_forge_web/controllers/metrics_json.ex:2:9 The alias `ContentForge.Metrics.ScoreboardEntry` is not alphabetically ordered among its group.
+[R] ↘ lib/content_forge_web/live/dashboard/performance/dashboard_live.ex:9:9 The alias `ContentForge.Publishing` is not alphabetically ordered among its group.
+[R] ↘ lib/content_forge_web/live/dashboard/products/detail_live.ex:8:9 The alias `ContentForge.Products` is not alphabetically ordered among its group.
+[R] ↘ lib/content_forge_web/live/dashboard/schedule/live.ex:6:9 The alias `ContentForge.Publishing` is not alphabetically ordered among its group.
+[R] ↘ lib/content_forge_web/live/dashboard/video/status_live.ex:8:9 The alias `ContentForge.Publishing` is not alphabetically ordered among its group.
+[R] ↘ lib/content_forge/accounts.ex:6:9 The alias `ContentForge.Repo` is not alphabetically ordered among its group.
+[R] ↘ lib/content_forge/content_generation.ex:9:9 The alias `ContentForge.Products.ContentBrief` is not alphabetically ordered among its group.
+[R] ↘ lib/content_forge/jobs/blog_publisher.ex:9:2 The alias `` is not alphabetically ordered among its group.
+[R] ↘ lib/content_forge/jobs/content_brief_generator.ex:14:23 The alias `ContentForge.Products` is not alphabetically ordered among its group.
+[R] ↘ lib/content_forge/jobs/image_generator.ex:12:23 The alias `ContentForge.Products` is not alphabetically ordered among its group.
+[R] ↘ lib/content_forge/jobs/metrics_poller.ex:20:2 The alias `` is not alphabetically ordered among its group.
+[R] ↘ lib/content_forge/jobs/metrics_poller.ex:23:34 The alias `ContentForge.Publishing.Twitter` is not alphabetically ordered among its group.
+[R] ↘ lib/content_forge/jobs/open_claw_bulk_generator.ex:13:23 The alias `ContentForge.Products` is not alphabetically ordered among its group.
+[R] ↘ lib/content_forge/jobs/publisher.ex:9:2 The alias `` is not alphabetically ordered among its group.
+[R] → lib/content_forge/jobs/script_gate.ex:1:11 Modules should have a @moduledoc tag.
+[R] ↗ lib/content_forge/jobs/site_crawler.ex:146:8 Predicate function names should not start with 'is', and should end in a question mark.
+[R] ↘ lib/content_forge/jobs/video_producer.ex:17:23 The alias `ContentForge.Products` is not alphabetically ordered among its group.
+[R] ↘ lib/content_forge/metrics.ex:10:9 The alias `ContentForge.Metrics.ScoreboardEntry` is not alphabetically ordered among its group.
+[R] ↘ lib/content_forge/products.ex:7:9 The alias `ContentForge.Repo` is not alphabetically ordered among its group.
+[R] ↘ lib/content_forge/publishing.ex:8:9 The alias `ContentForge.Repo` is not alphabetically ordered among its group.
+[R] ↗ lib/content_forge/storage.ex:48:7 Function/macro/guard names should be written in snake_case.
+[R] ↘ test/content_forge_web/live/dashboard_live_test.exs:7:9 The alias `ContentForge.Products` is not alphabetically ordered among its group.
+[W] ↗ test/content_forge/metrics/clip_flag_test.exs:68:14 Using `length/1` is expensive, prefer comparing against an empty list.

@@ -161,7 +161,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
                   <h3 class="font-semibold">Version {@brief.version}</h3>
                   <p class="text-sm text-base-content/70">
                     Created: {Components.format_datetime(@brief.inserted_at)}
-                    <span :if={@brief.model_used}> | Model:  {@brief.model_used}</span>
+                    <span :if={@brief.model_used}> | Model:   {@brief.model_used}</span>
                   </p>
                 </div>
                 <Components.status_badge status="active" />
