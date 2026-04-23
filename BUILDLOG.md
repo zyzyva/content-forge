@@ -84,8 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 14.2a: ContentForge.Twilio outbound client
 
-Status: READY FOR REVIEW
-Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates), mix test 475/0 (459 prior + 16 new). Credo by content unchanged vs post-14.1b: three would-be new findings fixed inline (cond-with-single-condition in `resolve_sender/1` refactored into two function-head clauses, two non-underscored numeric literals in tests - 21211 and 50000 - switched to 21_211 and 50_000); zero net-new findings; same nine baseline findings net-removed.
+Status: DONE
+Merged: master @ `52ec927` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 475-0; credo unchanged. Two-head `:not_configured` dispatch; three-head sender resolver (messaging_service_sid priority over from); taxonomy identical to prior HTTP clients. Basic auth inside `build_request`; `redirect: false`; form body as list-of-tuples preserves duplicate `MediaUrl` keys. 16 tests.
 Note: New HTTP client at `lib/content_forge/twilio.ex` wrapping Twilio's Messages API (`POST /2010-04-01/Accounts/{AccountSid}/Messages.json`) per BUILDPLAN 14.2a. Mirrors the established error-classification pattern from `ContentForge.MediaForge` / `ContentForge.LLM.Anthropic` / `ContentForge.LLM.Gemini` / `ContentForge.OpenClaw`.
 
 Public surface:

@@ -419,7 +419,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 12. Twilio + OpenClaw integration.
   - Outbound send via Twilio with retry on transient failure.
   - **Slicing note:** Session schema already shipped under 14.1a. Split remaining work into Twilio outbound client (14.2a) and the auto-reply orchestrator with OpenClaw gating (14.2b). OpenClaw is currently unavailable (see 11.2 caller decision), so 14.2b ships with a graceful-unavailable path so inbound messages get a polite auto-reply today and real replies when OpenClaw comes online.
 
-- **14.2a Twilio outbound client module**
+- **14.2a Twilio outbound client module** ✅ Shipped `52ec927`.
   - Ship a named client at `ContentForge.Twilio` under `lib/content_forge/twilio.ex` that wraps Twilio's Messages API (`POST /2010-04-01/Accounts/{AccountSid}/Messages.json`). Public function `send_sms(to, body, opts)` returns `{:ok, %{sid, status}}` or a classified error tuple.
   - Config namespace at `:content_forge, :twilio` with `:account_sid`, `:auth_token`, `:from_number`, `:default_messaging_service_sid` (optional — preferred over `from_number` when set). Runtime wiring sources all four from env vars. Missing any required field returns `{:error, :not_configured}` with zero HTTP.
   - Auth is HTTP Basic with the account SID as username and the auth token as password. The client attaches this inside its Req pipeline, never at the call site.
