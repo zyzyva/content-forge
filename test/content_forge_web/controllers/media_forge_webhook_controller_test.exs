@@ -1,6 +1,8 @@
 defmodule ContentForgeWeb.MediaForgeWebhookControllerTest do
   use ContentForgeWeb.ConnCase, async: false
 
+  import ExUnit.CaptureLog
+
   alias ContentForge.ContentGeneration
   alias ContentForge.Products
   alias ContentForge.Publishing
@@ -233,10 +235,17 @@ defmodule ContentForgeWeb.MediaForgeWebhookControllerTest do
       }
 
       stale_ts = System.system_time(:second) - 301
-      conn = post_webhook(conn, payload, stale_ts)
 
+      log =
+        capture_log(fn ->
+          conn = post_webhook(conn, payload, stale_ts)
+          send(self(), {:conn, conn})
+        end)
+
+      assert_received {:conn, conn}
       assert conn.status == 400
       assert conn.resp_body =~ "stale"
+      assert log =~ "stale request"
     end
 
     test "invalid signature returns 401", %{conn: conn, product: product} do
@@ -251,10 +260,16 @@ defmodule ContentForgeWeb.MediaForgeWebhookControllerTest do
       ts = System.system_time(:second)
       bad_sig = "t=#{ts},v1=000000000000000000000000000000000000000000000000000000000000dead"
 
-      conn = post_webhook(conn, payload, nil, bad_sig)
+      log =
+        capture_log(fn ->
+          conn = post_webhook(conn, payload, nil, bad_sig)
+          send(self(), {:conn, conn})
+        end)
 
+      assert_received {:conn, conn}
       assert conn.status == 401
       assert conn.resp_body =~ "invalid"
+      assert log =~ "invalid signature"
     end
 
     test "missing signature header returns 401", %{conn: conn, product: product} do
@@ -266,9 +281,15 @@ defmodule ContentForgeWeb.MediaForgeWebhookControllerTest do
         "result" => %{"image_url" => "https://cdn.example/x.png"}
       }
 
-      conn = post_webhook(conn, payload, nil, :none)
+      log =
+        capture_log(fn ->
+          conn = post_webhook(conn, payload, nil, :none)
+          send(self(), {:conn, conn})
+        end)
 
+      assert_received {:conn, conn}
       assert conn.status == 401
+      assert log =~ "missing signature"
     end
 
     test "unknown Media Forge job id returns 404", %{conn: conn} do
@@ -278,15 +299,29 @@ defmodule ContentForgeWeb.MediaForgeWebhookControllerTest do
         "result" => %{"image_url" => "https://cdn.example/x.png"}
       }
 
-      conn = post_webhook(conn, payload)
+      log =
+        capture_log(fn ->
+          conn = post_webhook(conn, payload)
+          send(self(), {:conn, conn})
+        end)
+
+      assert_received {:conn, conn}
       assert conn.status == 404
+      assert log =~ "unknown job id"
     end
 
     test "malformed payload without event returns 400", %{conn: conn} do
       payload = %{"job" => %{"id" => "mf-malformed"}}
 
-      conn = post_webhook(conn, payload)
+      log =
+        capture_log(fn ->
+          conn = post_webhook(conn, payload)
+          send(self(), {:conn, conn})
+        end)
+
+      assert_received {:conn, conn}
       assert conn.status == 400
+      assert log =~ "malformed payload"
     end
   end
 end
