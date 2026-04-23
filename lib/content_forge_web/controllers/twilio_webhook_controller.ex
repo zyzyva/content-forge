@@ -24,6 +24,7 @@ defmodule ContentForgeWeb.TwilioWebhookController do
 
   use ContentForgeWeb, :controller
 
+  alias ContentForge.Jobs.SmsReplyDispatcher
   alias ContentForge.Sms
   alias ContentForge.Sms.ProductPhone
 
@@ -52,7 +53,7 @@ defmodule ContentForgeWeb.TwilioWebhookController do
   # --- dispatch by lookup result ------------------------------------------
 
   defp dispatch(%ProductPhone{active: true} = phone, conn, from, body, media, sid) do
-    {:ok, _event} =
+    {:ok, event} =
       Sms.record_event(%{
         product_id: phone.product_id,
         phone_number: from,
@@ -64,6 +65,11 @@ defmodule ContentForgeWeb.TwilioWebhookController do
       })
 
     {:ok, _session} = Sms.get_or_start_session(phone.product_id, from)
+
+    {:ok, _job} =
+      %{"event_id" => event.id}
+      |> SmsReplyDispatcher.new()
+      |> Oban.insert()
 
     empty_twiml(conn)
   end

@@ -112,6 +112,30 @@ defmodule ContentForge.Sms do
   end
 
   @doc """
+  Counts outbound `SmsEvent` rows for `phone_number` inserted within
+  the last `seconds` window. Drives the per-phone daily rate limit in
+  `ContentForge.Jobs.SmsReplyDispatcher`. Passes through on any
+  `status` so `rejected_rate_limit` rows also count against the quota
+  (they still represent a reply attempt).
+  """
+  @spec count_recent_outbound(String.t(), pos_integer()) :: non_neg_integer()
+  def count_recent_outbound(phone_number, seconds \\ 86_400)
+      when is_binary(phone_number) and is_integer(seconds) and seconds > 0 do
+    since = DateTime.add(DateTime.utc_now(), -seconds, :second)
+
+    Repo.aggregate(
+      from(e in SmsEvent,
+        where:
+          e.phone_number == ^phone_number and
+            e.direction == "outbound" and
+            e.inserted_at >= ^since
+      ),
+      :count,
+      :id
+    )
+  end
+
+  @doc """
   Lists audit rows for a product. Options filter by `:direction`,
   `:status`, and `:phone_number`. Returns rows newest-first.
   """

@@ -1,8 +1,10 @@
 defmodule ContentForgeWeb.TwilioWebhookControllerTest do
   use ContentForgeWeb.ConnCase, async: false
+  use Oban.Testing, repo: ContentForge.Repo
 
   import ExUnit.CaptureLog
 
+  alias ContentForge.Jobs.SmsReplyDispatcher
   alias ContentForge.Products
   alias ContentForge.Repo
   alias ContentForge.Sms
@@ -87,6 +89,11 @@ defmodule ContentForgeWeb.TwilioWebhookControllerTest do
       assert session.product_id == product.id
       assert session.phone_number == "+15551112222"
       assert session.state == "idle"
+
+      assert_enqueued(
+        worker: SmsReplyDispatcher,
+        args: %{"event_id" => event.id}
+      )
     end
 
     test "captures MediaUrl0..N into media_urls", %{conn: conn, product: product} do
@@ -143,6 +150,7 @@ defmodule ContentForgeWeb.TwilioWebhookControllerTest do
       assert event.product_id == nil
 
       assert [] = Repo.all(ConversationSession)
+      refute_enqueued(worker: SmsReplyDispatcher)
     end
   end
 
@@ -176,6 +184,7 @@ defmodule ContentForgeWeb.TwilioWebhookControllerTest do
       assert event.product_id == product.id
 
       assert [] = Repo.all(ConversationSession)
+      refute_enqueued(worker: SmsReplyDispatcher)
     end
   end
 
