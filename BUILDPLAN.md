@@ -469,7 +469,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 12. Twilio + OpenClaw integration.
   - Idempotency: each dispatcher job is enqueued with Oban `unique:` over `[:args, :worker]` for a one-hour window so a scheduler re-run does not double-fire.
   - Tests cover: scheduler enqueues a dispatcher for a product with a stale last-inbound and no pause; scheduler skips when cadence not reached; scheduler skips when paused; scheduler skips outside quiet hours; dispatcher composes the friendly template by default and the gentler template after backoff; dispatcher fires the dashboard-dormant notification after stop threshold and does not send; idempotency prevents double-enqueue.
 
-- **14.5 Escalation**
+- **14.5 Escalation** ✅ Shipped `0fe31dc`.
   - If OpenClaw cannot confidently answer within a session, escalate to a human operator by creating a dashboard notification and pausing autoresponse.
   - Additional requirements surfaced during 14.2/14.4:
     - Extend `ConversationSession` with `escalated_at` (utc_datetime_usec, nullable), `escalation_reason` (text, nullable), and `auto_response_paused` (boolean default false). When a session is escalated, `SmsReplyDispatcher` short-circuits to a single holding-message outbound ("Thanks — a human from our team will follow up shortly.") and then no further auto-replies fire until the session is resolved.
@@ -488,6 +488,26 @@ Pick up after the feature waves clear. Any of these can be inserted earlier if i
   - Script-gate threshold view on the video page.
   - Calendar / timeline visualization on the schedule page.
   - Provider status panel (per Phase 11 exit).
+  - **Slicing note:** Three independent sub-slices; start with provider status panel (15.1a) since multiple earlier phases reference "unavailable" surfaces that need a centralized display.
+
+- **15.1a Provider status panel**
+  - New LiveView page at `/dashboard/providers` (`ProvidersLive`) plus a hub card. Shows, for every external service the app integrates, whether it is configured and currently reachable:
+    - Media Forge (client 10.1): config present (secret + base_url), last successful call timestamp from recent `ImageGenerator` or `AssetImageProcessor` events, last error (if any) from the past hour.
+    - LLM Anthropic (11.1 infra): config present (api_key), recent successful completion timestamp, last error.
+    - LLM Gemini (11.1b infra): same.
+    - OpenClaw (11.2 infra): config present (base_url + token), last successful call timestamp.
+    - Apify scraper (11.3a): config present (token), last successful scrape timestamp.
+    - Twilio (14.2a): config present (account_sid + auth_token + sender), last successful send timestamp from recent outbound SmsEvents.
+  - Each provider row has three states surfaced with the existing `status_badge` component: `Available` (configured + recent success), `Configured` (credentials present, no recent traffic), `Unavailable` (credentials missing). A fourth amber `Degraded` state fires when a provider has had more than 3 transient errors in the last 15 minutes.
+  - The page reads directly from application config for the credentials check (no live probe on page load) and from the event/audit tables for recent-activity timestamps. It never issues a synthetic call to the upstream.
+  - Tests: each state renders the correct badge; missing credentials show `Unavailable`; credentials present with no traffic show `Configured`; credentials present with a successful event in the last hour show `Available`; three transient errors in the window flip to `Degraded`.
+  - The hub card summarizes: count of `Unavailable` + `Degraded` providers; links to the full panel. When all are `Available` or `Configured`, the card shows a compact green state.
+
+- **15.1b Script-gate threshold view on video page**
+  - Add a view on the existing video status page that shows each candidate script's composite score alongside the current gate threshold, with a clear Promote/Override control. A script with score below threshold can still be manually promoted, with the override recorded on the `VideoJob` and surfaced in the status board.
+
+- **15.1c Schedule calendar visualization**
+  - Add a week-view calendar on the schedule page showing upcoming publishes by day + platform. Each cell shows the platform icon + draft snippet; clicking opens the draft preview. Mobile view collapses to a stacked daily list.
 
 - **15.2 WCAG AA audit**
   - Full pass over every LiveView page: contrast, keyboard focus order, ARIA labels, screen-reader verification.

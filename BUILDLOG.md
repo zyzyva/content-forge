@@ -84,8 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 14.5: Escalation + needs-reply dashboard
 
-Status: READY FOR REVIEW
-Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates), mix test 563/0 (544 prior + 19 new: 12 escalation context + dispatcher short-circuit + 7 LiveView). Credo by content unchanged vs post-14.4b: zero new findings.
+Status: DONE
+Merged: master @ `0fe31dc` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 563-0; credo unchanged. Holding-message-exactly-once semantics correct: `dispatch_with_session/3` two-head on `auto_response_paused`; `already_sent_holding_since_escalation?/1` single aggregate count gates duplicate sends. Escalate atomically sets all three fields + records audit row. `list_high_volume_sessions` uses Postgres group-by + MapSet difference so 'needs attention' and 'handled' are disjoint. 19 tests. **Phase 14 complete end-to-end** except OpenClaw-gated 14.2c (real reply generation) — blocked until OpenClaw conversational endpoint lands.
 Note: Escalation + needs-reply dashboard per BUILDPLAN 14.5.
 
 **Schema**: migration `20260501120000_add_escalation_to_conversation_sessions.exs` alters `conversation_sessions` to add `escalated_at :utc_datetime_usec`, `escalation_reason :text`, and `auto_response_paused :boolean null: false default false` + an index on `escalated_at`. `ConversationSession` schema + `@optional` cast list pick up all three. `SmsEvent` gains `"escalated"` in its `@statuses` inclusion list (plain string column, no migration).
