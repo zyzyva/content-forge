@@ -71,6 +71,11 @@ Note: `ContentForge.MediaForge` at `lib/content_forge/media_forge.ex`, 22-test a
 Status: DONE
 Note: 3xx catch-all returning `{:error, {:unexpected_status, status, body}}` shipped with a 304 Not Modified test. Reviewer ACCEPT at `2fadc8f`, merged to master as `2fadc8f` (fast-forward). Tests 123/0.
 
+### Phase 10.2: Swap image generation onto Media Forge
+
+Status: IN PROGRESS (coder handoff)
+Note: `ContentForge.Jobs.ImageGenerator` now calls `ContentForge.MediaForge.generate_images/1` instead of returning a placeholder URL. Handles synchronous responses (persists `image_url` immediately) and asynchronous responses (polls `MediaForge.get_job/1` with configurable interval and cap). `{:error, :not_configured}` logs "Media Forge unavailable", returns `{:ok, :skipped}`, and leaves `image_url` nil - no placeholder URL is ever written. Permanent 4xx errors `{:cancel, reason}`; transient 5xx/network errors propagate as `{:error, _}` so Oban retries. Non-post drafts skipped; drafts already carrying an image_url skipped. Oban queue config in `config/config.exs` extended with `:content_generation`, `:ingestion`, `:competitor` so the worker and its sibling workers actually run. Queue-override bug in `process_all_social_posts/1` fixed - child jobs now enqueue via `__MODULE__.new/1` on the declared `:content_generation` queue rather than the nonexistent `:image_generation`. New test file `test/content_forge/jobs/image_generator_test.exs` covers 10 scenarios (sync success, async poll-to-done, async poll-to-failed, poll timeout, not-configured downgrade, 4xx cancel, 5xx transient retry, non-post skip, already-attached skip, child queue assertion). Gate green: compile --warnings-as-errors clean, format clean, credo --strict strictly better than baseline (2 findings from the old image_generator.ex are gone; no new findings - `unless/else` replaced with function heads), mix test 133/0.
+
 ## Outstanding
 
 See `BUILDPLAN.md` for the wave-by-wave plan. Short version:

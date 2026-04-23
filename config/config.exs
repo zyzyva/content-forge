@@ -60,7 +60,13 @@ config :logger, :default_formatter,
 # Configure Oban
 config :content_forge, Oban,
   repo: ContentForge.Repo,
-  queues: [default: 10, events: 50]
+  queues: [
+    default: 10,
+    events: 50,
+    content_generation: 10,
+    ingestion: 5,
+    competitor: 5
+  ]
 
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
