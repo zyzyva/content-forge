@@ -84,8 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 15.1a: Provider status panel
 
-Status: READY FOR REVIEW
-Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates; one formatter re-pass on long `llm_row` + `open_claw_status` formatting), mix test 585/0 (563 prior + 22 new: 14 context + 8 LiveView). Credo by content unchanged vs post-14.5: zero new findings.
+Status: DONE
+Merged: master @ `3c2b0e1` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 585-0; credo unchanged. Zero-synthetic-probe verified (grep for HTTP libs + enqueue against `providers.ex` returns 0). All signals read from audit tables + `Application.get_env`. `classify/3` three-head; degrade>3 first-match. Degraded scoped to Twilio + Media Forge only — honest about the data we have. 22 tests.
 Note: `/dashboard/providers` + hub card per BUILDPLAN 15.1a.
 
 **Context `ContentForge.Providers`** at `lib/content_forge/providers.ex` with two public fns:

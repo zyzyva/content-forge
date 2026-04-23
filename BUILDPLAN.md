@@ -490,7 +490,7 @@ Pick up after the feature waves clear. Any of these can be inserted earlier if i
   - Provider status panel (per Phase 11 exit).
   - **Slicing note:** Three independent sub-slices; start with provider status panel (15.1a) since multiple earlier phases reference "unavailable" surfaces that need a centralized display.
 
-- **15.1a Provider status panel**
+- **15.1a Provider status panel** ✅ Shipped `3c2b0e1`.
   - New LiveView page at `/dashboard/providers` (`ProvidersLive`) plus a hub card. Shows, for every external service the app integrates, whether it is configured and currently reachable:
     - Media Forge (client 10.1): config present (secret + base_url), last successful call timestamp from recent `ImageGenerator` or `AssetImageProcessor` events, last error (if any) from the past hour.
     - LLM Anthropic (11.1 infra): config present (api_key), recent successful completion timestamp, last error.
