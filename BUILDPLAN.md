@@ -97,7 +97,7 @@ Both items below landed 2026-04-22 before any Phase 10 work. Retained here as a 
   - This primarily serves Feature 11 (Product Asset Management) when that lands, but upgrade any existing image pre-processing first so Feature 11 inherits the plumbing.
   - **Deferred-into-13 rationale:** A search at phase time (HEAD `42db18f`) confirmed there are no existing callers doing EXIF, autorotate, crop, or resize work inside Content Forge. The only image touchpoint today is `ImageGenerator` which already routes through `MediaForge.generate_images/1` per 10.2. Because 10.4's acceptance boils down to "swap the zero existing callers", there is nothing to do as a standalone slice. The requirement is folded into the acceptance intent for Feature 11 (Product Asset Management): the first asset-upload caller that wants rotation, EXIF strip, or platform crop must call into the MediaForge image endpoints directly rather than re-introducing a local image library.
 
-- **10.5 Signed-webhook receiver for Media Forge job completion**
+- **10.5 Signed-webhook receiver for Media Forge job completion** ✅ Shipped `f990a38`.
   - Endpoint that verifies `X-MediaForge-Signature` (HMAC SHA256, Stripe-style timestamp window, `Plug.Crypto.secure_compare`) and updates the corresponding Content Forge job record.
   - Alternative to polling. Job records should support either mode.
   - This is a prerequisite for the pipeline work above if we want to avoid long poll loops; slice 10.1 through 10.4 can start with polling, then 10.5 upgrades them once shipped.
@@ -108,6 +108,11 @@ Both items below landed 2026-04-22 before any Phase 10 work. Retained here as a 
     - Resolution is shared with polling. A single internal function (in `ContentForge.MediaForge` or a small resolution module) handles "job done" / "job failed" state transitions regardless of whether the trigger was a poll or a webhook. The poller and the webhook controller both call that function so state transitions stay identical.
     - Tests cover: valid webhook updates the draft's `image_url`, valid webhook updates the video job to `encoded`, stale timestamp returns 400, bad signature returns 401, unknown job id returns 404, webhook arriving after polling already resolved returns 200 with a no-op.
     - No live Media Forge calls from the test suite; the webhook side is exercised directly via `Phoenix.ConnTest` with forged valid signatures.
+
+- **10.5a Webhook test output cleanup**
+  - The webhook receiver test file produces noisy output because five rejection paths (stale timestamp, bad signature, malformed body, unknown job id, unsigned request) log warnings that are not wrapped in `capture_log`. Engineering rule says test output must be clean.
+  - Wrap each of the five log-producing assertions in `ExUnit.CaptureLog.capture_log/1`. For cases where the function under test also returns a value that the assertion needs, use the `send-to-self` pattern already documented in `CLAUDE.md`.
+  - Pure test hygiene; no behavior change.
 
 Phase exit criteria: end-to-end image generation, image processing, and video rendition all run against live Media Forge in dev; tests run against stubs; dashboard shows real cost numbers; no placeholder image URLs anywhere.
 
