@@ -29,7 +29,12 @@ config :content_forge, :media_forge,
   webhook_secret:
     System.get_env("MEDIA_FORGE_WEBHOOK_SECRET") || System.get_env("MEDIA_FORGE_SECRET")
 
-config :content_forge, :twilio, auth_token: System.get_env("TWILIO_AUTH_TOKEN")
+config :content_forge, :twilio,
+  base_url: System.get_env("TWILIO_BASE_URL", "https://api.twilio.com"),
+  account_sid: System.get_env("TWILIO_ACCOUNT_SID"),
+  auth_token: System.get_env("TWILIO_AUTH_TOKEN"),
+  from_number: System.get_env("TWILIO_FROM_NUMBER"),
+  default_messaging_service_sid: System.get_env("TWILIO_MESSAGING_SERVICE_SID")
 
 config :content_forge, :open_claw,
   base_url: System.get_env("OPENCLAW_BASE_URL"),
