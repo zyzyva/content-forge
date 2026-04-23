@@ -45,7 +45,10 @@ defmodule ContentForge.OpenClawTools do
           optional(:sender_identity) => String.t()
         }
 
-  @type result :: {:ok, map()} | {:error, :unknown_tool | term()}
+  @type result ::
+          {:ok, map()}
+          | {:ok, :confirmation_required, map()}
+          | {:error, :unknown_tool | term()}
 
   @tools %{
     "create_upload_link" => CreateUploadLink,
@@ -74,9 +77,19 @@ defmodule ContentForge.OpenClawTools do
   """
   @spec dispatch(String.t(), ctx(), map()) :: result()
   def dispatch(tool_name, ctx, params) when is_binary(tool_name) and is_map(params) do
-    case Map.fetch(@tools, tool_name) do
-      {:ok, module} -> module.call(ctx, params)
-      :error -> {:error, :unknown_tool}
+    case lookup_tool(tool_name) do
+      nil -> {:error, :unknown_tool}
+      module -> module.call(ctx, params)
     end
+  end
+
+  # Tests register temporary stub tools via
+  # `Application.put_env(:content_forge, :extra_open_claw_tools,
+  # %{"name" => Module})`. Prod never sets this key so the
+  # fallback path is the compile-time @tools map.
+  defp lookup_tool(tool_name) do
+    :content_forge
+    |> Application.get_env(:extra_open_claw_tools, %{})
+    |> Map.get(tool_name) || Map.get(@tools, tool_name)
   end
 end

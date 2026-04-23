@@ -557,4 +557,64 @@ defmodule ContentForgeWeb.OpenClawToolControllerTest do
                json_response(conn, 422)
     end
   end
+
+  describe "16.4a confirmation_required response" do
+    defmodule ConfirmationRequiredStub do
+      @moduledoc false
+      def call(_ctx, _params) do
+        {:ok, :confirmation_required,
+         %{
+           echo_phrase: "crimson-otter-harbor",
+           expires_at: ~U[2030-01-01 00:05:00.000000Z],
+           preview: %{
+             summary: "preview summary the agent will read",
+             draft_id: "d-1",
+             publish_gate: :passes
+           }
+         }}
+      end
+    end
+
+    setup do
+      original = Application.get_env(:content_forge, :extra_open_claw_tools, %{})
+
+      Application.put_env(
+        :content_forge,
+        :extra_open_claw_tools,
+        Map.put(original, "__test_confirmation_required__", ConfirmationRequiredStub)
+      )
+
+      on_exit(fn ->
+        Application.put_env(:content_forge, :extra_open_claw_tools, original)
+      end)
+
+      :ok
+    end
+
+    test "200 with status=confirmation_required and a serialized envelope",
+         %{conn: conn} do
+      body = %{
+        "session_id" => "sess-42",
+        "channel" => "cli",
+        "sender_identity" => "cli:ops",
+        "params" => %{"foo" => "bar"}
+      }
+
+      conn =
+        conn
+        |> put_req_header("x-openclaw-tool-secret", @secret)
+        |> post(~p"/api/v1/openclaw/tools/__test_confirmation_required__", body)
+
+      assert %{
+               "status" => "confirmation_required",
+               "echo_phrase" => "crimson-otter-harbor",
+               "expires_at" => "2030-01-01T00:05:00.000000Z",
+               "preview" => %{
+                 "summary" => "preview summary the agent will read",
+                 "draft_id" => "d-1",
+                 "publish_gate" => "passes"
+               }
+             } = json_response(conn, 200)
+    end
+  end
 end

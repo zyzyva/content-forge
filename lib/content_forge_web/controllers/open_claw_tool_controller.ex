@@ -19,8 +19,17 @@ defmodule ContentForgeWeb.OpenClawToolController do
   Response:
 
       200 - {"status": "ok", "result": { ... tool payload ... }}
+      200 - {"status": "confirmation_required",
+             "echo_phrase": "<three-words>",
+             "expires_at": "<iso8601>",
+             "preview": {...}}
       404 - {"status": "error", "error": "unknown_tool"}
       422 - {"status": "error", "error": <classified reason>}
+
+  The `confirmation_required` shape is the first-turn response
+  from heavy-write tools (16.4+); the agent reads the preview
+  and echo phrase back to the user, then replays the tool call
+  with the phrase under the `confirm` param.
 
   Pattern: the controller does not do tool-specific logic. It
   builds the invocation context, delegates to
@@ -36,6 +45,14 @@ defmodule ContentForgeWeb.OpenClawToolController do
     tool_params = Map.get(params, "params", %{})
 
     case OpenClawTools.dispatch(tool_name, ctx, tool_params) do
+      {:ok, :confirmation_required, envelope} ->
+        json(conn, %{
+          "status" => "confirmation_required",
+          "echo_phrase" => envelope.echo_phrase,
+          "expires_at" => DateTime.to_iso8601(envelope.expires_at),
+          "preview" => serialize_result(envelope.preview)
+        })
+
       {:ok, result} ->
         json(conn, %{"status" => "ok", "result" => serialize_result(result)})
 
