@@ -85,6 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 16.4c: schedule_reminder_change
 
 Status: DONE
+Merged: master @ `3d382d8` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 966-0, credo 26 vs 44 baseline (zero new in slice-touched files). Coverage ScheduleReminderChange 89%. Zero emdashes. No-op short-circuit verified end-to-end: when the request matches the current config (including schema defaults for products without a persisted `ReminderConfig` row), the tool returns `changed: false` without inserting a pending confirmation and without entering the confirmation loop. Reviewer UX note for the Node plugin `description`: on a fresh product where defaults (cadence=7, enabled=true) already match the request, `changed: false` is spec-compliant but reads as "nothing happened"; the agent description should coach the model to phrase this as "already on at that cadence" rather than "no change." Captured here for the 16.5/16.6 plugin-description pass.
 Note: Second heavy-write tool. Flips `ReminderConfig` cadence / enabled behind the 16.4a confirmation envelope, with a no-op short-circuit so users never confirm a change that would leave state identical. Reuses `Sms.get_reminder_config/1` and `Sms.upsert_reminder_config/2` verbatim; no schema or migration in this slice.
 
 **Tool** (`lib/content_forge/open_claw_tools/schedule_reminder_change.ex`):
