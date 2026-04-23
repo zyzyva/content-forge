@@ -85,7 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 15.4.1: ScheduleController Oban.insert map-shape fix
 
 Status: DONE
-Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `7831e28`. Gate: compile --warnings-as-errors clean, format clean, full test 623/0, credo baseline-diff empty.
+Merged: master @ `5ef58af` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 623-0; credo unchanged. Clean one-liner to `Publisher.new(args, scheduled_at:) |> Oban.insert()`. 2 new tests lock the shape. Out-of-scope `publish_draft`/`publish_now` bare-map instances flagged for 15.4.2 audit sweep.
 Note: Same class of bug as the `WinnerRepurposingEngine` fix rolled into 15.3.1. `ContentForgeWeb.ScheduleController.schedule_for_platform/2` called `Oban.insert(%{...}, scheduled_at: ...)` with a bare map; `Oban.insert/1` only accepts `%Oban.Job{}` or `Ecto.Changeset`. Any POST to `/api/v1/products/:id/schedule` for a platform whose `publishing_targets[platform]["enabled"] == true` raised `FunctionClauseError` instead of enqueuing. Surfaced by the 15.4 load smoke as `:5xx` errors on the `:schedule` op.
 
 **Fix**: Replaced the bare-map call with the established `Worker.new(args) |> Oban.insert()` pattern. Args inspection showed `%{"product_id" => ..., "platform" => ...}` which matches `ContentForge.Jobs.Publisher.perform/1`'s first clause exactly. Scheduled-at delay is preserved by passing it as an option to `Publisher.new/2`.

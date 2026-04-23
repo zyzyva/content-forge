@@ -553,7 +553,12 @@ Pick up after the feature waves clear. Any of these can be inserted earlier if i
 
 - **15.4 Load smoke** ✅ Shipped `8448b08`.
 
-- **15.4.1 ScheduleController Oban.insert map-shape fix**
+- **15.4.1 ScheduleController Oban.insert map-shape fix** ✅ Shipped `5ef58af`.
+
+- **15.4.2 Oban.insert bare-map audit sweep**
+  - Reviewer flagged that `ScheduleController.publish_draft` and `publish_draft.publish_now` still call `Oban.insert` with a bare map. These are the same class of bug as 15.3.1 and 15.4.1: `Oban.insert/1` requires an `%Oban.Job{}` struct, not a map. Any code path reaching these endpoints errors instead of enqueuing.
+  - Scope of this slice: grep the repo for `Oban.insert(%{` and `Oban.insert(%Oban.Job{`; any bare-map instance is converted to `Worker.new(args) |> Oban.insert()`. Each converted site gets a focused test that asserts `assert_enqueued` on the correct worker.
+  - If the sweep finds more than three instances, ship the fixes with their tests in one commit but keep the test file well-organized per-worker so future greps land on the right ownership.
   - `ContentForgeWeb.ScheduleController.schedule_for_platform/2` calls `Oban.insert(%{...})` with a plain map — same broken shape that the 15.3.1 E2E walk surfaced in `WinnerRepurposingEngine`. `Oban.insert/1` accepts only `%Oban.Job{}` structs (or a changeset). Anything that reaches this code path in production errors rather than enqueues.
   - Fix follows the established pattern: replace the bare-map call with `Publisher.new(args) |> Oban.insert()` (or whichever worker this path is meant to enqueue — inspect the map args and pick the right worker module).
   - Add a focused test that hits the schedule endpoint with a valid product + platform and asserts the correct Oban job is enqueued (via `assert_enqueued`). That's the test that would have caught this bug; it's also the test that locks in the fix.
