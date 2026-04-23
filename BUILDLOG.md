@@ -85,7 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 16.1: OpenClaw plugin scaffold + tool-execution HTTP surface
 
 Status: DONE
-Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `95b3987`. Gate: compile --warnings-as-errors clean, format clean (ran LAST), full test 790/0 (7 new), credo baseline-diff empty + per-touched-file clean.
+Merged: master @ `e74a545` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 790-0. Auth plug fail-closed on all three paths (missing config, missing header, mismatch), all converge on `deny/1` with bland `Unauthorized` so probing can't distinguish causes. `Plug.Crypto.secure_compare` constant-time. Path-traversal protection reused byte-for-byte from 13.1b. `Ecto.Query.CastError` rescue narrow + justified (UUID-vs-name signal). Reviewer flagged two non-blocking forward-looking items that land with 16.3: (a) content-type allow-list on the agent-tool path as defense-in-depth to match 13.1b, and (b) upper-bound clamp on `expires_in_seconds` (1h ceiling) to prevent forever-links from malformed agent turns.
 
 Note: First slice of Phase 16 (OpenClaw Tool Surface / ecosystem unlock). Ships the full loop: Node plugin → HTTP controller → tool dispatch module → reusable 13.1b presign infrastructure. Makes Content Forge invokable from any OpenClaw-connected channel (SMS via 14.2c, CLI, future Telegram, etc.) without per-channel code.
 

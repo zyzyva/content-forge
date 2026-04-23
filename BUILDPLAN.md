@@ -562,7 +562,7 @@ Phase exit criteria: a marketer can text a photo in, get it tagged into a produc
 
 **Pattern precedent:** OpenClaw's existing `lead-intel` plugin (seen in live gateway startup logs) registers 21 tools and proxies each call over HTTP to an Elixir app on `localhost:4010`. Content Forge follows the same shape.
 
-- **16.1 Plugin scaffold + tool-execution HTTP surface + end-to-end loop on one tool**
+- **16.1 Plugin scaffold + tool-execution HTTP surface + end-to-end loop on one tool** ✅ Shipped `e74a545`.
   - Ship the Node.js plugin at `~/.openclaw/plugins/content-forge/index.js` that declares a tool schema (name, description, params) for the first tool (`create_upload_link` — lowest-risk, read-mostly, already has a presigned-URL generator behind it from 13.1b) and proxies each invocation over HTTP to Content Forge.
   - New controller `ContentForgeWeb.OpenClawToolController` at `POST /api/v1/openclaw/tools/:tool_name`. Authenticates via a shared secret header (`X-OpenClaw-Tool-Secret`) matching a new `:content_forge, :open_claw_tool_secret` env var. Fail closed on missing secret. Request body carries session_id, channel, sender_identity, params; response body carries result status + result payload matching OpenClaw's expected tool-result format.
   - Tool dispatch: controller pattern-matches on `tool_name` and delegates to a tool-specific module under `ContentForge.OpenClawTools.<ToolName>`. Each tool module has a single `call/2` function taking (ctx, params) and returning `{:ok, result}` or `{:error, reason}`.
@@ -577,6 +577,7 @@ Phase exit criteria: a marketer can text a photo in, get it tagged into a produc
 
 - **16.3 Light-write tools + role-based authorization framework**
   - Add tool modules for writes that change product state but are reversible: `create_asset_bundle`, `record_memory` (persist a conversation note into a new `ProductMemory` schema scoped to the product), and `add_tag_to_asset`.
+  - Carried over from 16.1 reviewer notes (non-blocking forward-looking items that fit the auth framework work): (a) extract a shared `ContentForge.ProductAssets.AcceptedContentTypes` allow-list and apply it to `create_upload_link` as defense-in-depth (13.1b controller already validates before presigning; the tool path currently does not), (b) clamp `expires_in_seconds` on `create_upload_link` to a configurable ceiling (default 3600 = 1 hour) so a malformed agent turn cannot request a forever-link even though S3 caps at 7 days.
   - Introduce the authorization framework: a shared `ContentForge.OpenClawTools.Authorization.require/2` helper that takes the session context and the required role (`:owner | :submitter | :viewer`), resolves the sender's role via `ProductPhone` for phone-based channels or via a new `OperatorIdentity` record for CLI/other channels, and returns `:ok` or `{:error, :forbidden}`. Light writes require `:submitter` or higher.
   - Tests: viewer role forbidden on any light write; submitter role allowed; unknown sender identity forbidden; CLI-origin invocations without a registered OperatorIdentity forbidden by default (explicit allow-list required).
 
