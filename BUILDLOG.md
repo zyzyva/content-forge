@@ -84,8 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 15.3.1: E2E happy-path integration test
 
-Status: READY FOR REVIEW
-Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates), mix test 605/0 (604 prior + 1 new). Credo by content unchanged vs post-15.1c: zero new findings.
+Status: DONE
+Merged: master @ `41e0fb5` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 605-0; credo unchanged. Bundled bug fix: `WinnerRepurposingEngine` was calling `Oban.insert(%Oban.Job{...})` with a raw struct (Oban.insert doesn't accept that shape); surfaced by the E2E walk because no prior test covered the winner→repurpose arc. Fixed. Overall coverage climbed to 52.64%. Shared stubs at `test/support/e2e_stubs.ex` pre-wire every external client for future E2E slices.
 Note: Single deterministic integration test walking the pipeline + shared Req.Test stub helpers per BUILDPLAN 15.3.1.
 
 **Shared stubs** at `test/support/e2e_stubs.ex` (`ContentForge.Test.E2EStubs`):

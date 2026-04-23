@@ -512,13 +512,21 @@ Pick up after the feature waves clear. Any of these can be inserted earlier if i
 - **15.2 WCAG AA audit**
   - Full pass over every LiveView page: contrast, keyboard focus order, ARIA labels, screen-reader verification.
   - Fix findings in small slices, one page at a time.
+  - **Slicing note:** One sub-slice per LiveView page. Start with the dashboard entry surfaces (hub + products list + product detail) since those carry the most traffic.
+
+- **15.2a Dashboard hub + products list + product detail accessibility audit**
+  - Audit three pages: `/dashboard` (`DashboardLive`), `/dashboard/products` (`Products.ListLive`), `/dashboard/products/:id` (`Products.DetailLive`).
+  - For each: check color contrast (all text + icon pairs meet WCAG AA 4.5:1 for normal text, 3:1 for large), keyboard focus order is logical and every interactive element is reachable via Tab, visible focus indicator on every button/link/input, semantic landmarks (`<header>`, `<nav>`, `<main>`, `<footer>` or equivalent `role=` attributes), heading hierarchy (single `<h1>` per page, no skipped levels), ARIA labels on icon-only buttons, form inputs have associated `<label>` elements, interactive custom components use proper `role=button` with `tabindex=0` + Enter/Space handlers if not real buttons.
+  - Fix findings inline in the same slice. Add focus-visible styles where missing, rename non-descriptive button text, add aria-labels to icon buttons, rework color pairs that fail contrast.
+  - Tests: a per-page assertion that ensures each page contains the required landmarks and a single h1; optionally run an existing a11y-checker library against the rendered HTML if one is already in the project, otherwise the structural assertions are the regression gate. No screen-reader automation — manual verification is documented in the handoff notes.
+  - Explicit scope boundary: drafts review, schedule, video status, performance, clips, providers, and SMS pages are NOT touched in this slice. Each gets its own follow-up 15.2b/c/d/e/f/g/h.
 
 - **15.3 End-to-end integration tests**
   - At least one multi-step pipeline test per feature: product registered → brief generated → variants ranked → published → metrics collected → winner repurposed.
   - Against stubbed externals; live smoke is a separate manual runbook.
   - **Slicing note:** One end-to-end happy-path test first (15.3.1) to prove the pipeline hangs together with shared stub helpers; follow-ups add edge-case paths (15.3.2+) if gaps appear during the happy-path run. Coverage uplift (15.3a) is a separate slice that trails 15.3.
 
-- **15.3.1 End-to-end happy-path: product → brief → variants → rank → publish → metrics → repurpose**
+- **15.3.1 End-to-end happy-path: product → brief → variants → rank → publish → metrics → repurpose** ✅ Shipped `41e0fb5`.
   - Single integration test that walks the whole spine: create a product with a voice profile, stub `LLM.Anthropic` + `LLM.Gemini` to return deterministic brief and variant content, stub `MultiModelRanker`'s per-model stub to return scores that make one draft clearly best, stub the platform publisher clients (Twitter + LinkedIn) to accept, stub `MetricsPoller`'s platform calls to report engagement that labels the draft a winner, and assert that `WinnerRepurposingEngine` eventually enqueues cross-platform repurposed drafts from the original winner.
   - Shared test helpers at `test/support/e2e_stubs.ex` set up `Req.Test` stubs for every external client the pipeline touches in one call. Individual tests opt into which stubs they need. No live HTTP anywhere in the suite.
   - Test runs through `Oban.Testing.perform_job/2` calls for each worker in order (`ContentBriefGenerator`, `OpenClawBulkGenerator` is skipped since it's blocked — the test hand-creates drafts or uses `AssetBundleDraftGenerator` instead, `MultiModelRanker`, `Publisher`, `MetricsPoller`, `WinnerRepurposingEngine`) rather than relying on Oban's actual dispatcher, so the test is deterministic without sleeps.
