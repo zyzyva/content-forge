@@ -82,9 +82,52 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 16.3a: Authorization framework (infra)
+
+Status: DONE
+Note: Prerequisite infra for every 16.3+ write tool and 16.4 heavy writes. Ships the single `Authorization.require(ctx, required_role)` helper + the CLI-side `OperatorIdentity` schema that pairs with `ProductPhone` for SMS. No tool behavior changes in this slice; the helper is wiring. 16.3b is the first consumer (CreateUploadLink hardening); 16.3c and 16.3d are parallel-safe now that the resolver is in place.
+
+**Schema + migration** (`priv/repo/migrations/20260507120000_create_operator_identities.exs`):
+- Table `operator_identities` with `id`, `product_id` (fk products cascade delete), `identity` (string), `role` (string), `active` (boolean default true), `utc_datetime` timestamps.
+- `create index(:operator_identities, [:product_id])` for list-per-product queries.
+- `create unique_index(..., where: "active = true", name: :operator_identities_product_identity_active_index)` - the partial unique means a deactivated row does not block re-seeding with the same identity later.
+
+**Schema module** (`lib/content_forge/operators/operator_identity.ex`):
+- Inclusion validation on `role` against `~w(owner submitter viewer)`, mirroring `ProductPhone` so the two resolvers share the same hierarchy.
+- `update_change(:identity, &String.trim/1)` so copy/paste whitespace does not create dead-on-arrival rows that never match the lookup.
+- `validate_length(:identity, min: 1, max: 120)`.
+- `foreign_key_constraint(:product_id)` + a `unique_constraint` pointing at the partial index with a human message.
+- `deactivate_changeset/1` flips `active: false` without touching role or identity.
+
+**Context module** (`lib/content_forge/operators.ex`):
+- `create_identity/1` - insert via `Repo.insert/1`, returns `{:ok, row} | {:error, changeset}`.
+- `lookup_active_identity(identity, product_id)` - single query filtered to `active == true` and scoped to the product; returns `%OperatorIdentity{}` or nil. The null return covers "not seeded", "deactivated", and "registered under a different product" - the `Authorization` resolver does not need to distinguish them.
+- `list_identities_for_product/1` - every row for the product, active first (`order_by: [desc: active, asc: inserted_at]`) so future admin dashboards render current permissions on top.
+- `deactivate_identity/1` - wrapper around the deactivate changeset.
+
+**Authorization helper** (`lib/content_forge/open_claw_tools/authorization.ex`):
+- Single public `require(ctx, required_role)` returns `:ok` or `{:error, :forbidden}`. No intermediate return values; no role echoing; no reason differentiation so probing callers cannot infer which path denied them.
+- Rank map `%{owner: 3, submitter: 2, viewer: 1}` implements the strict `:owner > :submitter > :viewer` hierarchy. `rank_of/1` has function heads for both atom and string inputs (the string path exists because the resolved role arrives as a string from the DB) plus an `:invalid` catch-all so an unknown required_role (`:superuser`) fails closed instead of matching anything.
+- `with` chain: validate the required role, extract non-empty binary `:channel` and `:sender_identity` from ctx, pattern-match the `:product` key to `%Product{}` (nil / missing key / wrong shape falls through), dispatch to the channel resolver, validate the returned role. Any failure collapses to `{:error, :forbidden}` via the `else` arm. The two-arity fallback head catches ctx values that are not maps.
+- SMS resolver calls `Sms.lookup_phone(sender, product_id)` - that function already filters to `active: true` so the defensive pattern match `%{role: role, active: true}` is belt-and-suspenders without cost.
+- CLI resolver calls `Operators.lookup_active_identity(sender, product_id)` - delegates the "unknown / inactive / cross-product = nil" logic to the context.
+- Unknown channels match the catch-all `resolve/3` clause and return `:forbidden` with zero DB I/O. Missing ctx fields short-circuit via the `with` before any resolver fires.
+
+**Tests** (32 new):
+- `test/content_forge/operators_test.exs` (12 tests): create happy path with defaults, whitespace trim on identity, invalid role rejected, required-field checks, partial-unique enforcement (duplicate active rows fail), re-seed after deactivation succeeds, `lookup_active_identity` happy path + deactivated + unknown + cross-product, `list_identities_for_product` returns scoped rows only.
+- `test/content_forge/open_claw_tools/authorization_test.exs` (20 tests): hierarchy across all three roles against all three required levels, SMS happy / insufficient / inactive / unknown / cross-product, CLI happy / insufficient / missing / inactive / cross-product, unknown channel, missing channel key, nil / empty sender, missing product, missing product key, unknown required role atom.
+
+**What this slice explicitly does NOT do** (next sub-slices):
+- 16.3b hardens `CreateUploadLink` to call `Authorization.require(..., :submitter)` plus adds the `AcceptedContentTypes` allow-list and the `max_upload_expires_seconds` ceiling.
+- 16.3c ships `create_asset_bundle` and `add_tag_to_asset` as the first true light-write tools through the helper.
+- 16.3d ships `ProductMemory` + `record_memory`.
+
+**Gate**: `mix compile --warnings-as-errors` clean, `mix format --check-formatted` clean, `mix test` 865/0, `mix credo --strict` diff against `.credo_baseline.txt` shows zero new findings in slice-touched files (the six drifted lines are all pre-existing findings in `metrics_poller.ex` and `video_producer.ex` that shifted when master moved forward). Emdash audit on slice-touched files came up empty.
+
 ### Phase 16.2: Read-only OpenClaw tools
 
 Status: DONE
+Merged: master @ `f373393` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 833-0, credo 26 vs 44 baseline (zero new in slice-touched files; drift on pre-existing files carries forward). Reviewer-only delta stripped 4 emdashes from `ProductResolver` moduledoc and 5 from `docs/openclaw-plugin-runbook.md` to honor the no-emdash rule; behavior unchanged. New-module coverage 85-95%. Architect sweep folded in at merge: stripped remaining 9 emdashes from the Feature 13 spec text I added at handoff so the SPEC matches the same discipline the code now enforces.
 Note: Four read-only tools land behind the 16.1 surface so the agent can answer status and reconnaissance questions: `list_recent_assets`, `draft_status`, `upcoming_schedule`, `competitor_intel_summary`. Product resolution is extracted into a shared `ContentForge.OpenClawTools.ProductResolver` that implements Feature 13's resolution contract (UUID → fuzzy name → SMS session fallback). `CreateUploadLink` keeps its existing id/name paths by delegating to the resolver and gains the new SMS-session path for free.
 
 **Prerequisite refactor (shipped in the same commit)**:
