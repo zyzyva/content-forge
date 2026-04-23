@@ -236,6 +236,15 @@ Per `CONTENT_FORGE_SPEC.md` Feature 10. Goal: produce content that is AI-retriev
 - **12.1 AI Summary Nuggets**
   - First paragraph of every long-form piece is a self-contained summary optimized for AI citation. Structured, entity-dense, scannable.
   - Validation step in the generation pipeline that flags drafts missing the nugget.
+  - Additional requirements surfaced during Phase 11/13 work:
+    - Applies to blog drafts (content_type = "blog"). Short-form social posts (content_type = "post") are already self-contained so are exempt.
+    - The nugget is the first 200 characters of the blog draft, and must be a self-contained factual summary — the reader should understand the core claim without scrolling further. Template requirements: no hedging phrases ("sort of", "might possibly"), no pronoun reference to outside-article context, no hypothetical questions, no preamble.
+    - A new schema field `ai_summary_nugget` (text, nullable) on `Draft` stores the extracted/validated nugget once generation runs.
+    - A new post-generation validator `ContentForge.ContentGeneration.NuggetValidator.validate/1` inspects a blog draft and returns `{:ok, nugget_text}` if the first paragraph meets the criteria, or `{:error, reasons_list}` if it fails. Criteria: length 100..250 chars after stripping, at least two entity-style tokens (proper nouns or numbers), no disallowed hedging phrases, no pronouns referring to outside context.
+    - The blog draft generation prompt (wherever it lives — currently part of `AssetBundleDraftGenerator` for bundle-generated drafts; there is no dedicated blog-generation worker yet) is updated to explicitly instruct the model to open with such a nugget. When blog drafts come from future generators, they inherit this instruction from a shared prompt builder.
+    - Post-generation hook: after any blog draft is created, `NuggetValidator.validate/1` runs; on success `ai_summary_nugget` is populated; on failure the draft status is set to `"needs_review"` (new status) with the reasons recorded on `draft.error`.
+    - Status list on `Draft` extended to include `"needs_review"`; shared `status_badge` component and dashboard filter tab follow the established extension pattern.
+    - Tests: validator returns ok for a well-formed nugget; validator returns error for too-short, too-long, no-entities, hedging, and pronoun-reference cases; generation hook sets `ai_summary_nugget` on success; generation hook sets `needs_review` + error reasons on failure.
 
 - **12.2 28-point SEO checklist**
   - Codify each of the 28 points as a discrete check against a draft.
