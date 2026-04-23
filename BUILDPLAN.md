@@ -268,7 +268,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 11. Leans heavily on Phase 10 Media Forge pl
   - No upload flow, no storage integration, no LiveView in this slice. Only the schema, migration, and context.
   - Tests cover: the full CRUD happy path, the filter combinations on `list_assets/2`, the `list_distinct_tags/1` deduplication, the soft-delete preserves the row and hides it from default lists, the unique constraint on storage_key rejects a duplicate, and the status transitions on mark_processed and mark_failed.
 
-- **13.1b Presigned upload URL endpoint**
+- **13.1b Presigned upload URL endpoint** ✅ Shipped `8342247`.
   - New REST endpoint `POST /api/v1/products/:product_id/assets/presigned-upload` under the existing bearer-token API pipeline. Request body carries the intended filename, content type, and byte size. Response carries a presigned PUT URL scoped to a unique storage key (path like `products/<product_id>/assets/<uuid>/<filename>`), the storage key itself, and an expiry timestamp (15 minutes by default).
   - The presigning goes through the existing `ContentForge.Storage` module (`ExAws` R2 backend). The controller does not accept the upload bytes directly; the client uploads straight to R2 via the presigned PUT, avoiding the Phoenix server on the hot path.
   - After the client PUT succeeds, the client posts the upload result back to `POST /api/v1/products/:product_id/assets/register` with the storage key, filename, content type, byte size, and any client-side metadata. The register endpoint creates the `ProductAsset` row in `status: "pending"` and enqueues a processing Oban job (scoped to the right queue based on `media_type`).

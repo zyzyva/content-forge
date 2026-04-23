@@ -84,7 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 13.1b: Presigned upload + register endpoints
 
-Status: IN PROGRESS (coder handoff)
+Status: DONE
+Merged: master @ `8342247` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 317-0; credo unchanged. Security: path traversal blocked (basename + non-alphanumeric→underscore), content-type allow-list enforced on both endpoints (415), size caps 50MB/500MB (413), presign pins content-type query param so R2 rejects mime-mismatched uploads, partial-unique from 13.1a covers duplicates (422), bearer auth via existing `:api_auth` (401). Pattern-match-first: `with` chains + single render sink + function-head `render_error/2` per reason. Stub processor workers ship for `assert_enqueued` matching (no-op until 13.1d/13.1e). 17 tests.
 Note: Two new endpoints under the existing `:api`/`:api_auth` pipeline on `/api/v1/products/:product_id/assets/...`:
 
 - `POST /presigned-upload` returns a time-limited PUT URL, the chosen storage key, the expiry timestamp and `expires_in_seconds` (900s / 15 minutes), plus echoed content-type and byte-size. Storage key is built as `products/<product_id>/assets/<uuid>/<sanitised_filename>`; filename is path-basenamed then non-alphanumeric characters replaced with underscores to prevent `..` traversal or weird whitespace. The presign itself goes through a swappable storage impl: defaults to `ContentForge.Storage.presigned_put_url/3` (new function added this slice; wraps `ExAws.S3.presigned_url/5` with the content-type pinned as a query parameter). Tests substitute a pure-Elixir stub via `:content_forge, :asset_storage_impl`.
