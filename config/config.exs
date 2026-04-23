@@ -66,6 +66,15 @@ config :content_forge, Oban,
     content_generation: 10,
     ingestion: 5,
     competitor: 5
+  ],
+  plugins: [
+    {Oban.Plugins.Cron,
+     crontab: [
+       # Hourly reminder sweep: iterates products with enabled
+       # ReminderConfig and enqueues a ReminderDispatcher per eligible
+       # phone. Cadence/pause/quiet-hours gates live in the worker.
+       {"0 * * * *", ContentForge.Jobs.ReminderScheduler}
+     ]}
   ]
 
 # Default LLM provider configuration. The API key is sourced from an

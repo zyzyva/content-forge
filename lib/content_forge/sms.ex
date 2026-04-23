@@ -279,6 +279,55 @@ defmodule ContentForge.Sms do
     |> Repo.update()
   end
 
+  @doc """
+  Returns the most recent inbound `"received"` `SmsEvent.inserted_at`
+  for `(product_id, phone_number)`, or `nil` if none.
+  """
+  @spec last_inbound_at(Ecto.UUID.t(), String.t()) :: DateTime.t() | nil
+  def last_inbound_at(product_id, phone_number)
+      when is_binary(product_id) and is_binary(phone_number) do
+    Repo.one(
+      from(e in SmsEvent,
+        where:
+          e.product_id == ^product_id and
+            e.phone_number == ^phone_number and
+            e.direction == "inbound" and
+            e.status == "received",
+        order_by: [desc: e.inserted_at],
+        limit: 1,
+        select: e.inserted_at
+      )
+    )
+  end
+
+  @doc """
+  Counts outbound reminders (`"sent"` or `"delivered"`) for
+  `(product_id, phone_number)` since the most recent inbound
+  `"received"` event. When there has been no inbound, every outbound
+  event counts.
+  """
+  @spec consecutive_ignored_reminders(Ecto.UUID.t(), String.t()) :: non_neg_integer()
+  def consecutive_ignored_reminders(product_id, phone_number)
+      when is_binary(product_id) and is_binary(phone_number) do
+    since = last_inbound_at(product_id, phone_number)
+
+    SmsEvent
+    |> where(
+      [e],
+      e.product_id == ^product_id and
+        e.phone_number == ^phone_number and
+        e.direction == "outbound" and
+        e.status in ["sent", "delivered"]
+    )
+    |> apply_since(since)
+    |> Repo.aggregate(:count, :id)
+  end
+
+  defp apply_since(query, nil), do: query
+
+  defp apply_since(query, %DateTime{} = since),
+    do: where(query, [e], e.inserted_at > ^since)
+
   # ---- session expiry (extends the conversation-session block above) -----
 
   @doc """

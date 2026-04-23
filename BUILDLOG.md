@@ -82,6 +82,47 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 14.4b: ReminderScheduler cron + ReminderDispatcher worker
+
+Status: READY FOR REVIEW
+Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (one format re-pass on the long `handle_twilio_result/5` heads that split over multiple lines), mix test 544/0 (526 prior + 18 new: 8 scheduler + 10 dispatcher). Credo by content unchanged vs post-14.4a: zero new findings.
+Note: Two new Oban workers plus two new `Sms` context helpers + an Oban cron wiring in `config/config.exs`.
+
+**`ContentForge.Jobs.ReminderScheduler`** at `lib/content_forge/jobs/reminder_scheduler.ex` (queue `:default`, max_attempts 3). Scheduled hourly via a new `Oban.Plugins.Cron` entry: `{"0 * * * *", ContentForge.Jobs.ReminderScheduler}`. `perform/1` accepts an optional `"now"` ISO-8601 arg so tests can simulate different hours-of-day; when absent the worker reads `DateTime.utc_now/0`. Flow:
+
+1. `load_enabled_configs/0` joins `sms_reminder_configs` to `products` filtered on `enabled = true` and returns `[{product, config}, ...]`.
+2. `enqueue_for_configs/2` fans out per product; `sendable_hour?/2` gates by the config's quiet window (UTC-only for this slice; non-UTC timezones fall back to UTC when no tzdata package is loaded, documented in the moduledoc as a future-slice wiring).
+3. `active_phones/1` calls the existing `Sms.list_phones_for_product/2` (which already filters to active by default).
+4. Per phone: `phone_paused?/2` (two-head on nil / future DateTime) and `cadence_met?/4` (reads `Sms.last_inbound_at/2` — nil means "never engaged", which is a hard skip: the system only nudges engaged senders, never cold outreach) gate the enqueue.
+5. `enqueue_dispatcher/2` inserts a `ReminderDispatcher` job with `unique: [period: 86_400, keys: [:phone_id, :product_id], states: [:available, :scheduled, :executing, :retryable]]`. The conflict?-true path returns 0 so the summary count stays honest across reruns.
+
+`quiet?/3` is a two-head pattern-match on `qs > qe` (midnight-crossing window: `hour >= qs or hour < qe`) vs `qs <= qe` (single-interval daytime quiet window: `hour >= qs and hour < qe`). Default config (qs=20, qe=8) takes the first head; unusual configs like qs=9 qe=17 take the second.
+
+**`ContentForge.Jobs.ReminderDispatcher`** at `lib/content_forge/jobs/reminder_dispatcher.ex` (queue `:default`, max_attempts 3). `perform/1` takes `{"phone_id", "product_id"}` args. Flow:
+
+1. `load_phone/1` + `dispatch/2` two-head: missing phone → `{:cancel, "phone not found"}`.
+2. `ensure_not_paused/3` re-checks `reminders_paused_until` at dispatch time (belt-and-suspenders: the scheduler already filtered, but a STOP that landed between schedule and dispatch needs to still be respected). Paused → `{:ok, :paused}` with zero Twilio HTTP.
+3. `send_reminder/2` resolves the product's `ReminderConfig`, counts consecutive-ignored reminders via the new `Sms.consecutive_ignored_reminders/2`, and dispatches to `compose/4` three-head: `count >= stop_after_ignored` → stop-notify; `count >= backoff_after_ignored` → gentler; else → friendly. Order matters: stop wins over backoff wins over friendly.
+4. Template bodies are hard-coded in the module (`friendly_text/4`, `gentler_text/4`, `stop_text/4`) — OpenClaw branch is wired but ships fallback text in this slice, mirroring 14.2b. Real AI-crafted reminder text lands under 14.2c.
+5. `handle_twilio_result/5` function-head on the full taxonomy. Stop-notify returns `{:ok, :stop_notify}` so callers (and tests) can distinguish the stop branch from a normal `{:ok, :sent}`.
+
+Full failure taxonomy mirrors `SmsReplyDispatcher`: `:not_configured` → failed audit + `{:ok, :twilio_not_configured}` no-crash no-retry; transient → `{:error, reason}` retry no audit; permanent/unexpected_status → failed audit + `{:cancel, reason}`; catch-all → failed audit + `{:error, reason}`.
+
+**New Sms context helpers**:
+
+- `last_inbound_at/2` returns the most recent inbound `"received"` `inserted_at` for `(product_id, phone_number)`, or nil. Single `Repo.one` with `order_by: [desc: inserted_at], limit: 1`.
+- `consecutive_ignored_reminders/2` returns a count of outbound `"sent"` or `"delivered"` events newer than the most-recent inbound. `apply_since/2` two-head (nil/DateTime) composes onto the base query so "never had an inbound" counts every outbound.
+
+**Cron wiring** in `config/config.exs`: a new `plugins:` block on the existing Oban config adds `{Oban.Plugins.Cron, crontab: [{"0 * * * *", ContentForge.Jobs.ReminderScheduler}]}`. Test env (`testing: :manual`) ignores the cron schedule, so tests invoke `perform_job` directly.
+
+18 new tests:
+- `test/content_forge/jobs/reminder_scheduler_test.exs` (8 tests): enqueues when all gates pass (14:00 UTC with default config + 4-day-old inbound); skips on cadence-not-met / paused / quiet-hours (03:00 UTC) / config-disabled / no-config / no-inbound-ever / inactive-phone; Oban.unique collapses two runs within the same 24h into exactly one queued dispatcher (queried directly via `Oban.Job` + `state: "available"` filter).
+- `test/content_forge/jobs/reminder_dispatcher_test.exs` (10 tests): template selection by consecutive-ignored count (0 → friendly, 2 → gentler, 4 → stop-notify, counter reset after intervening inbound); `:not_configured` failed audit + `:twilio_not_configured`; transient 500 retry no audit; permanent 400 failed audit + cancel; unknown phone cancel; paused phone no-Twilio `:paused`.
+
+The scheduler test's `record_silent_since!/3` uses `Repo.update_all` to backdate `inserted_at` directly because `SmsEvent.changeset` doesn't cast timestamps. Required so cadence math is deterministic without waiting days of wall-clock time.
+
+Touched files: `lib/content_forge/jobs/reminder_scheduler.ex` (new), `lib/content_forge/jobs/reminder_dispatcher.ex` (new), `lib/content_forge/sms.ex` (two new public helpers: `last_inbound_at/2`, `consecutive_ignored_reminders/2`), `config/config.exs` (Oban plugins block with the hourly cron entry), `test/content_forge/jobs/reminder_scheduler_test.exs` (new), `test/content_forge/jobs/reminder_dispatcher_test.exs` (new), `BUILDLOG.md`.
+
 ### Phase 14.4a: Reminder config + STOP opt-out
 
 Status: DONE
