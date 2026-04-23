@@ -288,13 +288,26 @@ Per `CONTENT_FORGE_SPEC.md` Feature 11. Leans heavily on Phase 10 Media Forge pl
   - On transient errors: let Oban retry. On permanent errors: mark the asset failed with the error recorded.
   - Tests use the existing `Req.Test` stub pattern. Cover: happy-path sync + async + not-configured + transient retry + permanent failure.
 
-- **13.1e Video processing dispatch to Media Forge**
+- **13.1e Video processing dispatch to Media Forge** ✅ Shipped `7772fc9`.
   - New Oban worker `ContentForge.Jobs.AssetVideoProcessor` under queue `:content_generation` that consumes an asset id, calls `MediaForge.enqueue_normalize/1` with the storage key and the video normalization config (probe, normalize to H.264/AAC, generate poster thumbnail), polls until terminal, and on success records duration_ms, width, height, a normalized-video storage key, and a poster-image storage key on the asset. Same error handling rules as 13.1d.
   - Tests mirror 13.1d plus one for duration being recorded correctly.
 
 - **13.2 Tagging and search**
   - Free-text tags plus inferred tags (from filename, EXIF, dominant-color, or model-captioning).
   - Search within a product's asset library by tag and by media type.
+  - **Slicing note:** Split free-text tag+search (13.2a, minimum viable) from inferred-tag generation (13.2b, enhancement). 13.2b depends on LLM or Media Forge captioning and can be deferred to polish.
+
+- **13.2a Free-text tag editing, search, and filters**
+  - LiveView work on the Assets tab added in 13.1c: each asset row exposes its current tag list as removable chips plus an "add tag" input with autocomplete sourced from `ProductAssets.list_distinct_tags/1` (already shipped in 13.1a). Adding a tag calls a new `ProductAssets.add_tag/2`; removing calls `ProductAssets.remove_tag/2`. Both operations broadcast `:asset_updated` over the existing PubSub topic so other subscribers stay in sync.
+  - Search bar above the asset list: a free-text field that filters by case-insensitive substring match against both `tags` (using a new `:search` filter on `list_assets/2` that matches when any tag contains the substring) and `description`. A media-type dropdown filters by `image`, `video`, or all. Filters compose.
+  - A "tag facet" row shows up to eight most-common tags for the current product as clickable pills that set the search field to that tag.
+  - Backend changes in `ContentForge.ProductAssets`: `list_assets/2` gets a `:search` option that applies an ILIKE over description and a `ANY(tags) ILIKE` over the tags array; `add_tag/2` and `remove_tag/2` are transactional update helpers that preserve the unique-tag invariant per asset.
+  - Tests: adding a tag shows up in the row and in autocomplete; removing a tag disappears; search by substring filters correctly; search combined with media_type narrows correctly; tag-facet click prefills the search and filters.
+
+- **13.2b Inferred tag generation from images**
+  - Post-processing step that runs after `AssetImageProcessor` marks an asset processed: a small LLM prompt (via the Anthropic client) receives the image's storage key, a one-line description request, and a cap on tag count. The response is a short list of tags normalized to lowercase-with-hyphens and merged into the asset's `tags` array. Duplicate tags are deduped by the existing invariant.
+  - Vision is not yet wired on the Anthropic client, so this slice also adds an image-input path to `ContentForge.LLM.Anthropic.complete/2` (or ships a thin variant that accepts an image reference). If that turns out to expand scope too far, the slice reduces to EXIF/filename-based inferences only and the vision-based inference ships in its own follow-up.
+  - Tests stub the LLM response; no live calls.
 
 - **13.3 Asset bundles**
   - Group assets into named bundles (for example "Product launch 2026-05 hero set").
