@@ -292,4 +292,118 @@ defmodule ContentForgeWeb.TwilioWebhookControllerTest do
       assert [] = Repo.all(SmsEvent)
     end
   end
+
+  describe "STOP opt-out from a whitelisted active phone" do
+    for keyword <- [
+          "STOP",
+          "STOPALL",
+          "UNSUBSCRIBE",
+          "CANCEL",
+          "END",
+          "QUIT",
+          "stop",
+          "  stopall  "
+        ] do
+      @opt_out_body keyword
+
+      test "#{keyword} pauses reminders, records stop_received, and skips the auto-reply",
+           %{conn: conn, product: product} do
+        {:ok, phone} =
+          Sms.create_phone(%{
+            product_id: product.id,
+            phone_number: "+15551112222",
+            role: "owner"
+          })
+
+        params = %{
+          "From" => "+15551112222",
+          "To" => "+15557654321",
+          "Body" => @opt_out_body,
+          "NumMedia" => "0",
+          "MessageSid" => "SMstop_#{System.unique_integer([:positive])}"
+        }
+
+        conn = post_signed(conn, params)
+        assert conn.status == 200
+        body = response(conn, 200)
+        assert body =~ "<Message"
+        assert body =~ "unsubscribed" or body =~ "STOP" or body =~ "opt"
+
+        [event] = Sms.list_events(product.id, status: "stop_received")
+        assert event.direction == "inbound"
+        assert event.phone_number == "+15551112222"
+
+        reloaded = Repo.get!(ContentForge.Sms.ProductPhone, phone.id)
+        assert reloaded.reminders_paused_until != nil
+        assert DateTime.compare(reloaded.reminders_paused_until, DateTime.utc_now()) == :gt
+
+        refute_enqueued(worker: SmsReplyDispatcher)
+      end
+    end
+  end
+
+  describe "START resume from a whitelisted active phone" do
+    for keyword <- ["START", "UNSTOP", "start", "unstop", "  Start  "] do
+      @opt_in_body keyword
+
+      test "#{keyword} clears pause, records start_received, and continues normal flow",
+           %{conn: conn, product: product} do
+        {:ok, phone} =
+          Sms.create_phone(%{
+            product_id: product.id,
+            phone_number: "+15551112222",
+            role: "owner"
+          })
+
+        {:ok, _} = Sms.pause_phone_reminders(phone, 7)
+
+        params = %{
+          "From" => "+15551112222",
+          "To" => "+15557654321",
+          "Body" => @opt_in_body,
+          "NumMedia" => "0",
+          "MessageSid" => "SMstart_#{System.unique_integer([:positive])}"
+        }
+
+        conn = post_signed(conn, params)
+        assert conn.status == 200
+
+        [start_event] = Sms.list_events(product.id, status: "start_received")
+        assert start_event.phone_number == "+15551112222"
+
+        reloaded = Repo.get!(ContentForge.Sms.ProductPhone, phone.id)
+        assert reloaded.reminders_paused_until == nil
+
+        # Normal auto-reply still runs after START.
+        assert_enqueued(worker: SmsReplyDispatcher)
+      end
+    end
+  end
+
+  describe "STOP from an unknown phone" do
+    test "takes the generic rejection path (no existence leak)",
+         %{conn: conn} do
+      params = %{
+        "From" => "+15550009999",
+        "To" => "+15557654321",
+        "Body" => "STOP",
+        "NumMedia" => "0",
+        "MessageSid" => "SMstop_unknown"
+      }
+
+      conn = post_signed(conn, params)
+      assert conn.status == 200
+      assert response(conn, 200) =~ "<Message"
+
+      # Unknown phones never get stop_received - only whitelisted ones do.
+      stop_events = Enum.filter(Repo.all(SmsEvent), &(&1.status == "stop_received"))
+      assert stop_events == []
+
+      [event] = Repo.all(SmsEvent)
+      assert event.status == "rejected_unknown_number"
+      assert event.product_id == nil
+
+      refute_enqueued(worker: SmsReplyDispatcher)
+    end
+  end
 end

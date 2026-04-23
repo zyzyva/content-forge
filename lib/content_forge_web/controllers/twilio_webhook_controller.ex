@@ -32,6 +32,11 @@ defmodule ContentForgeWeb.TwilioWebhookController do
   require Logger
 
   @rejection_body "We don't recognize this number. Please contact the agency to get your number set up."
+  @stop_keywords ~w(stop stopall unsubscribe cancel end quit)
+  @start_keywords ~w(start unstop)
+  @stop_ack_body "You've been unsubscribed from reminders for 7 days. Reply START anytime to resume earlier."
+  @start_ack_body "You're opted back in. We'll pick up where we left off."
+  @default_pause_days 7
 
   def receive(conn, %{"From" => from} = params) when is_binary(from) and from != "" do
     body = params["Body"] || ""
@@ -54,27 +59,7 @@ defmodule ContentForgeWeb.TwilioWebhookController do
   # --- dispatch by lookup result ------------------------------------------
 
   defp dispatch(%ProductPhone{active: true} = phone, conn, from, body, media, sid) do
-    {:ok, event} =
-      Sms.record_event(%{
-        product_id: phone.product_id,
-        phone_number: from,
-        direction: "inbound",
-        status: "received",
-        body: body,
-        media_urls: media,
-        twilio_sid: sid
-      })
-
-    {:ok, _session} = Sms.get_or_start_session(phone.product_id, from)
-
-    {:ok, _job} =
-      %{"event_id" => event.id}
-      |> SmsReplyDispatcher.new()
-      |> Oban.insert()
-
-    enqueue_media_ingest(event, media)
-
-    empty_twiml(conn)
+    dispatch_active(body_intent(body), phone, conn, from, body, media, sid)
   end
 
   defp dispatch(%ProductPhone{active: false} = phone, conn, from, body, media, sid) do
@@ -106,6 +91,88 @@ defmodule ContentForgeWeb.TwilioWebhookController do
     rejection_twiml(conn)
   end
 
+  # --- active-phone intent dispatch ---------------------------------------
+
+  defp body_intent(body) when is_binary(body) do
+    normalized = body |> String.trim() |> String.downcase()
+
+    cond do
+      normalized in @stop_keywords -> :stop
+      normalized in @start_keywords -> :start
+      true -> :normal
+    end
+  end
+
+  defp body_intent(_), do: :normal
+
+  defp dispatch_active(:stop, phone, conn, from, body, media, sid) do
+    {:ok, _event} =
+      Sms.record_event(%{
+        product_id: phone.product_id,
+        phone_number: from,
+        direction: "inbound",
+        status: "stop_received",
+        body: body,
+        media_urls: media,
+        twilio_sid: sid
+      })
+
+    {:ok, _} = Sms.pause_phone_reminders(phone, @default_pause_days)
+
+    ack_twiml(conn, @stop_ack_body)
+  end
+
+  defp dispatch_active(:start, phone, conn, from, body, media, sid) do
+    {:ok, _} = Sms.resume_phone_reminders(phone)
+
+    {:ok, event} =
+      Sms.record_event(%{
+        product_id: phone.product_id,
+        phone_number: from,
+        direction: "inbound",
+        status: "start_received",
+        body: body,
+        media_urls: media,
+        twilio_sid: sid
+      })
+
+    {:ok, _session} = Sms.get_or_start_session(phone.product_id, from)
+
+    # Normal auto-reply continues so the conversation keeps going.
+    {:ok, _job} =
+      %{"event_id" => event.id}
+      |> SmsReplyDispatcher.new()
+      |> Oban.insert()
+
+    enqueue_media_ingest(event, media)
+
+    ack_twiml(conn, @start_ack_body)
+  end
+
+  defp dispatch_active(:normal, phone, conn, from, body, media, sid) do
+    {:ok, event} =
+      Sms.record_event(%{
+        product_id: phone.product_id,
+        phone_number: from,
+        direction: "inbound",
+        status: "received",
+        body: body,
+        media_urls: media,
+        twilio_sid: sid
+      })
+
+    {:ok, _session} = Sms.get_or_start_session(phone.product_id, from)
+
+    {:ok, _job} =
+      %{"event_id" => event.id}
+      |> SmsReplyDispatcher.new()
+      |> Oban.insert()
+
+    enqueue_media_ingest(event, media)
+
+    empty_twiml(conn)
+  end
+
   # --- media-ingest enqueue -----------------------------------------------
 
   defp enqueue_media_ingest(_event, []), do: :ok
@@ -128,10 +195,14 @@ defmodule ContentForgeWeb.TwilioWebhookController do
   end
 
   defp rejection_twiml(conn) do
+    ack_twiml(conn, @rejection_body)
+  end
+
+  defp ack_twiml(conn, message) do
     xml = """
     <?xml version="1.0" encoding="UTF-8"?>
     <Response>
-      <Message>#{@rejection_body}</Message>
+      <Message>#{message}</Message>
     </Response>
     """
 

@@ -25,6 +25,7 @@ defmodule ContentForge.Sms.ProductPhone do
     field :active, :boolean, default: true
     field :opt_in_at, :utc_datetime_usec
     field :opt_in_source, :string
+    field :reminders_paused_until, :utc_datetime_usec
 
     belongs_to :product, ContentForge.Products.Product
 
@@ -32,7 +33,7 @@ defmodule ContentForge.Sms.ProductPhone do
   end
 
   @required ~w(product_id phone_number role)a
-  @optional ~w(display_label active opt_in_at opt_in_source)a
+  @optional ~w(display_label active opt_in_at opt_in_source reminders_paused_until)a
 
   def changeset(row, attrs) do
     row

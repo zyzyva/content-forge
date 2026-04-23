@@ -15,7 +15,10 @@ defmodule ContentForge.Sms do
   alias ContentForge.Repo
   alias ContentForge.Sms.ConversationSession
   alias ContentForge.Sms.ProductPhone
+  alias ContentForge.Sms.ReminderConfig
   alias ContentForge.Sms.SmsEvent
+
+  @default_pause_days 7
 
   # ---- product phones (whitelist) ----------------------------------------
 
@@ -212,6 +215,71 @@ defmodule ContentForge.Sms do
     |> ConversationSession.changeset(%{state: state})
     |> Repo.update()
   end
+
+  # ---- reminder config + phone pause -------------------------------------
+
+  @doc """
+  Returns the `%ReminderConfig{}` for a product. If no row exists,
+  returns an unpersisted struct with schema defaults and `id: nil` so
+  callers can read config without first creating a row.
+  """
+  @spec get_reminder_config(Ecto.UUID.t()) :: ReminderConfig.t()
+  def get_reminder_config(product_id) when is_binary(product_id) do
+    case Repo.get_by(ReminderConfig, product_id: product_id) do
+      nil -> %ReminderConfig{product_id: product_id}
+      %ReminderConfig{} = row -> row
+    end
+  end
+
+  @doc """
+  Upserts the reminder config for a product. On first call inserts;
+  subsequent calls update the existing row in-place.
+  """
+  @spec upsert_reminder_config(Ecto.UUID.t(), map()) ::
+          {:ok, ReminderConfig.t()} | {:error, Ecto.Changeset.t()}
+  def upsert_reminder_config(product_id, attrs) when is_binary(product_id) and is_map(attrs) do
+    full_attrs = Map.put(attrs, :product_id, product_id)
+
+    case Repo.get_by(ReminderConfig, product_id: product_id) do
+      nil ->
+        %ReminderConfig{}
+        |> ReminderConfig.changeset(full_attrs)
+        |> Repo.insert()
+
+      %ReminderConfig{} = row ->
+        row
+        |> ReminderConfig.changeset(full_attrs)
+        |> Repo.update()
+    end
+  end
+
+  @doc """
+  Sets `reminders_paused_until` on `phone` to `now + pause_days *
+  86_400` seconds. Default 7 days when no value is supplied.
+  """
+  @spec pause_phone_reminders(ProductPhone.t(), pos_integer()) ::
+          {:ok, ProductPhone.t()} | {:error, Ecto.Changeset.t()}
+  def pause_phone_reminders(%ProductPhone{} = phone, pause_days \\ @default_pause_days)
+      when is_integer(pause_days) and pause_days > 0 do
+    until =
+      DateTime.utc_now()
+      |> DateTime.add(pause_days * 86_400, :second)
+
+    phone
+    |> ProductPhone.changeset(%{reminders_paused_until: until})
+    |> Repo.update()
+  end
+
+  @doc "Clears `reminders_paused_until` on `phone` to nil."
+  @spec resume_phone_reminders(ProductPhone.t()) ::
+          {:ok, ProductPhone.t()} | {:error, Ecto.Changeset.t()}
+  def resume_phone_reminders(%ProductPhone{} = phone) do
+    phone
+    |> ProductPhone.changeset(%{reminders_paused_until: nil})
+    |> Repo.update()
+  end
+
+  # ---- session expiry (extends the conversation-session block above) -----
 
   @doc """
   Flips all non-idle sessions whose `last_message_at` is older than
