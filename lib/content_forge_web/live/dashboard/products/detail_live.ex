@@ -6,6 +6,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
   """
   use ContentForgeWeb, :live_view
   alias ContentForge.ContentGeneration
+  alias ContentForge.Jobs.AssetBundleDraftGenerator
   alias ContentForge.Jobs.AssetImageProcessor
   alias ContentForge.Jobs.AssetVideoProcessor
   alias ContentForge.ProductAssets
@@ -14,6 +15,9 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
   alias ContentForge.Products
   alias ContentForge.Publishing
   alias ContentForgeWeb.Live.Dashboard.Components
+
+  @bundle_generation_platforms ~w(twitter linkedin reddit facebook instagram)
+  @default_variants_per_platform 3
 
   # MIME types used for `allow_upload :accept`. Using mime types rather than
   # extensions so unusual ones (.heic, .m4v) do not require extending the
@@ -60,6 +64,8 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
        bundle_form: to_bundle_form(%AssetBundle{}, %{}),
        open_bundle_id: nil,
        picker_media_filter: "",
+       generating_bundle_ids: MapSet.new(),
+       bundle_generation_error: nil,
        active_tab: "overview"
      )
      |> allow_upload(:assets,
@@ -232,6 +238,14 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
   end
 
   @impl true
+  def handle_event("generate_drafts", %{"bundle-id" => bundle_id} = params, socket) do
+    platforms = normalize_platforms(params["platforms"])
+    variants = parse_variants(params["variants_per_platform"])
+
+    dispatch_generation(platforms, variants, bundle_id, socket)
+  end
+
+  @impl true
   def handle_info({event, asset}, socket)
       when event in [:asset_created, :asset_updated, :asset_deleted] do
     socket =
@@ -253,6 +267,16 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
              :bundle_membership_changed
            ] do
     {:noreply, refresh_bundles(socket)}
+  end
+
+  @impl true
+  def handle_info({:bundle_generation_started, bundle_id}, socket) do
+    {:noreply, mark_generating(socket, bundle_id)}
+  end
+
+  @impl true
+  def handle_info({:bundle_generation_finished, bundle_id}, socket) do
+    {:noreply, unmark_generating(socket, bundle_id)}
   end
 
   # --- filter application --------------------------------------------------
@@ -280,6 +304,86 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
   defp refresh_bundles(socket) do
     assign(socket, bundles: list_bundles_with_assets(socket.assigns.product.id))
   end
+
+  # --- bundle generation helpers ------------------------------------------
+
+  defp dispatch_generation([], _variants, _bundle_id, socket) do
+    {:noreply, assign(socket, bundle_generation_error: "Select at least one platform.")}
+  end
+
+  defp dispatch_generation(platforms, variants, bundle_id, socket) do
+    bundle = ProductAssets.get_bundle!(bundle_id)
+
+    {:ok, _job} =
+      AssetBundleDraftGenerator.new(%{
+        "bundle_id" => bundle.id,
+        "platforms" => platforms,
+        "variants_per_platform" => variants
+      })
+      |> Oban.insert()
+
+    :ok =
+      ProductAssets.broadcast_bundle_generation_started(bundle.product_id, bundle.id)
+
+    {:noreply,
+     socket
+     |> assign(bundle_generation_error: nil)
+     |> mark_generating(bundle.id)}
+  end
+
+  defp normalize_platforms(nil), do: []
+  defp normalize_platforms(""), do: []
+
+  defp normalize_platforms(list) when is_list(list) do
+    list
+    |> Enum.filter(&(is_binary(&1) and &1 in @bundle_generation_platforms))
+    |> Enum.uniq()
+  end
+
+  defp normalize_platforms(_), do: []
+
+  defp parse_variants(nil), do: @default_variants_per_platform
+  defp parse_variants(""), do: @default_variants_per_platform
+
+  defp parse_variants(value) when is_integer(value) and value > 0, do: value
+
+  defp parse_variants(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {n, _} when n > 0 -> n
+      _ -> @default_variants_per_platform
+    end
+  end
+
+  defp parse_variants(_), do: @default_variants_per_platform
+
+  defp mark_generating(socket, bundle_id) do
+    assign(socket,
+      generating_bundle_ids: MapSet.put(socket.assigns.generating_bundle_ids, bundle_id)
+    )
+  end
+
+  defp unmark_generating(socket, bundle_id) do
+    assign(socket,
+      generating_bundle_ids: MapSet.delete(socket.assigns.generating_bundle_ids, bundle_id)
+    )
+  end
+
+  defp enabled_platforms(%Products.Product{publishing_targets: targets}),
+    do: enabled_platforms(targets)
+
+  defp enabled_platforms(nil), do: []
+
+  defp enabled_platforms(%{} = targets) do
+    @bundle_generation_platforms
+    |> Enum.filter(fn platform ->
+      case Map.get(targets, platform) do
+        %{"enabled" => true} -> true
+        _ -> false
+      end
+    end)
+  end
+
+  defp enabled_platforms(_), do: []
 
   defp list_bundles_with_assets(product_id) do
     product_id
@@ -1072,6 +1176,80 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
                   >
                     No more assets to add.
                   </p>
+                </div>
+
+                <div class="border-t border-base-300 pt-3">
+                  <p class="text-sm font-semibold">Generate drafts</p>
+                  <div
+                    :if={MapSet.member?(@generating_bundle_ids, bundle.id)}
+                    role="status"
+                    aria-live="polite"
+                    data-bundle-generating={bundle.id}
+                    class="alert alert-info my-2"
+                  >
+                    <span>drafts generating...</span>
+                  </div>
+
+                  <p
+                    :if={enabled_platforms(@product) == []}
+                    class="text-xs text-base-content/60"
+                  >
+                    No publishing platforms are enabled for this product. Configure
+                    publishing targets before generating drafts.
+                  </p>
+
+                  <form
+                    :if={enabled_platforms(@product) != []}
+                    phx-submit="generate_drafts"
+                    class="space-y-2"
+                  >
+                    <input type="hidden" name="bundle-id" value={bundle.id} />
+                    <fieldset class="flex flex-wrap gap-3">
+                      <legend class="text-xs text-base-content/70 w-full">
+                        Platforms
+                      </legend>
+                      <label
+                        :for={platform <- enabled_platforms(@product)}
+                        class="label cursor-pointer gap-2"
+                      >
+                        <input
+                          type="checkbox"
+                          name="platforms[]"
+                          value={platform}
+                          class="checkbox checkbox-sm"
+                          checked
+                        />
+                        <span class="label-text capitalize">{platform}</span>
+                      </label>
+                    </fieldset>
+                    <label class="form-control w-32">
+                      <span class="label-text text-xs">Variants per platform</span>
+                      <input
+                        type="number"
+                        name="variants_per_platform"
+                        min="1"
+                        max="10"
+                        value="3"
+                        class="input input-bordered input-sm"
+                        aria-label="Variants per platform"
+                      />
+                    </label>
+                    <p
+                      :if={@bundle_generation_error}
+                      class="text-xs text-error"
+                    >
+                      {@bundle_generation_error}
+                    </p>
+                    <div class="flex justify-end">
+                      <button
+                        type="submit"
+                        class="btn btn-primary btn-sm"
+                        disabled={MapSet.member?(@generating_bundle_ids, bundle.id)}
+                      >
+                        Generate drafts
+                      </button>
+                    </div>
+                  </form>
                 </div>
               </div>
             </div>

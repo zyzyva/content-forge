@@ -50,6 +50,37 @@ defmodule ContentForge.ProductAssets do
     bundle
   end
 
+  @doc """
+  Broadcasts `{:bundle_generation_started, bundle_id}` on the bundle
+  topic for `product_id`. Called by the LiveView when the user submits
+  the generate-drafts form so additional subscribers (not the LiveView
+  that issued the submit, which tracks state locally) can react.
+  """
+  @spec broadcast_bundle_generation_started(Ecto.UUID.t(), Ecto.UUID.t()) :: :ok
+  def broadcast_bundle_generation_started(product_id, bundle_id)
+      when is_binary(product_id) and is_binary(bundle_id) do
+    Phoenix.PubSub.broadcast(
+      @pubsub,
+      bundle_topic(product_id),
+      {:bundle_generation_started, bundle_id}
+    )
+  end
+
+  @doc """
+  Broadcasts `{:bundle_generation_finished, bundle_id}` on the bundle
+  topic for `product_id`. `AssetBundleDraftGenerator` calls this on
+  every exit path so banner state does not get stuck.
+  """
+  @spec broadcast_bundle_generation_finished(Ecto.UUID.t(), Ecto.UUID.t()) :: :ok
+  def broadcast_bundle_generation_finished(product_id, bundle_id)
+      when is_binary(product_id) and is_binary(bundle_id) do
+    Phoenix.PubSub.broadcast(
+      @pubsub,
+      bundle_topic(product_id),
+      {:bundle_generation_finished, bundle_id}
+    )
+  end
+
   @doc "Creates a new product asset. Returns `{:ok, asset}` or `{:error, changeset}`."
   @spec create_asset(map()) :: {:ok, ProductAsset.t()} | {:error, Ecto.Changeset.t()}
   def create_asset(attrs) when is_map(attrs) do

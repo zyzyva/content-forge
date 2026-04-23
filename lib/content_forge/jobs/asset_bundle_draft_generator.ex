@@ -62,12 +62,19 @@ defmodule ContentForge.Jobs.AssetBundleDraftGenerator do
 
   defp featured_asset(%AssetBundle{}), do: :empty
 
-  defp generate_with_featured(:empty, %AssetBundle{id: id}, _platforms, _n) do
+  defp generate_with_featured(:empty, %AssetBundle{id: id, product_id: pid}, _platforms, _n) do
     Logger.warning("AssetBundleDraftGenerator: bundle #{id} has no assets; cancelling")
+    :ok = ProductAssets.broadcast_bundle_generation_finished(pid, id)
     {:cancel, "bundle has no assets"}
   end
 
   defp generate_with_featured({:ok, asset}, bundle, platforms, n) do
+    result = run_generation(asset, bundle, platforms, n)
+    :ok = ProductAssets.broadcast_bundle_generation_finished(bundle.product_id, bundle.id)
+    result
+  end
+
+  defp run_generation(asset, bundle, platforms, n) do
     prompt = build_user_prompt(bundle, platforms, n)
     system = system_prompt()
 
