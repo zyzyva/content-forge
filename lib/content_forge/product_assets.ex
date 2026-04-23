@@ -15,6 +15,21 @@ defmodule ContentForge.ProductAssets do
   alias ContentForge.Repo
 
   @default_statuses ~w(pending processed failed)
+  @pubsub ContentForge.PubSub
+
+  @doc """
+  Subscribes the calling process to asset-update notifications for a
+  product. Intended for use from `ContentForgeWeb` LiveViews.
+  """
+  @spec subscribe(Ecto.UUID.t()) :: :ok | {:error, term()}
+  def subscribe(product_id), do: Phoenix.PubSub.subscribe(@pubsub, topic(product_id))
+
+  defp topic(product_id), do: "product_assets:#{product_id}"
+
+  defp broadcast_change(%ProductAsset{product_id: product_id} = asset, event) do
+    Phoenix.PubSub.broadcast(@pubsub, topic(product_id), {event, asset})
+    asset
+  end
 
   @doc "Creates a new product asset. Returns `{:ok, asset}` or `{:error, changeset}`."
   @spec create_asset(map()) :: {:ok, ProductAsset.t()} | {:error, Ecto.Changeset.t()}
@@ -22,7 +37,11 @@ defmodule ContentForge.ProductAssets do
     %ProductAsset{}
     |> ProductAsset.changeset(attrs)
     |> Repo.insert()
+    |> maybe_broadcast(:asset_created)
   end
+
+  defp maybe_broadcast({:ok, asset}, event), do: {:ok, broadcast_change(asset, event)}
+  defp maybe_broadcast(other, _event), do: other
 
   @doc "Fetches an asset by id, raises `Ecto.NoResultsError` if not found."
   @spec get_asset!(Ecto.UUID.t()) :: ProductAsset.t()
@@ -98,6 +117,7 @@ defmodule ContentForge.ProductAssets do
     asset
     |> ProductAsset.mark_processed_changeset(attrs)
     |> Repo.update()
+    |> maybe_broadcast(:asset_updated)
   end
 
   @doc "Flips an asset to `failed` and records the given error string."
@@ -107,6 +127,7 @@ defmodule ContentForge.ProductAssets do
     asset
     |> ProductAsset.mark_failed_changeset(reason)
     |> Repo.update()
+    |> maybe_broadcast(:asset_updated)
   end
 
   @doc "Soft-deletes an asset: sets `status = \"deleted\"` without removing the row."
@@ -116,6 +137,7 @@ defmodule ContentForge.ProductAssets do
     asset
     |> ProductAsset.soft_delete_changeset()
     |> Repo.update()
+    |> maybe_broadcast(:asset_deleted)
   end
 
   # --- query helpers ------------------------------------------------------

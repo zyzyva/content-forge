@@ -102,6 +102,100 @@ defmodule ContentForgeWeb.DashboardLiveTest do
       assert html =~ "Briefs"
       assert html =~ "Drafts"
       assert html =~ "History"
+      assert html =~ "Assets"
+    end
+
+    test "Assets tab renders the upload form and an empty assets section",
+         %{conn: conn} do
+      product = create_product(%{name: "Assets Product"})
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/products/#{product.id}")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+
+      html = render_click(view, "switch_tab", %{"tab" => "assets"})
+
+      assert html =~ "Upload Assets"
+      assert html =~ "Register uploads"
+      assert html =~ "No assets yet"
+    end
+
+    test "Assets tab lists existing product assets with status badges",
+         %{conn: conn} do
+      product = create_product(%{name: "With Assets"})
+
+      {:ok, asset} =
+        ContentForge.ProductAssets.create_asset(%{
+          product_id: product.id,
+          storage_key: "products/#{product.id}/assets/abc/hero.jpg",
+          media_type: "image",
+          filename: "hero.jpg",
+          mime_type: "image/jpeg",
+          byte_size: 10_240,
+          uploaded_at: DateTime.utc_now()
+        })
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/products/#{product.id}")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+
+      html = render_click(view, "switch_tab", %{"tab" => "assets"})
+
+      assert html =~ "hero.jpg"
+      assert html =~ "PENDING"
+      assert html =~ "asset-#{asset.id}"
+    end
+
+    test "PubSub broadcast flips the asset status badge to PROCESSED",
+         %{conn: conn} do
+      product = create_product(%{name: "Live Asset Updates"})
+
+      {:ok, asset} =
+        ContentForge.ProductAssets.create_asset(%{
+          product_id: product.id,
+          storage_key: "products/#{product.id}/assets/abc/live.jpg",
+          media_type: "image",
+          filename: "live.jpg",
+          mime_type: "image/jpeg",
+          byte_size: 2048,
+          uploaded_at: DateTime.utc_now()
+        })
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/products/#{product.id}")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+
+      initial_html = render_click(view, "switch_tab", %{"tab" => "assets"})
+      assert initial_html =~ "PENDING"
+
+      {:ok, _processed} =
+        ContentForge.ProductAssets.mark_processed(asset, %{
+          width: 1200,
+          height: 800
+        })
+
+      :ok = render_async_wait(view)
+
+      updated_html = render(view)
+      assert updated_html =~ "PROCESSED"
+      refute updated_html =~ "PENDING"
+    end
+
+    # Renders and waits briefly so PubSub-delivered messages can be processed
+    # by the LiveView before we inspect the rendered HTML.
+    defp render_async_wait(view, timeout \\ 100) do
+      Process.sleep(timeout)
+      render(view)
+      :ok
     end
   end
 

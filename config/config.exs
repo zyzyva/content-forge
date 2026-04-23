@@ -84,6 +84,15 @@ config :content_forge, :llm,
     max_tokens: 4096
   ]
 
+# Register MIME types that are not in the default Mime table but are
+# used by the product-asset upload allow-list. This must stay in sync
+# with the @upload_accept_mimes attribute in
+# ContentForgeWeb.Live.Dashboard.Products.DetailLive.
+config :mime, :types, %{
+  "image/heic" => ["heic"],
+  "video/x-m4v" => ["m4v"]
+}
+
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
 
