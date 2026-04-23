@@ -84,8 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 14.4b: ReminderScheduler cron + ReminderDispatcher worker
 
-Status: READY FOR REVIEW
-Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (one format re-pass on the long `handle_twilio_result/5` heads that split over multiple lines), mix test 544/0 (526 prior + 18 new: 8 scheduler + 10 dispatcher). Credo by content unchanged vs post-14.4a: zero new findings.
+Status: DONE
+Merged: master @ `2fdea38` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 544-0; credo unchanged. `quiet?/3` handles midnight-crossing vs single-interval (both half-open); `compose/4` orders by severity. `ensure_not_paused` belt-and-suspenders for STOP arriving between schedule and dispatch. Oban.unique across all active states prevents same-day duplicates. 18 tests.
 Note: Two new Oban workers plus two new `Sms` context helpers + an Oban cron wiring in `config/config.exs`.
 
 **`ContentForge.Jobs.ReminderScheduler`** at `lib/content_forge/jobs/reminder_scheduler.ex` (queue `:default`, max_attempts 3). Scheduled hourly via a new `Oban.Plugins.Cron` entry: `{"0 * * * *", ContentForge.Jobs.ReminderScheduler}`. `perform/1` accepts an optional `"now"` ISO-8601 arg so tests can simulate different hours-of-day; when absent the worker reads `DateTime.utc_now/0`. Flow:

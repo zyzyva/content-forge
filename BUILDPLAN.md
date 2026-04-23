@@ -460,7 +460,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 12. Twilio + OpenClaw integration.
   - Symmetric START handling: inbound body `"START"` or `"UNSTOP"` calls `resume_phone_reminders/1`, records `"start_received"`, returns a TwiML confirmation. Normal auto-reply still runs afterward so the conversation continues naturally.
   - Tests cover: default config returned when absent; upsert round-trips; pause computes the timestamp correctly; resume clears it; STOP aliases case-insensitive; START resumes and continues; STOP from unknown phone still takes the generic rejection path (does not leak existence).
 
-- **14.4b ReminderScheduler cron + ReminderDispatcher worker**
+- **14.4b ReminderScheduler cron + ReminderDispatcher worker** ✅ Shipped `2fdea38`.
   - New cron-like Oban worker `ContentForge.Jobs.ReminderScheduler` at queue `:default`, scheduled hourly (either via Oban.Plugins.Cron or by its own self-rescheduling pattern — the coder picks whichever is consistent with the project). Each run iterates every product with an active `ReminderConfig`, loads the most recent inbound `SmsEvent` per whitelisted active phone for the product, and for each phone where `now - last_inbound >= cadence_days` AND `reminders_paused_until` is nil-or-past AND the current hour in the product's timezone is within the quiet window, enqueues a `ReminderDispatcher` for that phone.
   - New worker `ContentForge.Jobs.ReminderDispatcher` at queue `:default`, max_attempts 3. Takes a phone id + product id. Composes the reminder text:
     - Count recent unanswered outbound reminders since last inbound. If the count exceeds `backoff_after_ignored`, use a gentler tone template ("checking in, everything okay?"). If it exceeds `stop_after_ignored`, skip the send entirely and fire a dashboard notification that the client has gone dormant.
@@ -471,6 +471,12 @@ Per `CONTENT_FORGE_SPEC.md` Feature 12. Twilio + OpenClaw integration.
 
 - **14.5 Escalation**
   - If OpenClaw cannot confidently answer within a session, escalate to a human operator by creating a dashboard notification and pausing autoresponse.
+  - Additional requirements surfaced during 14.2/14.4:
+    - Extend `ConversationSession` with `escalated_at` (utc_datetime_usec, nullable), `escalation_reason` (text, nullable), and `auto_response_paused` (boolean default false). When a session is escalated, `SmsReplyDispatcher` short-circuits to a single holding-message outbound ("Thanks — a human from our team will follow up shortly.") and then no further auto-replies fire until the session is resolved.
+    - `ContentForge.Sms.escalate_session/3` takes a session, a reason string, and options (`notify_channels:` list); marks the session escalated, pauses auto-response, records an `SmsEvent` with status `"escalated"`, and fires any configured notification channels (dashboard for this slice; Slack/email gated behind future wiring). `resolve_session/1` clears the escalation flags so auto-response resumes.
+    - New LiveView page at `/dashboard/sms` (`SmsLive.NeedsAttention`) lists all currently escalated sessions across all products with: product name, phone number (display label from the ProductPhone), last inbound body snippet, escalation reason, and escalated-at timestamp. Each row has a "mark resolved" button that calls `resolve_session/1` and flashes success. Sessions with high inbound volume (above a configurable per-session threshold, default 10 messages in 24h with no outbound reply) appear on the same page under a "high-volume" section even if not yet escalated — this is the "needs reply" queue from the spec.
+    - Router: new authenticated route `/dashboard/sms` inside the existing dashboard scope so admins land on it from the main nav. Add a "SMS" card to the dashboard hub.
+    - Tests: escalate_session records the event, pauses auto-response, and a subsequent dispatcher enqueue is a no-op (holding message only sent once); resolve_session flips back; the LiveView renders escalated sessions and the high-volume queue; marking resolved removes the row from the list.
 
 Phase exit criteria: a marketer can text a photo in, get it tagged into a product library, receive a scheduled review-deadline reminder, and escalate to a human when the bot is uncertain.
 
