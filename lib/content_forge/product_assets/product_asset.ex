@@ -33,6 +33,7 @@ defmodule ContentForge.ProductAssets.ProductAsset do
     field :description, :string
     field :status, :string, default: "pending"
     field :error, :string
+    field :thumbnail_storage_key, :string
 
     belongs_to :product, ContentForge.Products.Product
 
@@ -40,7 +41,7 @@ defmodule ContentForge.ProductAssets.ProductAsset do
   end
 
   @required ~w(product_id storage_key media_type filename mime_type byte_size uploaded_at)a
-  @optional ~w(duration_ms width height uploader tags description status error)a
+  @optional ~w(duration_ms width height uploader tags description status error thumbnail_storage_key)a
 
   @doc "Changeset used for `create_asset/1` and generic `update_asset/2`."
   def changeset(asset, attrs) do
@@ -67,7 +68,7 @@ defmodule ContentForge.ProductAssets.ProductAsset do
   """
   def mark_processed_changeset(asset, attrs) do
     asset
-    |> cast(attrs, [:width, :height, :duration_ms])
+    |> cast(attrs, [:width, :height, :duration_ms, :thumbnail_storage_key])
     |> put_change(:status, "processed")
     |> put_change(:error, nil)
     |> validate_number(:width, greater_than: 0)

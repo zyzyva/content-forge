@@ -82,6 +82,36 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 13.1d: AssetImageProcessor worker
+
+Status: IN PROGRESS (coder handoff)
+Note: Filled in the stub `ContentForge.Jobs.AssetImageProcessor` that shipped under 13.1b. The worker now dispatches pending image assets through Media Forge and records the probed dimensions plus the generated thumbnail's storage key. Flow mirrors the `ImageGenerator` + `VideoProducer` patterns:
+
+1. `perform/1` loads the asset. Missing asset -> `{:cancel, "asset not found"}`. Already-processed/failed/deleted asset -> `:ok` (no HTTP, safe to replay). Asset without a `storage_key` -> mark failed with a clear reason.
+2. `process/1` calls `MediaForge.enqueue_image_process/1` with the storage key and the four transforms the spec names (`autorotate`, `strip_exif`, `thumbnail`, `probe`), plus a thumbnail max-dimension hint and asset/product metadata.
+3. Synchronous response containing `width`/`height` (optionally under `result`/`data`) short-circuits straight to `ProductAssets.mark_processed/2` with the dimensions and the extracted thumbnail key.
+4. Asynchronous response carrying a `jobId` polls `MediaForge.get_job/1` with a configurable interval + attempt cap (defaults to 3 s x 60 attempts; test config overrides to 0). Terminal `done`/`completed`/`succeeded` applies the result; terminal `failed`/`error` marks the asset failed with the reported reason.
+
+Error taxonomy per BUILDPLAN:
+
+- `{:error, :not_configured}` from either the initial call or a late poll marks the asset failed with the exact string `"media_forge_unavailable"` so the dashboard's `asset.error` field surfaces the reason.
+- 5xx / 429 / timeout / network propagate as `{:error, reason}` for Oban to retry; the asset stays in `pending` so the retry succeeds idempotently once Media Forge recovers.
+- 4xx and unexpected_status mark the asset `failed` with the HTTP status in the reason and return `{:cancel, _}`.
+- `mark_processed/2` validation failure falls through to `fail/2` so a malformed Media Forge result does not leave the asset in a half-written state.
+
+Schema extension: new `thumbnail_storage_key` column on `product_assets` added via migration `20260424120000_add_thumbnail_storage_key_to_product_assets.exs`. `ProductAsset.mark_processed_changeset/2` now casts the new field alongside width/height/duration_ms.
+
+Result extraction helpers use function-head pattern-matching:
+
+- `extract_result/1` tries `body["result"]` -> `body["data"]` -> the body itself when it already contains `width`+`height` -> nil
+- `extract_int/2` + `integer_value/1` + `first_present/2` are shared shape-tolerant readers that accept `width`/`image_width`, `height`/`image_height`, and `thumbnail_storage_key`/`thumbnail_key`/`thumbnail_url` interchangeably so a Media Forge shape change is a one-line fix
+
+Polling interval and attempt cap read from `:content_forge, :asset_image_processor` config (`poll_interval_ms`, `poll_max_attempts`) so tests can set both to zero without mocking.
+
+New test file `test/content_forge/jobs/asset_image_processor_test.exs` covers 8 cases with `Req.Test` stubs: synchronous happy path (asserts transforms list + request shape + persisted width/height/thumb), async happy path via counter-verified two-poll-then-done sequence, `:not_configured` -> `failed`+`media_forge_unavailable` with zero HTTP (refute_received), 503 transient -> `{:error, _}` + asset stays `pending`, 4xx permanent -> `failed` + `{:cancel, _}`, async terminal `"failed"` status -> `failed` with provider reason, already-processed asset short-circuits with zero HTTP, missing asset cancels with zero HTTP. Log noise wrapped in `capture_log`.
+
+Gate: mix compile --warnings-as-errors clean, mix format clean, mix test 328/0 (320 prior + 8 new). Credo by content unchanged vs post-13.1c: no new findings from the new worker, migration, or test file; same known carryovers per `f26d099` rule.
+
 ### Phase 13.1c: LiveView upload form on product detail
 
 Status: DONE
