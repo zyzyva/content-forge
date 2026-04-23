@@ -314,7 +314,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 11. Leans heavily on Phase 10 Media Forge pl
   - Bundles attach to drafts and provide media for the generation pipeline.
   - **Slicing note:** Schema + context in 13.3a; LiveView management in 13.3b. Draft-generation-from-bundle is 13.4.
 
-- **13.3a AssetBundle schema and context**
+- **13.3a AssetBundle schema and context** ✅ Shipped `641c50d`.
   - New schema `ContentForge.ProductAssets.AssetBundle` at `lib/content_forge/product_assets/asset_bundle.ex` with fields: `product_id` (binary_id fk, required), `name` (string, required, 1..120 chars), `context` (text, nullable — the free-form description of what the bundle represents, for example "Johnson family kitchen remodel, 3 weeks, quartz counters, custom cabinets"), `status` (string enum `"active" | "archived" | "deleted"`, default `"active"`), plus timestamps.
   - Join schema `ContentForge.ProductAssets.BundleAsset` joining `asset_bundles` to `product_assets` with composite uniqueness so an asset can appear in a bundle only once. The join carries `position` (integer) for a display order within the bundle.
   - Migration creates both tables: bundles table with binary_id PK, fk to products with `on_delete: :delete_all`; join table with fks to both sides with `on_delete: :delete_all`, composite unique index on `(bundle_id, asset_id)`, plus a plain index on `bundle_id` for fetch-by-bundle queries.
