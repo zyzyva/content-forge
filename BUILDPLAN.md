@@ -322,7 +322,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 11. Leans heavily on Phase 10 Media Forge pl
   - PubSub broadcasts on bundle create, update, archive, delete, and on any membership change (so the LiveView in 13.3b can react).
   - Tests cover: full CRUD happy path, soft delete hides from default list, archived hides from default list, duplicate add_asset is a no-op (or returns the existing row), remove_asset cleans up, reorder applies, the product delete cascades both tables.
 
-- **13.3b Bundle management in LiveView**
+- **13.3b Bundle management in LiveView** ✅ Shipped `8323486`.
   - New "Bundles" section on the product detail page, rendered as its own tab alongside Assets. Shows active bundles with name, context snippet, asset count, and thumbnail mosaic (first four asset thumbnails).
   - Create-bundle form: name + optional context textarea. Submitting creates the bundle empty.
   - Bundle detail view (inline drawer or new page): shows the bundle's assets in position order, with remove and reorder controls, plus a multi-select picker that lists unattached assets from the product's library filtered by media_type. Assets are attached through `add_asset_to_bundle/3`.
@@ -333,6 +333,27 @@ Per `CONTENT_FORGE_SPEC.md` Feature 11. Leans heavily on Phase 10 Media Forge pl
 - **13.4 Draft generation from assets**
   - Generation entry point that accepts an asset bundle and emits draft copy keyed to the visual narrative of the bundle.
   - Model prompt includes asset captions / tags so copy and imagery align.
+  - **Slicing note:** Three sub-slices — schema extension for draft↔asset many-to-many (13.4a), the generation worker (13.4b), and the LiveView trigger from the bundle drawer (13.4c).
+
+- **13.4a Draft ↔ ProductAsset many-to-many association**
+  - New join schema `ContentForge.ContentGeneration.DraftAsset` linking `drafts` to `product_assets` so a draft can reference one or more assets as its featured media and an asset can appear in multiple drafts. Join carries a `role` field (enum `"featured" | "gallery"`, default `"featured"`) so the publisher can pick the right one when only a single platform slot is available.
+  - Migration creates the join table with binary_id PK, both fks `on_delete: :delete_all`, composite unique on `(draft_id, asset_id)`, plain indexes on each side for reverse lookups.
+  - Extend `ContentForge.ContentGeneration.Draft` with `has_many :draft_assets` and `has_many :assets, through: :draft_assets` so existing preload sites work unchanged.
+  - Extend `ContentForge.ContentGeneration` context with `attach_asset/3` (draft_id, asset_id, role), `detach_asset/2`, `list_assets_for_draft/1`, and include the assets in the default preload used by the LiveView queue.
+  - Existing `draft.image_url` stays in place and continues to be authoritative for published output until 13.5 teaches the publisher to resolve a rendition from the attached assets. The two paths coexist: a draft generated before this slice still publishes via `image_url`; a draft generated from a bundle gets `image_url` populated from the featured asset's thumbnail (or primary storage key) as part of the 13.4b worker.
+  - Tests cover: attach adds a row and dedupes on repeat, detach removes, cascade-on-draft-delete and cascade-on-asset-delete, the `through: :assets` preload loads in order, and `role` defaults correctly.
+
+- **13.4b AssetBundleDraftGenerator worker**
+  - New Oban worker `ContentForge.Jobs.AssetBundleDraftGenerator` under queue `:content_generation` that consumes a bundle id + a list of target platforms + a per-platform variant count. For each target platform, the worker builds a prompt using the bundle's context text, each asset's tags and description, and the bundle's visual narrative (ordered list of assets by position, with each asset's media type and thumbnail reference).
+  - Calls `LLM.Anthropic.complete/2` (via the existing shipped client) with a structured JSON prompt asking for N variants per platform. JSON parsing follows the established pattern (direct decode, fenced-block fallback, reject malformed without fabricating).
+  - For each returned variant, creates a Draft with status `"draft"`, the platform, content type `"post"` (or `"video_script"` for video-specific platforms), angle, generating_model set to the Anthropic model name, and a `bundle_id` reference recorded on the draft (new optional column added in this slice's migration). Then attaches the bundle's featured asset to the draft via `attach_asset/3` with role `"featured"`, and sets `image_url` from that asset's primary storage key or thumbnail so existing publisher paths keep working.
+  - Error handling mirrors the brief generator: `:not_configured` logs "LLM unavailable for bundle drafts", returns a skipped result, creates no drafts. Transient errors retry via Oban. Permanent errors cancel the job.
+  - Tests: happy-path generation for two platforms produces the right number of drafts with assets attached and image_url populated from the featured asset; `:not_configured` skip creates no drafts; malformed JSON response rejects without fabricating; transient retries; permanent cancels.
+
+- **13.4c LiveView "Generate drafts" trigger from bundle drawer**
+  - In the bundle detail drawer shipped under 13.3b, add a "Generate drafts" form that lets the user select target platforms (multi-checkbox over the product's enabled publishing targets) and a per-platform variant count (default 3). Submitting enqueues `AssetBundleDraftGenerator.new/1` with the bundle id, selected platforms, and count.
+  - After enqueueing, the drawer shows a "drafts generating..." banner until the job completes; completion is surfaced via PubSub on the existing `content_forge:drafts:<product_id>` topic (new topic if it does not exist yet), and the drafts queue view updates in real time.
+  - Tests: submitting the form enqueues the job with the right args; the banner appears and clears; a draft created by the worker links back to its bundle via the new bundle_id column.
 
 - **13.5 Asset renditions on publish**
   - At publish time, Content Forge requests platform-specific renditions from Media Forge (Instagram 1:1, TikTok 9:16, etc.) and attaches the rendition to the platform post.
