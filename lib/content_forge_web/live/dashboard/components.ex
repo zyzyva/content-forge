@@ -17,6 +17,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Components do
         "ranked" -> "badge-warning"
         "approved" -> "badge-info"
         "rejected" -> "badge-error"
+        "blocked" -> "badge-error"
         "published" -> "badge-success"
         "pending" -> "badge-neutral"
         "completed" -> "badge-success"

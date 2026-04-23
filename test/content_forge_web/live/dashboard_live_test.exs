@@ -158,6 +158,31 @@ defmodule ContentForgeWeb.DashboardLiveTest do
       assert_received {:result, {:ok, view, _html}}
       assert render(view) =~ "No drafts found"
     end
+
+    test "exposes a Blocked filter tab", %{conn: conn} do
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/drafts")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      html = render(view)
+      assert html =~ "Blocked"
+    end
+
+    test "renders a blocked draft with a distinct BLOCKED label", %{conn: conn} do
+      product = create_product()
+      _draft = create_draft(product, %{status: "blocked"})
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/drafts")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      html = render(view)
+      assert html =~ "BLOCKED"
+    end
   end
 
   describe "Schedule page" do
@@ -194,6 +219,21 @@ defmodule ContentForgeWeb.DashboardLiveTest do
       html = render(view)
       assert html =~ "Published"
       assert html =~ "Scheduled"
+    end
+
+    test "surfaces blocked drafts in a distinct section", %{conn: conn} do
+      product = create_product()
+      _blocked = create_draft(product, %{status: "blocked", image_url: nil})
+
+      capture_log(fn ->
+        result = live(conn, ~p"/dashboard/schedule")
+        send(self(), {:result, result})
+      end)
+
+      assert_received {:result, {:ok, view, _html}}
+      html = render(view)
+      assert html =~ "Blocked"
+      assert html =~ "BLOCKED"
     end
   end
 end

@@ -17,6 +17,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Schedule.Live do
 
     posts = fetch_posts(product_id, start_date, end_date)
     scheduled_drafts = fetch_scheduled_drafts(product_id)
+    blocked_drafts = fetch_blocked_drafts(product_id)
 
     {:ok,
      assign(socket,
@@ -26,6 +27,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Schedule.Live do
        end_date: end_date,
        posts: posts,
        scheduled_drafts: scheduled_drafts,
+       blocked_drafts: blocked_drafts,
        view: Map.get(params, "view", "timeline")
      )}
   end
@@ -35,12 +37,14 @@ defmodule ContentForgeWeb.Live.Dashboard.Schedule.Live do
     {start_date, end_date} = {socket.assigns.start_date, socket.assigns.end_date}
     posts = fetch_posts(product_id, start_date, end_date)
     scheduled_drafts = fetch_scheduled_drafts(product_id)
+    blocked_drafts = fetch_blocked_drafts(product_id)
 
     {:noreply,
      assign(socket,
        product_filter: product_id,
        posts: posts,
-       scheduled_drafts: scheduled_drafts
+       scheduled_drafts: scheduled_drafts,
+       blocked_drafts: blocked_drafts
      )}
   end
 
@@ -127,6 +131,9 @@ defmodule ContentForgeWeb.Live.Dashboard.Schedule.Live do
   defp fetch_scheduled_drafts(product_id) do
     ContentGeneration.list_approved_drafts(product_id)
   end
+
+  defp fetch_blocked_drafts(""), do: ContentGeneration.list_blocked_drafts(nil)
+  defp fetch_blocked_drafts(product_id), do: ContentGeneration.list_blocked_drafts(product_id)
 
   @impl true
   def render(assigns) do
@@ -278,6 +285,38 @@ defmodule ContentForgeWeb.Live.Dashboard.Schedule.Live do
 
         <div :if={length(@scheduled_drafts) == 0} class="text-center py-8 text-base-content/70">
           No scheduled drafts
+        </div>
+
+        <h2 class="font-semibold mt-8">Blocked (Awaiting Image)</h2>
+        <p class="text-sm text-base-content/70">
+          Social posts blocked from publishing until an image is attached.
+        </p>
+        <div :if={length(@blocked_drafts) > 0} class="overflow-x-auto">
+          <table class="table table-zebra">
+            <thead>
+              <tr>
+                <th>Created</th>
+                <th>Platform</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Content</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr :for={draft <- @blocked_drafts}>
+                <td>{Components.format_datetime(draft.inserted_at)}</td>
+                <td>
+                  <span class="badge badge-sm badge-outline">{draft.platform}</span>
+                </td>
+                <td>{draft.content_type}</td>
+                <td><Components.status_badge status={draft.status} /></td>
+                <td class="max-w-xs truncate">{draft.content}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div :if={length(@blocked_drafts) == 0} class="text-center py-8 text-base-content/70">
+          No blocked drafts
         </div>
       </div>
       

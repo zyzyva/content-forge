@@ -181,6 +181,13 @@ defmodule ContentForgeWeb.Live.Dashboard.Drafts.ReviewLive do
           >
             Rejected
           </button>
+          <button
+            class={["tab", @filter == "blocked" && "tab-active"]}
+            phx-click="filter"
+            phx-value-filter="blocked"
+          >
+            Blocked
+          </button>
         </div>
 
         <select
