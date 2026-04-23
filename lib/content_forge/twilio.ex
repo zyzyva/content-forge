@@ -54,6 +54,7 @@ defmodule ContentForge.Twilio do
   @config_key :twilio
 
   @default_base_url "https://api.twilio.com"
+  @default_media_cap_bytes 100 * 1024 * 1024
 
   @type send_opt ::
           {:media_urls, [String.t()]}
@@ -103,6 +104,130 @@ defmodule ContentForge.Twilio do
   @spec send_sms(String.t(), String.t(), send_opts()) :: ok_result() | error_result()
   def send_sms(to, body, opts \\ []) when is_binary(to) and is_binary(body) do
     dispatch(to, body, opts, fetch_account_sid(), fetch_auth_token())
+  end
+
+  @doc """
+  Downloads an inbound MMS media URL from Twilio.
+
+  Issues a GET to `url` with HTTP Basic auth (account_sid:auth_token)
+  and follows Twilio's 307 redirect to the signed S3-backed download.
+  Req drops the Basic-auth header on cross-origin redirects by default,
+  so the account token is never forwarded to S3.
+
+  Enforces a size cap (`:media_cap_bytes`, default
+  #{@default_media_cap_bytes} bytes). Bodies that exceed the cap
+  return `{:error, {:media_too_large, body_bytes, cap}}` rather than
+  being buffered in memory.
+
+  Returns `{:ok, %{content_type: _, binary: _}}` on success or the
+  established error taxonomy on failure.
+  """
+  @spec download_media(String.t()) ::
+          {:ok, %{content_type: String.t() | nil, binary: binary()}}
+          | error_result()
+          | {:error, {:media_too_large, non_neg_integer(), non_neg_integer()}}
+  def download_media(url) when is_binary(url) do
+    dispatch_media(url, fetch_account_sid(), fetch_auth_token())
+  end
+
+  # --- media dispatch -----------------------------------------------------
+
+  defp dispatch_media(_url, sid, _token) when sid in [nil, ""],
+    do: {:error, :not_configured}
+
+  defp dispatch_media(_url, _sid, token) when token in [nil, ""],
+    do: {:error, :not_configured}
+
+  defp dispatch_media(url, account_sid, auth_token) do
+    url
+    |> build_media_request(account_sid, auth_token)
+    |> Req.get()
+    |> classify_media()
+  end
+
+  defp build_media_request(url, account_sid, auth_token) do
+    base = [
+      url: url,
+      auth: {:basic, "#{account_sid}:#{auth_token}"},
+      receive_timeout: 60_000,
+      retry: false,
+      # Keep the body as raw bytes. Req's default pipeline attempts to
+      # decode archive / JSON / form bodies based on content-type; for
+      # MMS downloads we want exactly what Twilio served.
+      decode_body: false
+    ]
+
+    Req.new(base ++ extra_req_options())
+  end
+
+  defp classify_media({:ok, %Req.Response{status: status, body: body, headers: headers}})
+       when status in 200..299 do
+    enforce_media_cap(body, headers_content_type(headers))
+  end
+
+  defp classify_media({:ok, %Req.Response{status: status, body: body}})
+       when status in 300..399 do
+    {:error, {:unexpected_status, status, body}}
+  end
+
+  defp classify_media({:ok, %Req.Response{status: 429, body: body}}),
+    do: {:error, {:transient, 429, body}}
+
+  defp classify_media({:ok, %Req.Response{status: status, body: body}})
+       when status in 400..499 do
+    {:error, {:http_error, status, body}}
+  end
+
+  defp classify_media({:ok, %Req.Response{status: status, body: body}}) when status >= 500 do
+    {:error, {:transient, status, body}}
+  end
+
+  defp classify_media({:error, %Req.TransportError{reason: :timeout} = err}),
+    do: {:error, {:transient, :timeout, err.reason}}
+
+  defp classify_media({:error, %Req.TransportError{reason: reason}})
+       when reason in [:econnrefused, :nxdomain, :ehostunreach, :enetunreach, :closed] do
+    {:error, {:transient, :network, reason}}
+  end
+
+  defp classify_media({:error, reason}), do: {:error, reason}
+
+  defp enforce_media_cap(body, content_type) when is_binary(body) do
+    cap = media_cap_bytes()
+    size = byte_size(body)
+
+    if size > cap do
+      {:error, {:media_too_large, size, cap}}
+    else
+      {:ok, %{content_type: content_type, binary: body}}
+    end
+  end
+
+  defp enforce_media_cap(body, _content_type),
+    do: {:error, {:unexpected_body, body}}
+
+  defp headers_content_type(headers) when is_map(headers) do
+    case Map.get(headers, "content-type") do
+      [ct | _] when is_binary(ct) -> ct
+      ct when is_binary(ct) -> ct
+      _ -> nil
+    end
+  end
+
+  defp headers_content_type(headers) when is_list(headers) do
+    Enum.find_value(headers, fn
+      {"content-type", v} when is_binary(v) -> v
+      _ -> nil
+    end)
+  end
+
+  defp headers_content_type(_), do: nil
+
+  defp media_cap_bytes do
+    case config(:media_cap_bytes) do
+      n when is_integer(n) and n > 0 -> n
+      _ -> @default_media_cap_bytes
+    end
   end
 
   # --- dispatch ------------------------------------------------------------

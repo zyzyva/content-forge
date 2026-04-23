@@ -24,6 +24,7 @@ defmodule ContentForgeWeb.TwilioWebhookController do
 
   use ContentForgeWeb, :controller
 
+  alias ContentForge.Jobs.SmsMediaIngestor
   alias ContentForge.Jobs.SmsReplyDispatcher
   alias ContentForge.Sms
   alias ContentForge.Sms.ProductPhone
@@ -71,6 +72,8 @@ defmodule ContentForgeWeb.TwilioWebhookController do
       |> SmsReplyDispatcher.new()
       |> Oban.insert()
 
+    enqueue_media_ingest(event, media)
+
     empty_twiml(conn)
   end
 
@@ -101,6 +104,19 @@ defmodule ContentForgeWeb.TwilioWebhookController do
       })
 
     rejection_twiml(conn)
+  end
+
+  # --- media-ingest enqueue -----------------------------------------------
+
+  defp enqueue_media_ingest(_event, []), do: :ok
+
+  defp enqueue_media_ingest(event, media) when is_list(media) do
+    {:ok, _job} =
+      %{"event_id" => event.id}
+      |> SmsMediaIngestor.new()
+      |> Oban.insert()
+
+    :ok
   end
 
   # --- TwiML helpers ------------------------------------------------------

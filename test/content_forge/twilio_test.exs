@@ -237,4 +237,103 @@ defmodule ContentForge.TwilioTest do
                Twilio.send_sms("+15551112222", "hi")
     end
   end
+
+  describe "download_media/1" do
+    test "returns {:ok, %{content_type, binary}} on 200" do
+      jpeg_bytes = "\xFF\xD8\xFF\xE0\x00\x10JFIF" <> :crypto.strong_rand_bytes(64)
+
+      Req.Test.stub(@stub_key, fn conn ->
+        assert conn.method == "GET"
+
+        assert ["Basic " <> encoded] = Plug.Conn.get_req_header(conn, "authorization")
+        assert Base.decode64!(encoded) == "ACtest12345:twilio-auth-token"
+
+        conn
+        |> Plug.Conn.put_resp_header("content-type", "image/jpeg")
+        |> Plug.Conn.resp(200, jpeg_bytes)
+      end)
+
+      assert {:ok, %{content_type: "image/jpeg", binary: body}} =
+               Twilio.download_media(
+                 "http://twilio.test/Accounts/ACtest12345/Messages/SMx/Media/MExxx"
+               )
+
+      assert body == jpeg_bytes
+    end
+
+    test "returns {:error, :not_configured} without HTTP when account_sid missing" do
+      put_cfg(twilio_cfg() |> Keyword.put(:account_sid, nil))
+
+      test_pid = self()
+
+      Req.Test.stub(@stub_key, fn _conn ->
+        send(test_pid, :unexpected_http)
+        raise "no HTTP expected when account_sid is missing"
+      end)
+
+      assert {:error, :not_configured} = Twilio.download_media("http://twilio.test/m")
+      refute_received :unexpected_http
+    end
+
+    test "returns {:error, :not_configured} without HTTP when auth_token missing" do
+      put_cfg(twilio_cfg() |> Keyword.put(:auth_token, ""))
+
+      test_pid = self()
+
+      Req.Test.stub(@stub_key, fn _conn ->
+        send(test_pid, :unexpected_http)
+        raise "no HTTP expected when auth_token is missing"
+      end)
+
+      assert {:error, :not_configured} = Twilio.download_media("http://twilio.test/m")
+      refute_received :unexpected_http
+    end
+
+    test "403 classifies as {:http_error, 403, _}" do
+      Req.Test.stub(@stub_key, fn conn ->
+        conn
+        |> Plug.Conn.put_status(403)
+        |> Req.Test.json(%{"message" => "forbidden"})
+      end)
+
+      assert {:error, {:http_error, 403, _body}} =
+               Twilio.download_media("http://twilio.test/m")
+    end
+
+    test "500 classifies as {:transient, 500, _}" do
+      Req.Test.stub(@stub_key, fn conn ->
+        conn
+        |> Plug.Conn.put_status(500)
+        |> Req.Test.json(%{"message" => "server error"})
+      end)
+
+      assert {:error, {:transient, 500, _body}} =
+               Twilio.download_media("http://twilio.test/m")
+    end
+
+    test "timeout classifies as {:transient, :timeout, _}" do
+      Req.Test.stub(@stub_key, fn conn ->
+        Req.Test.transport_error(conn, :timeout)
+      end)
+
+      assert {:error, {:transient, :timeout, _}} =
+               Twilio.download_media("http://twilio.test/m")
+    end
+
+    test "rejects media larger than the configured cap" do
+      # Shrink the cap so we can test cheaply.
+      put_cfg(twilio_cfg() |> Keyword.put(:media_cap_bytes, 128))
+
+      Req.Test.stub(@stub_key, fn conn ->
+        body = :crypto.strong_rand_bytes(512)
+
+        conn
+        |> Plug.Conn.put_resp_header("content-type", "image/jpeg")
+        |> Plug.Conn.resp(200, body)
+      end)
+
+      assert {:error, {:media_too_large, 512, 128}} =
+               Twilio.download_media("http://twilio.test/m")
+    end
+  end
 end

@@ -4,6 +4,7 @@ defmodule ContentForgeWeb.TwilioWebhookControllerTest do
 
   import ExUnit.CaptureLog
 
+  alias ContentForge.Jobs.SmsMediaIngestor
   alias ContentForge.Jobs.SmsReplyDispatcher
   alias ContentForge.Products
   alias ContentForge.Repo
@@ -94,6 +95,8 @@ defmodule ContentForgeWeb.TwilioWebhookControllerTest do
         worker: SmsReplyDispatcher,
         args: %{"event_id" => event.id}
       )
+
+      refute_enqueued(worker: SmsMediaIngestor)
     end
 
     test "captures MediaUrl0..N into media_urls", %{conn: conn, product: product} do
@@ -122,6 +125,11 @@ defmodule ContentForgeWeb.TwilioWebhookControllerTest do
                "https://twilio.example/m/a.jpg",
                "https://twilio.example/m/b.jpg"
              ]
+
+      assert_enqueued(
+        worker: SmsMediaIngestor,
+        args: %{"event_id" => event.id}
+      )
     end
   end
 
