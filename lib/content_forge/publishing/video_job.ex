@@ -28,6 +28,9 @@ defmodule ContentForge.Publishing.VideoJob do
     field :error, :string
     field :feature_flag, :boolean, default: true
     field :media_forge_job_id, :string
+    field :promoted_via_override, :boolean, default: false
+    field :promoted_score, :float
+    field :promoted_threshold, :float
 
     belongs_to :draft, ContentForge.ContentGeneration.Draft
     belongs_to :product, ContentForge.Products.Product
@@ -44,7 +47,10 @@ defmodule ContentForge.Publishing.VideoJob do
       :per_step_r2_keys,
       :error,
       :feature_flag,
-      :media_forge_job_id
+      :media_forge_job_id,
+      :promoted_via_override,
+      :promoted_score,
+      :promoted_threshold
     ])
     |> validate_required([:draft_id, :product_id])
     |> validate_inclusion(:status, @statuses)

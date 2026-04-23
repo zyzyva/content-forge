@@ -82,6 +82,45 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 15.1b: Script-gate threshold view on video page
+
+Status: READY FOR REVIEW
+Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates; one formatter re-pass on a long header line), mix test 598/0 (585 prior + 13 new: 7 context + 6 LiveView). Credo by content unchanged vs post-15.1a: would-be new "Nested modules could be aliased" finding for `ContentForge.Jobs.VideoProducer` fixed inline by hoisting the alias to the top; zero net-new findings.
+Note: Script-gate threshold view + manual promote/override control on the existing video page per BUILDPLAN 15.1b.
+
+**Schema**: migration `20260502120000_add_promoted_via_override_to_video_jobs.exs` alters `video_jobs` to add three columns:
+
+- `promoted_via_override :boolean null: false default: false` - stamps the "this went around the automatic gate" state on the row itself, so the status board can surface it forever without joining back to the draft's score history.
+- `promoted_score :float` - composite score at promotion time, nullable because an unscored draft can still be manually promoted.
+- `promoted_threshold :float` - the threshold in effect at promotion time.
+
+`VideoJob` schema + `@cast` list pick up all three fields.
+
+**Context helpers** in `ContentForge.Publishing`:
+
+- `script_gate_threshold/0` - single read-point for `:content_forge, :script_gate, :threshold`, default `6.0`. Both the new LiveView and a future `ScriptGate` worker refactor can read the same value.
+- `promote_script(draft_id, opts)` - three-step atomic flow inside `Repo.transaction`:
+  1. `update_draft_status(draft, "approved")`.
+  2. `create_video_job/1` with all three promoted-* fields set; `below_threshold?/2` two-head on `nil | number` decides `promoted_via_override`.
+  3. `maybe_enqueue_producer/2` two-head (false/true) optionally inserts `ContentForge.Jobs.VideoProducer` - gated so tests can focus on DB state without exercising Oban's queue.
+
+Returns `{:error, :draft_not_found}` when the draft id is unknown; changeset errors roll the transaction back cleanly.
+
+**LiveView changes** in `ContentForgeWeb.Live.Dashboard.Video.StatusLive`:
+
+- Mount now assigns `candidate_scripts`, `script_gate_threshold`, and `status_order` (the latter because HEEx `@x` references are always assigns lookups, not module-attribute reads - required for the `for step <- @status_order` loop to render in tests with strict-assign-checking).
+- `fetch_candidates/1` three-head dispatches on the product filter ("" → `candidate_scripts_for_products(Products.list_products())`; binary → scoped to that product or empty when the product is missing). `candidate_scripts_for_products/1` builds the list of ranked/archived video_script drafts without an existing `VideoJob`, hydrates each with `ContentGeneration.compute_composite_score/1`, and sorts by score-desc with nil-last via `candidate_sort_key/1` two-head.
+- New "Script Gate" table between the Pipeline and Video Jobs sections. Columns: Product / Script / Composite / Status vs threshold / action button. Data attributes for stable test assertions: `data-script-gate-threshold`, `data-script-candidate={draft.id}`, `data-below-threshold={"true"|"false"}`, `data-promoted-override={job.id}`. Label helpers (`score_label/2`, `score_badge_class/2`, `promote_button_class/2`, `promote_label/2`, `promote_confirm/2`) are all function-head dispatched on `nil | above-threshold | below-threshold`.
+- Button copy changes by branch: `"Promote"` for at/above threshold; `"Override promote"` for below threshold or unscored, with a `data-confirm` dialog ("Composite X.XX is below threshold Y.YY. Override?" / "Promote with no ranking scores on file?").
+- Status-board cards get an `OVERRIDE` warning badge next to the status badge when `job.promoted_via_override` is true. `data-promoted-override={job.id}` marker lets tests assert both directions.
+- `handle_event("promote_script", %{"draft-id" => id})` delegates to `Publishing.promote_script/2`, puts a context-aware flash ("Promoted script via manual override" vs "Promoted script to video production") via `flash_for_promotion/1` two-head, and re-queries candidates + jobs so the row disappears from the gate and appears on the board in the same render cycle.
+
+13 new tests:
+- `test/content_forge/publishing/promote_script_test.exs` (7): above-threshold promote (override=false, score + threshold recorded), VideoProducer enqueue (default-on), below-threshold override (override=true), unscored (nil score → override=true), default threshold from `script_gate_threshold/0`, per-test config override respected, unknown draft → `{:error, :draft_not_found}`.
+- `test/content_forge_web/live/dashboard/video/script_gate_view_test.exs` (6): renders threshold + each candidate with composite score + ABOVE/BELOW/UNSCORED labels; unscored candidate gets Override promote button; empty state copy; above-threshold promote creates VideoJob + flips draft status + hides candidate row + no OVERRIDE badge; below-threshold override creates VideoJob with `promoted_via_override: true` + `promoted_score: 3.0` + `promoted_threshold` from config + renders the OVERRIDE badge on the status board; product filter narrows the candidate list.
+
+Touched files: `priv/repo/migrations/20260502120000_add_promoted_via_override_to_video_jobs.exs` (new), `lib/content_forge/publishing/video_job.ex` (three new fields + cast), `lib/content_forge/publishing.ex` (2 new public fns + 3 private helpers, aliases rearranged), `lib/content_forge_web/live/dashboard/video/status_live.ex` (Script Gate section + OVERRIDE badge + promote_script event + candidate loading + helper heads + status_order assign fix), `test/content_forge/publishing/promote_script_test.exs` (new), `test/content_forge_web/live/dashboard/video/script_gate_view_test.exs` (new), `BUILDLOG.md`.
+
 ### Phase 15.1a: Provider status panel
 
 Status: DONE

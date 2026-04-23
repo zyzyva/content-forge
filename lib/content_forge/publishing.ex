@@ -5,11 +5,13 @@ defmodule ContentForge.Publishing do
   """
 
   import Ecto.Query, warn: false
-  alias ContentForge.Repo
-  alias ContentForge.Publishing.PublishedPost
+  alias ContentForge.ContentGeneration
+  alias ContentForge.Jobs.VideoProducer
   alias ContentForge.Publishing.EngagementMetric
-  alias ContentForge.Publishing.WebhookDelivery
+  alias ContentForge.Publishing.PublishedPost
   alias ContentForge.Publishing.VideoJob
+  alias ContentForge.Publishing.WebhookDelivery
+  alias ContentForge.Repo
 
   # ============================================
   # Published Posts
@@ -203,6 +205,93 @@ defmodule ContentForge.Publishing do
     %VideoJob{}
     |> VideoJob.changeset(attrs)
     |> Repo.insert()
+  end
+
+  @doc """
+  Gate threshold read at runtime from
+  `:content_forge, :script_gate, :threshold`, default `6.0`.
+  """
+  @spec script_gate_threshold() :: float()
+  def script_gate_threshold do
+    :content_forge
+    |> Application.get_env(:script_gate, [])
+    |> Keyword.get(:threshold, 6.0)
+  end
+
+  @doc """
+  Manually promotes a video-script `Draft` to video production.
+
+  Creates a `VideoJob` with `status: "script_approved"` and records
+  the gate evaluation on the row:
+
+    * `promoted_score` - composite score at the moment of promotion
+      (nil when no scores exist).
+    * `promoted_threshold` - threshold in effect at promotion time,
+      always captured.
+    * `promoted_via_override` - `true` when the composite score is
+      below the threshold (or nil); `false` when it cleared the
+      threshold on its own.
+
+  Also flips the draft to `"approved"` so the existing downstream
+  pipeline sees the same state as the automatic gate.
+
+  `enqueue_producer` option (default `true`) inserts
+  `ContentForge.Jobs.VideoProducer`; tests pass `false` when focused
+  on DB state.
+  """
+  @spec promote_script(Ecto.UUID.t(), keyword()) ::
+          {:ok, VideoJob.t()} | {:error, term()}
+  def promote_script(draft_id, opts \\ []) when is_binary(draft_id) do
+    case ContentGeneration.get_draft(draft_id) do
+      nil -> {:error, :draft_not_found}
+      draft -> do_promote(draft, opts)
+    end
+  end
+
+  defp do_promote(draft, opts) do
+    threshold = Keyword.get(opts, :threshold, script_gate_threshold())
+
+    score =
+      Keyword.get_lazy(opts, :score, fn ->
+        ContentGeneration.compute_composite_score(draft.id)
+      end)
+
+    override? = below_threshold?(score, threshold)
+
+    attrs = %{
+      draft_id: draft.id,
+      product_id: draft.product_id,
+      status: "script_approved",
+      promoted_via_override: override?,
+      promoted_score: score,
+      promoted_threshold: threshold
+    }
+
+    Repo.transaction(fn ->
+      {:ok, _} = ContentGeneration.update_draft_status(draft, "approved")
+
+      case create_video_job(attrs) do
+        {:ok, job} ->
+          maybe_enqueue_producer(job, Keyword.get(opts, :enqueue_producer, true))
+          job
+
+        {:error, changeset} ->
+          Repo.rollback(changeset)
+      end
+    end)
+  end
+
+  defp below_threshold?(nil, _threshold), do: true
+  defp below_threshold?(score, threshold) when is_number(score), do: score < threshold
+
+  defp maybe_enqueue_producer(_job, false), do: :ok
+
+  defp maybe_enqueue_producer(%VideoJob{id: id}, true) do
+    %{"video_job_id" => id}
+    |> VideoProducer.new()
+    |> Oban.insert()
+
+    :ok
   end
 
   def update_video_job(%VideoJob{} = video_job, attrs) do

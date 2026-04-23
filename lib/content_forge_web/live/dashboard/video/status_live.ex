@@ -5,8 +5,9 @@ defmodule ContentForgeWeb.Live.Dashboard.Video.StatusLive do
   LiveView for video production status board showing all video jobs and their progress.
   """
   use ContentForgeWeb, :live_view
-  alias ContentForge.Publishing
+  alias ContentForge.ContentGeneration
   alias ContentForge.Products
+  alias ContentForge.Publishing
   alias ContentForgeWeb.Live.Dashboard.Components
 
   @status_order ~w(script_approved voiceover_done recording_done avatar_done assembled encoded uploaded)
@@ -16,36 +17,48 @@ defmodule ContentForgeWeb.Live.Dashboard.Video.StatusLive do
     products = Products.list_products()
     product_id = Map.get(params, "product", "")
 
-    video_jobs =
-      if product_id == "" do
-        Publishing.list_video_jobs(limit: 100)
-      else
-        Publishing.list_video_jobs(product_id: product_id, limit: 100)
-      end
-
     {:ok,
      assign(socket,
        products: products,
        product_filter: product_id,
-       video_jobs: video_jobs,
-       selected_job: nil
+       video_jobs: fetch_jobs(product_id),
+       selected_job: nil,
+       candidate_scripts: fetch_candidates(product_id),
+       script_gate_threshold: Publishing.script_gate_threshold(),
+       status_order: @status_order
      )}
   end
 
   @impl true
   def handle_event("filter_product", %{"product" => product_id}, socket) do
-    video_jobs =
-      if product_id == "" do
-        Publishing.list_video_jobs(limit: 100)
-      else
-        Publishing.list_video_jobs(product_id: product_id, limit: 100)
-      end
-
     {:noreply,
      assign(socket,
        product_filter: product_id,
-       video_jobs: video_jobs
+       video_jobs: fetch_jobs(product_id),
+       candidate_scripts: fetch_candidates(product_id)
      )}
+  end
+
+  @impl true
+  def handle_event("promote_script", %{"draft-id" => draft_id}, socket) do
+    case Publishing.promote_script(draft_id) do
+      {:ok, job} ->
+        Logger.info(
+          "Promoted script #{draft_id} via #{override_label(job.promoted_via_override)}"
+        )
+
+        {:noreply,
+         socket
+         |> put_flash(:info, flash_for_promotion(job))
+         |> assign(
+           video_jobs: fetch_jobs(socket.assigns.product_filter),
+           candidate_scripts: fetch_candidates(socket.assigns.product_filter)
+         )}
+
+      {:error, reason} ->
+        Logger.error("Failed to promote script #{draft_id}: #{inspect(reason)}")
+        {:noreply, put_flash(socket, :error, "Failed to promote script")}
+    end
   end
 
   @impl true
@@ -91,8 +104,53 @@ defmodule ContentForgeWeb.Live.Dashboard.Video.StatusLive do
     {:noreply, assign(socket, selected_job: nil)}
   end
 
+  defp override_label(true), do: "override"
+  defp override_label(false), do: "standard promote"
+
+  defp flash_for_promotion(%Publishing.VideoJob{promoted_via_override: true}),
+    do: "Promoted script via manual override"
+
+  defp flash_for_promotion(%Publishing.VideoJob{}), do: "Promoted script to video production"
+
   defp fetch_jobs(""), do: Publishing.list_video_jobs(limit: 100)
   defp fetch_jobs(product_id), do: Publishing.list_video_jobs(product_id: product_id, limit: 100)
+
+  # Candidate scripts = ranked or archived video_script Drafts that have
+  # no VideoJob yet. `composite_score` is hydrated per row so the
+  # template can render it alongside the threshold.
+  defp fetch_candidates(""), do: candidate_scripts_for_products(Products.list_products())
+
+  defp fetch_candidates(product_id) do
+    case Products.get_product(product_id) do
+      nil -> []
+      product -> candidate_scripts_for_products([product])
+    end
+  end
+
+  defp candidate_scripts_for_products(products) do
+    products
+    |> Enum.flat_map(fn product ->
+      ContentGeneration.list_drafts_by_type(product.id, "video_script")
+      |> Enum.filter(&(&1.status in ["ranked", "archived"]))
+      |> Enum.reject(&existing_video_job?/1)
+      |> Enum.map(fn draft ->
+        %{
+          draft: draft,
+          product: product,
+          composite_score: ContentGeneration.compute_composite_score(draft.id)
+        }
+      end)
+    end)
+    |> Enum.sort_by(&candidate_sort_key/1)
+  end
+
+  defp existing_video_job?(draft) do
+    Publishing.get_video_job_by_draft(draft.id) != nil
+  end
+
+  # Highest score first (nil goes last).
+  defp candidate_sort_key(%{composite_score: nil}), do: {1, 0.0}
+  defp candidate_sort_key(%{composite_score: s}), do: {0, -s}
 
   # Helper functions
 
@@ -222,6 +280,71 @@ defmodule ContentForgeWeb.Live.Dashboard.Video.StatusLive do
         </div>
       </div>
       
+    <!-- Script Gate (candidates awaiting promotion) -->
+      <div class="card bg-base-200">
+        <div class="card-body">
+          <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+            <h2 class="card-title">Script Gate</h2>
+            <div class="text-xs text-base-content/70">
+              Threshold:
+              <span class="font-mono" data-script-gate-threshold>{@script_gate_threshold}</span>
+            </div>
+          </div>
+
+          <div
+            :if={@candidate_scripts == []}
+            class="text-center py-6 text-base-content/70"
+          >
+            No ranked scripts awaiting the gate
+          </div>
+
+          <div :if={@candidate_scripts != []} class="overflow-x-auto">
+            <table class="table table-sm">
+              <thead>
+                <tr>
+                  <th>Product</th>
+                  <th>Script</th>
+                  <th>Composite</th>
+                  <th>Status vs threshold</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  :for={candidate <- @candidate_scripts}
+                  id={"script-candidate-#{candidate.draft.id}"}
+                  data-script-candidate={candidate.draft.id}
+                  data-below-threshold={below?(candidate, @script_gate_threshold)}
+                >
+                  <td>{candidate.product.name}</td>
+                  <td class="max-w-xs truncate">
+                    {String.slice(candidate.draft.content || "", 0, 80)}
+                  </td>
+                  <td class="font-mono">{format_score(candidate.composite_score)}</td>
+                  <td>
+                    <span class={score_badge_class(candidate, @script_gate_threshold)}>
+                      {score_label(candidate, @script_gate_threshold)}
+                    </span>
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      class={promote_button_class(candidate, @script_gate_threshold)}
+                      phx-click="promote_script"
+                      phx-value-draft-id={candidate.draft.id}
+                      data-confirm={promote_confirm(candidate, @script_gate_threshold)}
+                      aria-label={promote_label(candidate, @script_gate_threshold)}
+                    >
+                      {promote_label(candidate, @script_gate_threshold)}
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      
     <!-- Video Jobs List -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div class="space-y-2">
@@ -233,11 +356,18 @@ defmodule ContentForgeWeb.Live.Dashboard.Video.StatusLive do
               phx-click="select_job"
               phx-value-id={job.id}
             >
-              <div class="card-body p-4">
+              <div class="card-body p-4" data-video-job-id={job.id}>
                 <div class="flex justify-between items-start">
                   <div>
                     <div class="flex items-center gap-2">
                       <Components.status_badge status={job.status} />
+                      <span
+                        :if={job.promoted_via_override}
+                        class="badge badge-warning badge-sm"
+                        data-promoted-override={job.id}
+                      >
+                        OVERRIDE
+                      </span>
                     </div>
                     <p class="text-xs text-base-content/70 mt-1">
                       Created: {Components.format_datetime(job.inserted_at)}
@@ -339,4 +469,44 @@ defmodule ContentForgeWeb.Live.Dashboard.Video.StatusLive do
   defp step_index(status) do
     Enum.find_index(@status_order, &(&1 == status)) || 0
   end
+
+  # --- script-gate helpers -------------------------------------------------
+
+  defp format_score(nil), do: "—"
+  defp format_score(n) when is_number(n), do: :erlang.float_to_binary(n * 1.0, decimals: 2)
+
+  defp below?(%{composite_score: nil}, _), do: "true"
+  defp below?(%{composite_score: s}, threshold) when s < threshold, do: "true"
+  defp below?(_, _), do: "false"
+
+  defp score_badge_class(candidate, threshold) do
+    case below?(candidate, threshold) do
+      "true" -> "badge badge-warning"
+      "false" -> "badge badge-success"
+    end
+  end
+
+  defp score_label(%{composite_score: nil}, _), do: "UNSCORED"
+  defp score_label(%{composite_score: s}, t) when s >= t, do: "ABOVE"
+  defp score_label(_, _), do: "BELOW"
+
+  defp promote_button_class(candidate, threshold) do
+    case below?(candidate, threshold) do
+      "true" -> "btn btn-warning btn-sm"
+      "false" -> "btn btn-primary btn-sm"
+    end
+  end
+
+  defp promote_label(%{composite_score: nil}, _), do: "Override promote"
+  defp promote_label(%{composite_score: s}, t) when s < t, do: "Override promote"
+  defp promote_label(_, _), do: "Promote"
+
+  defp promote_confirm(%{composite_score: nil}, _),
+    do: "Promote with no ranking scores on file?"
+
+  defp promote_confirm(%{composite_score: s}, t) when s < t do
+    "Composite #{format_score(s)} is below threshold #{format_score(t)}. Override?"
+  end
+
+  defp promote_confirm(_, _), do: nil
 end
