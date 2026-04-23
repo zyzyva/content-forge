@@ -297,7 +297,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 11. Leans heavily on Phase 10 Media Forge pl
   - Search within a product's asset library by tag and by media type.
   - **Slicing note:** Split free-text tag+search (13.2a, minimum viable) from inferred-tag generation (13.2b, enhancement). 13.2b depends on LLM or Media Forge captioning and can be deferred to polish.
 
-- **13.2a Free-text tag editing, search, and filters**
+- **13.2a Free-text tag editing, search, and filters** ✅ Shipped `b89e031`.
   - LiveView work on the Assets tab added in 13.1c: each asset row exposes its current tag list as removable chips plus an "add tag" input with autocomplete sourced from `ProductAssets.list_distinct_tags/1` (already shipped in 13.1a). Adding a tag calls a new `ProductAssets.add_tag/2`; removing calls `ProductAssets.remove_tag/2`. Both operations broadcast `:asset_updated` over the existing PubSub topic so other subscribers stay in sync.
   - Search bar above the asset list: a free-text field that filters by case-insensitive substring match against both `tags` (using a new `:search` filter on `list_assets/2` that matches when any tag contains the substring) and `description`. A media-type dropdown filters by `image`, `video`, or all. Filters compose.
   - A "tag facet" row shows up to eight most-common tags for the current product as clickable pills that set the search field to that tag.
@@ -312,6 +312,23 @@ Per `CONTENT_FORGE_SPEC.md` Feature 11. Leans heavily on Phase 10 Media Forge pl
 - **13.3 Asset bundles**
   - Group assets into named bundles (for example "Product launch 2026-05 hero set").
   - Bundles attach to drafts and provide media for the generation pipeline.
+  - **Slicing note:** Schema + context in 13.3a; LiveView management in 13.3b. Draft-generation-from-bundle is 13.4.
+
+- **13.3a AssetBundle schema and context**
+  - New schema `ContentForge.ProductAssets.AssetBundle` at `lib/content_forge/product_assets/asset_bundle.ex` with fields: `product_id` (binary_id fk, required), `name` (string, required, 1..120 chars), `context` (text, nullable — the free-form description of what the bundle represents, for example "Johnson family kitchen remodel, 3 weeks, quartz counters, custom cabinets"), `status` (string enum `"active" | "archived" | "deleted"`, default `"active"`), plus timestamps.
+  - Join schema `ContentForge.ProductAssets.BundleAsset` joining `asset_bundles` to `product_assets` with composite uniqueness so an asset can appear in a bundle only once. The join carries `position` (integer) for a display order within the bundle.
+  - Migration creates both tables: bundles table with binary_id PK, fk to products with `on_delete: :delete_all`; join table with fks to both sides with `on_delete: :delete_all`, composite unique index on `(bundle_id, asset_id)`, plus a plain index on `bundle_id` for fetch-by-bundle queries.
+  - Extend the `ContentForge.ProductAssets` context with `create_bundle/1`, `get_bundle!/1` (preloads the assets in position order), `list_bundles/1` (by product, active by default), `update_bundle/2`, `archive_bundle/1`, `soft_delete_bundle/1`, `add_asset_to_bundle/3` (position defaults to next-in-sequence), `remove_asset_from_bundle/2`, `reorder_bundle_assets/2`.
+  - PubSub broadcasts on bundle create, update, archive, delete, and on any membership change (so the LiveView in 13.3b can react).
+  - Tests cover: full CRUD happy path, soft delete hides from default list, archived hides from default list, duplicate add_asset is a no-op (or returns the existing row), remove_asset cleans up, reorder applies, the product delete cascades both tables.
+
+- **13.3b Bundle management in LiveView**
+  - New "Bundles" section on the product detail page, rendered as its own tab alongside Assets. Shows active bundles with name, context snippet, asset count, and thumbnail mosaic (first four asset thumbnails).
+  - Create-bundle form: name + optional context textarea. Submitting creates the bundle empty.
+  - Bundle detail view (inline drawer or new page): shows the bundle's assets in position order, with remove and reorder controls, plus a multi-select picker that lists unattached assets from the product's library filtered by media_type. Assets are attached through `add_asset_to_bundle/3`.
+  - Archive + soft-delete buttons on the bundle.
+  - Mobile-first: the thumbnail mosaic collapses to single-column below a breakpoint; reorder uses explicit up/down buttons rather than drag-and-drop so phones work.
+  - Tests: create a bundle, add and remove assets, archive, soft delete, and the tab renders when there are no bundles with the right empty state.
 
 - **13.4 Draft generation from assets**
   - Generation entry point that accepts an asset bundle and emits draft copy keyed to the visual narrative of the bundle.
