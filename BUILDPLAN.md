@@ -134,7 +134,7 @@ Phase exit criteria: end-to-end image generation, image processing, and video re
   - `Req.Test` stub adapter baked in from day one; no live Anthropic calls from the test suite.
   - Tests: classification per branch, missing-key downgrade that records zero HTTP calls, one happy-path completion, one rate-limit (429) case returning the transient tuple, one explicit `:not_configured` case.
 
-- **11.1 (caller) Brief generator swap onto LLM client**
+- **11.1 (caller) Brief generator swap onto LLM client** ✅ Shipped `f57427e`.
   - Remove the hardcoded templated text from the content-brief and brief-rewrite paths.
   - Build the existing context map into a prompt (keep the context shape; only the consumption changes) and call the new LLM client's completion function.
   - On success, the returned text becomes the brief content; the `model_used` field reflects the actual provider and model name rather than the hardcoded "claude" string the placeholder uses today.
@@ -142,11 +142,18 @@ Phase exit criteria: end-to-end image generation, image processing, and video re
   - On transient errors let Oban retry. On permanent errors, cancel the job with the error recorded; no retry until the upstream is fixed.
   - Tests: happy-path brief generation, missing-key skip that records no brief, transient error triggers retry, permanent error cancels the job. Stubbed Anthropic responses only.
 
-- **11.1b Multi-provider synthesis for briefs**
-  - Adds Google Gemini as a second provider (same client-module pattern) and updates the brief generator to query both Anthropic and Gemini in parallel, then synthesize the two drafts into a single brief. Satisfies the spec's "at least 2 smart models" acceptance criterion on Feature 3 Stage 1.
-  - Synthesis logic is the simplest thing that works: concatenate both drafts into the context of a final Anthropic call that writes the synthesized brief. More sophisticated merging can come later if A/B testing shows a reason.
-  - If only one provider is configured, the brief still generates from that one provider. If neither is configured, the skip path from the 11.1 caller slice fires.
-  - Tests cover both providers configured (synthesis path), one provider configured (fallback to single provider), and neither configured (skip).
+- **11.1b (infra) Google Gemini LLM client module**
+  - Mirror of 11.1 (infra) for Anthropic, targeting Google's Generative Language API.
+  - Public function shape is the same as Anthropic's completion function so both providers are substitutable at the call site. Config namespace lives at `:content_forge, :llm, :gemini` with `:api_key`, `:default_model`, `:max_tokens`. API key authentication follows Google's header or URL-param convention as currently documented; the slice picks whichever keeps the client idiomatic with Req.
+  - Error classification matches Anthropic and MediaForge: 5xx and 429 transient, 4xx permanent, timeout and connection failure transient-network, 3xx unexpected-status, catch-all pass-through. Missing API key returns `{:error, :not_configured}` with zero HTTP I/O.
+  - Response parsing extracts the text from the first candidate's content parts.
+  - `Req.Test` stub from day one. Tests: happy-path completion, 429 transient, 500 transient, 400 permanent, missing-key no-HTTP downgrade.
+
+- **11.1c Brief generator synthesis across providers**
+  - Update the brief generator to query both Anthropic and Gemini in parallel when both are configured, then synthesize the two drafts into a single brief. Satisfies the "at least 2 smart models" acceptance criterion on Feature 3 Stage 1.
+  - Synthesis logic is the simplest thing that works: feed both drafts as context back into one final Anthropic completion that produces the synthesized brief. More sophisticated merging is deferred until performance data says it matters.
+  - When only one provider is configured, the brief is generated from that one provider alone (no synthesis step). When neither is configured, the existing skip path fires (no brief record). When one provider succeeds and the other errors transiently, the brief still generates from the successful provider with a note on the brief metadata; neither error escalates if at least one draft succeeded.
+  - Tests cover: both configured (synthesis path), Anthropic-only, Gemini-only, neither configured (skip), one transient-failure with other succeeding (single-provider fallback path), both fail transiently (Oban retries).
 
 - **11.2 Bulk variant generation via OpenClaw**
   - Configure the live OpenClaw endpoint for bulk variant generation.

@@ -444,4 +444,39 @@ Acceptance criteria:
 - [ ] Changing any existing caller to use the new client. The brief-generator swap is a separate slice.
 - [ ] Streaming responses, tool use, or other advanced features beyond a single completion request. The client can be extended later without changing the public completion function's shape.
 
+---
+
+### Integration 4: LLM Client (Google Gemini)
+
+**Purpose:** Second provider for generative completions, sibling to Integration 3. Shipping Gemini alongside Anthropic lets the brief generator synthesize from two different models (Feature 3 Stage 1 acceptance criterion "queries at least 2 smart models"), and opens the door for future slices to rotate providers or fall back on rate limits.
+
+**Why this matters:** Cross-model synthesis catches more of what each model misses individually; briefs end up richer. Two providers also avoids a single-vendor dependency on Anthropic; if an outage or policy change blocks one provider, the other still works.
+
+**Module location and shape:**
+- [ ] Public module is `ContentForge.LLM.Gemini` at `lib/content_forge/llm/gemini.ex`, sibling to `ContentForge.LLM.Anthropic`. Its public completion function is shape-compatible with Anthropic's so both are substitutable at the call site.
+- [ ] No shared abstract base module between providers in this slice. Duplication is acceptable for two providers; if a third arrives, a shared behavior can be introduced at that point.
+
+**Configuration:**
+- [ ] API key at `:api_key` under `:gemini` within `:llm` within `:content_forge`. Production sources the key from an environment variable at runtime. Test leaves it unset by default.
+- [ ] Default model at `:default_model` and default max-tokens at `:max_tokens` under the same namespace, each overridable per call via options.
+- [ ] Missing API key at runtime: the module returns `{:error, :not_configured}` immediately with zero HTTP I/O.
+
+**Authentication:**
+- [ ] Google's Generative Language API accepts the API key either as a URL query parameter (`?key=...`) or as an `x-goog-api-key` header. The slice picks the idiomatic option for Req; what matters is that the key is attached inside the client, not at the call site.
+
+**Endpoint:**
+- [ ] The client posts to the Gemini `generateContent` endpoint under the Generative Language API base URL. The request body follows Google's schema: contents array with parts, optional system instruction, optional generation config (temperature, max output tokens). The caller's prompt is wrapped into this schema by the client.
+- [ ] The response is parsed into a success shape carrying the extracted text content from `candidates[0].content.parts[0].text` plus metadata (model name, finish reason, usage metadata if present).
+
+**Error classification:**
+- [ ] Same rules as Integration 3: 5xx transient, 429 transient, 4xx permanent, timeout transient, connection refusal transient-network, 3xx unexpected-status, catch-all pass-through. No silent rescues.
+
+**Test stance:**
+- [ ] `Req.Test` stubbed from the first commit. Tests cover happy-path completion, 429 transient, 500 transient, 400 permanent, missing-key no-HTTP downgrade.
+
+**Out of scope for this slice:**
+- [ ] Changing any caller to use the new client. The brief-generator synthesis swap is its own slice (11.1c).
+- [ ] Streaming, function calling, or multi-modal inputs. The slice ships a single text completion surface.
+
+
 
