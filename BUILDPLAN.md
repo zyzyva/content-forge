@@ -194,7 +194,7 @@ Phase exit criteria: end-to-end image generation, image processing, and video re
   - Replace any remaining mocked returns and verify the intel synthesis step receives real post payloads.
   - **Slicing note:** Investigation at this wave point shows `CompetitorScraper` and `CompetitorIntelSynthesizer` are correctly gated behind `:apify_token` + `:scraper_adapter` and `:intel_model` config respectively, and both discard rather than fabricate when unconfigured. What is missing is the actual adapter implementations. Carves into two slices below.
 
-- **11.3a Apify scraper adapter module**
+- **11.3a Apify scraper adapter module** ✅ Shipped `b42ec2a`.
   - Build `ContentForge.CompetitorScraper.ApifyAdapter` implementing `fetch_posts/1` that the existing `CompetitorScraper` already dispatches to via the `:scraper_adapter` config.
   - Public surface: a single `fetch_posts(%CompetitorAccount{})` function that returns a success tuple carrying a list of post maps (each with post_id, content text, post_url, likes_count, comments_count, shares_count, posted_at) or a classified error tuple on the same shapes used elsewhere in the codebase.
   - Per-platform actor routing: a config map under `:content_forge, :apify, :actors` that maps platform names (twitter, linkedin, reddit, facebook, instagram, youtube) to Apify actor ids. Missing actor for a requested platform returns `{:error, :unsupported_platform}` without an HTTP call. The module's moduledoc records which actor id was chosen per platform at slice time so future readers can tell.

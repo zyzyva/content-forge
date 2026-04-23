@@ -84,7 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 11.3a: Apify scraper adapter
 
-Status: IN PROGRESS (coder handoff)
+Status: DONE
+Merged: master @ `b42ec2a` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 272-0; credo unchanged. Four-head dispatch covers both zero-HTTP short-circuits (missing token, unsupported platform); Apify-specific terminals layered on top of shared `classify/1` without polluting HTTP taxonomy. Defensive multi-key normalization per-platform; datetime-nil skips the item rather than raising. Prod-only runtime wiring leaves test discard-path observable. 21 tests cover all 6 platforms + run-terminal + error classes.
 Note: `ContentForge.CompetitorScraper.ApifyAdapter` at `lib/content_forge/competitor_scraper/apify_adapter.ex` implements the `fetch_posts/1` contract that `ContentForge.Jobs.CompetitorScraper` already dispatches to via `:scraper_adapter`. Flow: validate token is configured, look up a per-platform actor from `:content_forge, :apify, :actors`, POST `/v2/acts/<actor>/runs` with a conservative superset input (handle + start urls + search terms + maxItems + platform; actors ignore keys they do not know), poll `/v2/actor-runs/<run_id>` until status is terminal, GET `/v2/datasets/<default_dataset_id>/items`, normalise each item to the caller's post-map shape.
 
 **Actor ids chosen at slice time** (recorded in moduledoc, overridable via config and env):
