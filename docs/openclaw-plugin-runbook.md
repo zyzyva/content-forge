@@ -167,6 +167,12 @@ The plugin ships these tools. Each corresponds to a module under
   competitor intel synthesis (summary, trending topics, winning
   formats, effective hooks). Returns `not_found` when no intel
   row exists (Phase 16.2).
+- **`create_asset_bundle`** - create a named asset bundle for a
+  product (Phase 16.3c). Requires `:submitter` or higher on the
+  caller.
+- **`add_tag_to_asset`** - tag a single asset inside the
+  product's scope (Phase 16.3c). Requires `:submitter` or
+  higher. Tag is lowercased, trimmed, and deduplicated.
 
 ## Future tools (ship pattern)
 

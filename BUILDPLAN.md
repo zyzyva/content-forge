@@ -637,14 +637,14 @@ Phase exit criteria: a marketer can text a photo in, get it tagged into a produc
     - Schema: inclusion validation on role, required-field checks, partial-unique on `(product_id, identity) WHERE active`, `lookup_active_identity` excludes inactive rows.
   - No tools change in this slice. The helper is plumbing. 16.3b is the first consumer.
 
-- **16.3b CreateUploadLink hardening (first consumer of the helper)** *(DONE - see `BUILDLOG.md` Phase 16.3b)*
+- **16.3b CreateUploadLink hardening (first consumer of the helper)** ✅ Shipped `7a269fc`.
   - Blocks: none. Blocked by: 16.3a.
   - Apply the authorization helper to `create_upload_link`: the tool now requires `:submitter` before presigning. This closes the forward-looking gap the 16.1 reviewer flagged: agent-authorized callers can no longer presign upload URLs without an explicit role on the caller.
   - Extract a shared `ContentForge.ProductAssets.AcceptedContentTypes` module listing the image + video MIME types `ProductAssetController` already enforces (image/jpeg, image/png, image/webp, image/heic, video/mp4, video/quicktime, video/x-m4v). The 13.1b controller and the tool path both import the list; zero divergence. The tool returns `:unsupported_content_type` when the requested content-type is not on the list.
   - Clamp `expires_in_seconds` to a configurable ceiling sourced from `:content_forge, :open_claw_tools, :max_upload_expires_seconds` (default 3600 = one hour). Values above the ceiling are clamped down silently; values below 1 are replaced with the default. The clamp lives inside the tool; no user-visible error for exceeding the ceiling.
   - Existing happy-path tests continue to pass. New tests cover: viewer role on ProductPhone = `:forbidden`; submitter role = `:ok`; CLI without OperatorIdentity = `:forbidden`; unsupported content-type = `:unsupported_content_type`; `expires_in_seconds: 99999` is clamped to 3600; `expires_in_seconds: 0` replaced with default. Update the Node plugin's `registerTool` description to reflect the 1-hour default cap so the agent does not ask for longer links.
 
-- **16.3c Light writes on existing schemas: create_asset_bundle + add_tag_to_asset**
+- **16.3c Light writes on existing schemas: create_asset_bundle + add_tag_to_asset** *(DONE - see `BUILDLOG.md` Phase 16.3c)*
   - Blocks: none. Blocked by: 16.3a. Independent of 16.3d.
   - Ship `ContentForge.OpenClawTools.CreateAssetBundle`: params are `"name"` (required, 1..120 chars, trimmed), `"context"` (optional text), `"product"` (optional; resolves via `ProductResolver`). Requires `:submitter`. Calls `ProductAssets.create_bundle/1` and returns `%{bundle_id, product_id, product_name, name, status, created_at}`.
   - Ship `ContentForge.OpenClawTools.AddTagToAsset`: params are `"asset_id"` (required UUID) and `"tag"` (required, 1..40 chars, trimmed, lowercased) plus the usual `"product"` resolver passthrough. Requires `:submitter`. The tool looks up the asset scoped to the resolved product; a cross-product `asset_id` returns `:not_found`. Calls `ProductAssets.add_tag/2` and returns `%{asset_id, tags: [...]}` reflecting the merged set (the existing context helper deduplicates).

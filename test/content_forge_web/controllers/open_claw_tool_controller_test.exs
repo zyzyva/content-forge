@@ -353,4 +353,137 @@ defmodule ContentForgeWeb.OpenClawToolControllerTest do
                json_response(conn, 422)
     end
   end
+
+  describe "16.3c light-write tools" do
+    setup do
+      {:ok, product} =
+        Products.create_product(%{name: "Writeland", voice_profile: "warm"})
+
+      {:ok, _} =
+        Operators.create_identity(%{
+          product_id: product.id,
+          identity: "cli:writer",
+          role: "submitter"
+        })
+
+      %{product: product}
+    end
+
+    test "dispatches create_asset_bundle through the full HTTP pipeline",
+         %{conn: conn, product: product} do
+      body = %{
+        "channel" => "cli",
+        "sender_identity" => "cli:writer",
+        "params" => %{"product" => product.id, "name" => "Autumn campaign"}
+      }
+
+      conn =
+        conn
+        |> put_req_header("x-openclaw-tool-secret", @secret)
+        |> post(~p"/api/v1/openclaw/tools/create_asset_bundle", body)
+
+      assert %{
+               "status" => "ok",
+               "result" => %{
+                 "name" => "Autumn campaign",
+                 "status" => "active",
+                 "bundle_id" => bundle_id,
+                 "product_id" => pid,
+                 "created_at" => created_at
+               }
+             } = json_response(conn, 200)
+
+      assert pid == product.id
+      assert is_binary(bundle_id)
+      assert is_binary(created_at)
+    end
+
+    test "create_asset_bundle 422 on forbidden (no OperatorIdentity)",
+         %{conn: conn, product: product} do
+      body = %{
+        "channel" => "cli",
+        "sender_identity" => "cli:stranger",
+        "params" => %{"product" => product.id, "name" => "Nope"}
+      }
+
+      conn =
+        conn
+        |> put_req_header("x-openclaw-tool-secret", @secret)
+        |> post(~p"/api/v1/openclaw/tools/create_asset_bundle", body)
+
+      assert %{"status" => "error", "error" => "forbidden"} =
+               json_response(conn, 422)
+    end
+
+    test "dispatches add_tag_to_asset through the full HTTP pipeline",
+         %{conn: conn, product: product} do
+      {:ok, asset} =
+        ProductAssets.create_asset(%{
+          product_id: product.id,
+          storage_key: "products/#{product.id}/assets/bundle-shot",
+          media_type: "image",
+          filename: "bundle-shot.jpg",
+          mime_type: "image/jpeg",
+          byte_size: 2048,
+          uploaded_at: DateTime.utc_now()
+        })
+
+      body = %{
+        "channel" => "cli",
+        "sender_identity" => "cli:writer",
+        "params" => %{
+          "product" => product.id,
+          "asset_id" => asset.id,
+          "tag" => "Autumn"
+        }
+      }
+
+      conn =
+        conn
+        |> put_req_header("x-openclaw-tool-secret", @secret)
+        |> post(~p"/api/v1/openclaw/tools/add_tag_to_asset", body)
+
+      assert %{
+               "status" => "ok",
+               "result" => %{"asset_id" => id, "tags" => ["autumn"]}
+             } = json_response(conn, 200)
+
+      assert id == asset.id
+    end
+
+    test "add_tag_to_asset 422 not_found when the asset belongs to another product",
+         %{conn: conn, product: product} do
+      {:ok, other} =
+        Products.create_product(%{name: "Otherland", voice_profile: "warm"})
+
+      {:ok, other_asset} =
+        ProductAssets.create_asset(%{
+          product_id: other.id,
+          storage_key: "products/#{other.id}/assets/foreign",
+          media_type: "image",
+          filename: "foreign.jpg",
+          mime_type: "image/jpeg",
+          byte_size: 1024,
+          uploaded_at: DateTime.utc_now()
+        })
+
+      body = %{
+        "channel" => "cli",
+        "sender_identity" => "cli:writer",
+        "params" => %{
+          "product" => product.id,
+          "asset_id" => other_asset.id,
+          "tag" => "summer"
+        }
+      }
+
+      conn =
+        conn
+        |> put_req_header("x-openclaw-tool-secret", @secret)
+        |> post(~p"/api/v1/openclaw/tools/add_tag_to_asset", body)
+
+      assert %{"status" => "error", "error" => "not_found"} =
+               json_response(conn, 422)
+    end
+  end
 end
