@@ -276,7 +276,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 11. Leans heavily on Phase 10 Media Forge pl
   - Byte-size cap configurable per deployment; default 500MB for video, 50MB for image. Anything larger returns a 413 with the configured limit in the response body.
   - Tests cover: presigned URL is generated and signed correctly (verify the structure; do not call R2), register endpoint creates a row and enqueues the right processing job per media_type, disallowed content types are rejected, oversized byte sizes are rejected, missing auth on the endpoint returns 401.
 
-- **13.1c LiveView upload form on product detail page**
+- **13.1c LiveView upload form on product detail page** ✅ Shipped `1c6b4d5`.
   - Extend the product detail LiveView with an upload form that uses Phoenix LiveView's native uploads. The form allows multi-file selection, shows per-file progress, and after a file finishes uploading client-side, fires the presigned-upload flow from 13.1b.
   - Mobile-first markup: the file input opens the phone's camera or camera roll via standard `accept` attribute; drag-and-drop is offered on desktop. Touch targets meet WCAG AA.
   - After successful registration, the row appears in an "Assets" section of the product detail page with a pending badge. The processing job flips the badge to `Processed` (or `Failed` with the error) via Phoenix PubSub.
