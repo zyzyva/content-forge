@@ -506,7 +506,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 12. Twilio + OpenClaw integration.
   - Tool surface not part of this slice. OpenClaw replies that would include tool calls are ignored in this iteration — the dispatcher sends only the returned text. Wiring tool execution (upload link creation, asset list, schedule lookup, escalate) is a follow-up 14.2d if/when the reply parsing indicates a tool request.
   - Tests: stub the agent binary call to return a known JSON payload and assert the SMS reply matches; missing-config returns `:not_configured` with zero shell call; malformed JSON from the stub returns a permanent error and the dispatcher falls back to the unavailable template (do not block the conversation on OpenClaw JSON shape drift); non-zero exit returns a transient error for retry; timeout returns transient. Escalation short-circuit still fires before the agent call.
 
-- **14.2c-H Agent gateway hardening (small)**
+- **14.2c-H Agent gateway hardening (small)** ✅ Shipped `b8f1ff2`.
   - Two reviewer-flagged non-blocking items from 14.2c:
     - The `try/catch :exit :timeout` clause in `AgentGateway` is dead code — `System.cmd/3` does not have a timeout mechanism, so a hung `openclaw` binary would block the Oban worker until its own queue-level timeout fires. Replace with a `Task.async/await_exit` wrapper that enforces the configured `:default_timeout_seconds` and kills the child process on timeout. Returns the established `{:error, {:transient, :timeout, reason}}` tuple on expiry.
     - `stderr_to_stdout: true` risks corrupting the JSON stream if the `openclaw` binary ever grows chatty stderr output. Split the streams: capture stdout for JSON parsing, stderr separately for logging at debug level. Any stderr content accompanying a non-zero exit becomes part of the error reason for operator diagnosis.
@@ -555,6 +555,51 @@ Per `CONTENT_FORGE_SPEC.md` Feature 12. Twilio + OpenClaw integration.
     - Tests: escalate_session records the event, pauses auto-response, and a subsequent dispatcher enqueue is a no-op (holding message only sent once); resolve_session flips back; the LiveView renders escalated sessions and the high-volume queue; marking resolved removes the row from the list.
 
 Phase exit criteria: a marketer can text a photo in, get it tagged into a product library, receive a scheduled review-deadline reminder, and escalate to a human when the bot is uncertain.
+
+## Phase 16 — OpenClaw Tool Surface (ecosystem unlock)
+
+**Why this is its own phase:** Originally mis-scoped under 14.2d as "SMS tool-call wiring." The reframe (2026-04-23) recognized that tools are agent-scoped, not channel-scoped. Register a tool once with the OpenClaw agent and every channel that talks to that agent — SMS, Telegram, the CLI, any future channel — can invoke it. This is how Content Forge stops being "a dashboard operators click through" and becomes "the actionable brain any conversational surface can use." It is also the extension hook other ecosystem apps (contacts4us, Media Forge, the chatbot consultancy) plug into: they register their own plugins against the same gateway, and the agent gets a unified ecosystem tool surface.
+
+**Pattern precedent:** OpenClaw's existing `lead-intel` plugin (seen in live gateway startup logs) registers 21 tools and proxies each call over HTTP to an Elixir app on `localhost:4010`. Content Forge follows the same shape.
+
+- **16.1 Plugin scaffold + tool-execution HTTP surface + end-to-end loop on one tool**
+  - Ship the Node.js plugin at `~/.openclaw/plugins/content-forge/index.js` that declares a tool schema (name, description, params) for the first tool (`create_upload_link` — lowest-risk, read-mostly, already has a presigned-URL generator behind it from 13.1b) and proxies each invocation over HTTP to Content Forge.
+  - New controller `ContentForgeWeb.OpenClawToolController` at `POST /api/v1/openclaw/tools/:tool_name`. Authenticates via a shared secret header (`X-OpenClaw-Tool-Secret`) matching a new `:content_forge, :open_claw_tool_secret` env var. Fail closed on missing secret. Request body carries session_id, channel, sender_identity, params; response body carries result status + result payload matching OpenClaw's expected tool-result format.
+  - Tool dispatch: controller pattern-matches on `tool_name` and delegates to a tool-specific module under `ContentForge.OpenClawTools.<ToolName>`. Each tool module has a single `call/2` function taking (ctx, params) and returning `{:ok, result}` or `{:error, reason}`.
+  - End-to-end verification: the plugin is registered with the gateway at slice time; a live `openclaw agent --message "create me an upload link for Acme"` produces a tool invocation that reaches Content Forge, creates a presigned URL, and the agent composes a reply containing the URL. The slice ships a documented runbook for registering the plugin.
+  - Tests: controller rejects missing or bad secret (401); controller dispatches to the right tool module; the create_upload_link module returns a presigned URL that matches the 13.1b format; plugin-shape stub test confirms the Node.js surface matches what OpenClaw expects (invokable via the existing OpenClaw CLI in integration mode).
+
+- **16.2 Read-only tools**
+  - Add tool modules for the query-shaped surface: `list_recent_assets`, `draft_status`, `upcoming_schedule`, `competitor_intel_summary`.
+  - Each is a small tool module calling an existing context function. No side effects. Authorization is minimal at this stage — all callers with a valid session get a read of the product scoped to the session.
+  - Plugin registrations expanded in one patch so OpenClaw sees all new tools in the same config reload.
+  - Tests: happy-path per tool with stubbed context responses; unknown product id returns a structured 404; a session that does not map to any product returns a clear error the agent can render as "I could not find your product."
+
+- **16.3 Light-write tools + role-based authorization framework**
+  - Add tool modules for writes that change product state but are reversible: `create_asset_bundle`, `record_memory` (persist a conversation note into a new `ProductMemory` schema scoped to the product), and `add_tag_to_asset`.
+  - Introduce the authorization framework: a shared `ContentForge.OpenClawTools.Authorization.require/2` helper that takes the session context and the required role (`:owner | :submitter | :viewer`), resolves the sender's role via `ProductPhone` for phone-based channels or via a new `OperatorIdentity` record for CLI/other channels, and returns `:ok` or `{:error, :forbidden}`. Light writes require `:submitter` or higher.
+  - Tests: viewer role forbidden on any light write; submitter role allowed; unknown sender identity forbidden; CLI-origin invocations without a registered OperatorIdentity forbidden by default (explicit allow-list required).
+
+- **16.4 Heavy-write tools + safety controls**
+  - Add tool modules for writes that are expensive or hard to reverse: `generate_drafts_from_bundle` (triggers `AssetBundleDraftGenerator`), `schedule_reminder_change` (modifies `ReminderConfig` cadence), and `approve_draft` (the blog publish-gate endpoint from 12.4 — tool version respects the same gate + override rules).
+  - Heavy writes require `:owner` role.
+  - Destructive-or-spend-bearing tools require a two-turn confirmation: the first invocation returns `{:ok, :confirmation_required, %{echo_phrase: "..."}}` and OpenClaw's agent is expected to ask the user to confirm; the second invocation includes the echo phrase as a param and the tool executes. This keeps a slip of "yes do that" from firing a real spend.
+  - Rate limits: `generate_drafts_from_bundle` inherits the existing content-generation cost ceiling; the tool surfaces remaining budget in its response so the agent can warn the user.
+  - Tests: unconfirmed destructive call returns the confirmation envelope and makes no change; confirmed call with matching echo phrase executes; confirmed call with wrong echo phrase returns `:confirmation_mismatch` and makes no change; rate-limited call returns structured remaining-budget info.
+
+- **16.5 Unified tool-invocation audit + dashboard surface**
+  - New `ToolInvocationEvent` schema capturing every tool call across all channels: tool_name, params (hashed if they contain PII), result_status, channel, sender_identity, product_id, invoked_at. Separate from `SmsEvent` because the surface is multi-channel.
+  - Every tool module wraps its `call/2` in a `log_invocation` helper so audit is automatic rather than per-tool.
+  - New LiveView page at `/dashboard/tool-activity` listing recent invocations per product with channel + sender + result. Filterable by tool, channel, status.
+  - API: `GET /api/v1/products/:id/tool-activity` mirrors the dashboard for external inspection.
+  - Tests: every shipped tool has an audit row after invocation; hashing of PII-bearing params; the LiveView filters correctly; the API matches the dashboard.
+
+- **16.6 Escalate-to-human as a tool** (promoted from the old 14.5 escalation primitive)
+  - Wire `escalate_to_human` as a first-class tool the agent can call when it detects ambiguity, cost discussions, or complaints. Reuses the existing `Sms.escalate_session/3` primitive from 14.5 but generalizes to any channel — escalation now writes a generic `EscalationEvent` and surfaces on the existing needs-attention dashboard.
+  - The agent's own cue for escalation is instructed in the tool description: "call this when you cannot confidently handle the request or when the user asks to speak to a human."
+  - Tests: agent-originated escalation creates the event; dashboard shows the escalation regardless of channel; subsequent tool calls on an escalated session return `:escalated` and the agent composes a holding reply.
+
+Phase exit criteria: (1) running `openclaw agent --message "give me an upload link for Acme"` from the CLI produces a real link through the tool path; (2) texting the same request via SMS lands the same link via Twilio; (3) an owner can text "approve the winter promo blog post" and the bot walks the confirmation flow, runs the publish gate, and reports the outcome; (4) every tool invocation appears in the audit dashboard; (5) a viewer attempting a write gets a clear refusal. None of these require new channels beyond SMS + CLI to demonstrate.
 
 ## Phase 15 — Polish
 
