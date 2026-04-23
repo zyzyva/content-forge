@@ -555,7 +555,13 @@ Pick up after the feature waves clear. Any of these can be inserted earlier if i
 
 - **15.4.1 ScheduleController Oban.insert map-shape fix** ✅ Shipped `5ef58af`.
 
-- **15.4.2 Oban.insert bare-map audit sweep**
+- **15.4.2 Oban.insert bare-map audit sweep** ✅ Shipped `a7e9bf7`.
+
+- **15.4.3 ScriptGate return shape + Draft archived status**
+  - Two small orthogonal issues surfaced during the 15.4.2 sweep.
+    - `ContentForge.Jobs.ScriptGate.perform/1` returns a bare `%{approved: ..., archived: ...}` map. Oban's worker contract expects `:ok`, `{:ok, term}`, `{:error, term}`, `:discard`, `{:cancel, term}`, or `{:snooze, seconds}`. A bare map is neither ok nor error, and Oban's handling of unexpected returns has changed across versions — the current Oban version treats non-conforming returns as success but logs a warning. Fix: wrap the existing map in `{:ok, map}`.
+    - `ContentForge.ContentGeneration.Draft` status inclusion list is `~w(draft ranked approved rejected published blocked)`. ScriptGate's archive path tries to transition a draft to `"archived"` but the cast fails silently and the draft stays at its prior status. Add `"archived"` to the inclusion list; extend the shared `status_badge` component with a neutral badge for archived; backfill existing dashboards so the archived filter works.
+  - Tests: ScriptGate happy path asserts `{:ok, %{approved:, archived:}}` return; archive path asserts the draft's status genuinely becomes `"archived"` post-transition; dashboard renders the archived badge.
   - Reviewer flagged that `ScheduleController.publish_draft` and `publish_draft.publish_now` still call `Oban.insert` with a bare map. These are the same class of bug as 15.3.1 and 15.4.1: `Oban.insert/1` requires an `%Oban.Job{}` struct, not a map. Any code path reaching these endpoints errors instead of enqueuing.
   - Scope of this slice: grep the repo for `Oban.insert(%{` and `Oban.insert(%Oban.Job{`; any bare-map instance is converted to `Worker.new(args) |> Oban.insert()`. Each converted site gets a focused test that asserts `assert_enqueued` on the correct worker.
   - If the sweep finds more than three instances, ship the fixes with their tests in one commit but keep the test file well-organized per-worker so future greps land on the right ownership.

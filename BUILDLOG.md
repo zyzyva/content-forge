@@ -85,7 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 15.4.2: Oban.insert bare-map audit sweep
 
 Status: DONE
-Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `f7fc0c2`. Gate: compile --warnings-as-errors clean, format clean, full test 630/0, credo baseline-diff empty.
+Merged: master @ `a7e9bf7` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 630-0; credo unchanged. Grep confirms zero remaining bare-map Oban.insert sites. `ScriptGate.enqueue_video_production` swapped to `Publishing.promote_script` (the 15.1b transactional path) — correct fix since the prior path referenced a non-existent module. Two orthogonal issues flagged for 15.4.3: bare-map return from `ScriptGate.perform/1`, and `"archived"` missing from Draft status inclusion (silent failure on archive path). 7 new tests.
 Note: Grep sweep of `lib/` for `Oban.insert(%{` and `Oban.insert(%Oban.Job{` found exactly three remaining bare-arg sites after 15.3.1 and 15.4.1. All three converted to `Worker.new(args) |> Oban.insert()` (or its blessed-helper equivalent). Post-sweep grep is clean; only a reference comment remains.
 
 **Sites converted**:
