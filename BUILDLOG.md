@@ -85,7 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 14.2c + 11.2L: OpenClaw-unblocked slices
 
 Status: DONE
-Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `d37acc3`. Gate: compile --warnings-as-errors clean, format clean (ran LAST), full test 780/0, credo baseline-diff empty + per-touched-file clean, coverage 61.40% (up from 59.82%).
+Merged: master @ `560ca20` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 780-0; coverage 61.40% (+1.58). **Security:** `System.cmd/3` args as a LIST (no shell interpretation, no SMS→argv injection path); binary path File.exists? pre-check; agent_id from config or worker opts, never user input; session_id from UUID product_id + E.164-validated phone. JSON parse chain with `:permanent :malformed_json` fallback. Error taxonomy matches other adapters. `:shell_impl` DI test seam. 11.2L routes OpenClawBulkGenerator through `LLM.Anthropic.complete` with `create_draft/1` per variant so 12.1 nugget + 12.2 SEO hooks fire. Reviewer flagged two non-blocking hardening notes for a future small slice (14.2c-H): `try/catch :exit :timeout` at line 130 is dead code (System.cmd has no timeout), and `stderr_to_stdout: true` risks JSON corruption if the binary grows chatty stderr. **Phase 14 now fully complete; 11.2 caller fully replaced by 11.2L.**
 
 Two independent slices shipped together because both depended on OpenClaw discovery from 2026-04-23. Different trajectories: 14.2c swaps the SMS dispatcher's fallback-only branch for real agent-turn via shell-out; 11.2L reframes the paused 11.2 caller - OpenClaw is turn-oriented and local, so bulk variant generation moves to Anthropic where batch JSON is native.
 
