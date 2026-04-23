@@ -11,10 +11,13 @@ defmodule ContentForge.ProductAssets do
 
   import Ecto.Query
 
+  alias ContentForge.ProductAssets.AssetBundle
+  alias ContentForge.ProductAssets.BundleAsset
   alias ContentForge.ProductAssets.ProductAsset
   alias ContentForge.Repo
 
   @default_statuses ~w(pending processed failed)
+  @active_bundle_statuses ~w(active)
   @pubsub ContentForge.PubSub
 
   @doc """
@@ -24,11 +27,27 @@ defmodule ContentForge.ProductAssets do
   @spec subscribe(Ecto.UUID.t()) :: :ok | {:error, term()}
   def subscribe(product_id), do: Phoenix.PubSub.subscribe(@pubsub, topic(product_id))
 
+  @doc """
+  Subscribes the calling process to bundle-update notifications for a
+  product. Kept on a separate topic from `subscribe/1` so a LiveView
+  that only cares about asset state does not receive bundle events and
+  vice versa.
+  """
+  @spec subscribe_bundles(Ecto.UUID.t()) :: :ok | {:error, term()}
+  def subscribe_bundles(product_id),
+    do: Phoenix.PubSub.subscribe(@pubsub, bundle_topic(product_id))
+
   defp topic(product_id), do: "product_assets:#{product_id}"
+  defp bundle_topic(product_id), do: "asset_bundles:#{product_id}"
 
   defp broadcast_change(%ProductAsset{product_id: product_id} = asset, event) do
     Phoenix.PubSub.broadcast(@pubsub, topic(product_id), {event, asset})
     asset
+  end
+
+  defp broadcast_bundle_change(%AssetBundle{product_id: product_id} = bundle, event) do
+    Phoenix.PubSub.broadcast(@pubsub, bundle_topic(product_id), {event, bundle})
+    bundle
   end
 
   @doc "Creates a new product asset. Returns `{:ok, asset}` or `{:error, changeset}`."
@@ -241,4 +260,202 @@ defmodule ContentForge.ProductAssets do
 
   defp apply_limit(query, nil), do: query
   defp apply_limit(query, n) when is_integer(n) and n > 0, do: limit(query, ^n)
+
+  # =========================================================================
+  # Asset bundles
+  # =========================================================================
+
+  @doc "Creates a new asset bundle."
+  @spec create_bundle(map()) :: {:ok, AssetBundle.t()} | {:error, Ecto.Changeset.t()}
+  def create_bundle(attrs) when is_map(attrs) do
+    %AssetBundle{}
+    |> AssetBundle.changeset(attrs)
+    |> Repo.insert()
+    |> maybe_broadcast_bundle(:bundle_created)
+  end
+
+  defp maybe_broadcast_bundle({:ok, bundle}, event),
+    do: {:ok, broadcast_bundle_change(bundle, event)}
+
+  defp maybe_broadcast_bundle(other, _event), do: other
+
+  @doc """
+  Fetches a bundle by id and preloads its assets in position order.
+  Raises `Ecto.NoResultsError` if not found.
+  """
+  @spec get_bundle!(Ecto.UUID.t()) :: AssetBundle.t()
+  def get_bundle!(id) do
+    AssetBundle
+    |> Repo.get!(id)
+    |> Repo.preload(bundle_assets: [:asset])
+  end
+
+  @doc "Fetches a bundle by id, returning nil if not found."
+  @spec get_bundle(Ecto.UUID.t()) :: AssetBundle.t() | nil
+  def get_bundle(id) do
+    case Repo.get(AssetBundle, id) do
+      nil -> nil
+      bundle -> Repo.preload(bundle, bundle_assets: [:asset])
+    end
+  end
+
+  @doc """
+  Lists bundles for a product. Options:
+
+    * `:status` - override the default filter (which shows only
+      `"active"` bundles). Pass a string or a list of strings.
+
+  Bundles are returned newest-inserted-first.
+  """
+  @spec list_bundles(Ecto.UUID.t(), keyword()) :: [AssetBundle.t()]
+  def list_bundles(product_id, opts \\ []) when is_list(opts) do
+    AssetBundle
+    |> where([b], b.product_id == ^product_id)
+    |> apply_bundle_status(Keyword.get(opts, :status))
+    |> order_by([b], desc: b.inserted_at)
+    |> Repo.all()
+  end
+
+  defp apply_bundle_status(query, nil),
+    do: where(query, [b], b.status in ^@active_bundle_statuses)
+
+  defp apply_bundle_status(query, status) when is_binary(status),
+    do: where(query, [b], b.status == ^status)
+
+  defp apply_bundle_status(query, statuses) when is_list(statuses),
+    do: where(query, [b], b.status in ^statuses)
+
+  @doc "Updates a bundle's fields."
+  @spec update_bundle(AssetBundle.t(), map()) ::
+          {:ok, AssetBundle.t()} | {:error, Ecto.Changeset.t()}
+  def update_bundle(%AssetBundle{} = bundle, attrs) do
+    bundle
+    |> AssetBundle.changeset(attrs)
+    |> Repo.update()
+    |> maybe_broadcast_bundle(:bundle_updated)
+  end
+
+  @doc "Archives a bundle (status -> \"archived\"); hides from the default list."
+  @spec archive_bundle(AssetBundle.t()) ::
+          {:ok, AssetBundle.t()} | {:error, Ecto.Changeset.t()}
+  def archive_bundle(%AssetBundle{} = bundle) do
+    bundle
+    |> AssetBundle.archive_changeset()
+    |> Repo.update()
+    |> maybe_broadcast_bundle(:bundle_archived)
+  end
+
+  @doc "Soft-deletes a bundle (status -> \"deleted\") without removing the row."
+  @spec soft_delete_bundle(AssetBundle.t()) ::
+          {:ok, AssetBundle.t()} | {:error, Ecto.Changeset.t()}
+  def soft_delete_bundle(%AssetBundle{} = bundle) do
+    bundle
+    |> AssetBundle.soft_delete_changeset()
+    |> Repo.update()
+    |> maybe_broadcast_bundle(:bundle_deleted)
+  end
+
+  # --- membership helpers --------------------------------------------------
+
+  @doc """
+  Adds an asset to a bundle. `position` defaults to the next-in-sequence
+  based on the existing max position. If the asset is already a member
+  this returns `{:ok, existing_join}` as a no-op rather than surfacing
+  the unique-constraint error.
+  """
+  @spec add_asset_to_bundle(
+          AssetBundle.t() | Ecto.UUID.t(),
+          ProductAsset.t() | Ecto.UUID.t(),
+          keyword()
+        ) ::
+          {:ok, BundleAsset.t()} | {:error, Ecto.Changeset.t()}
+  def add_asset_to_bundle(bundle, asset, opts \\ [])
+
+  def add_asset_to_bundle(%AssetBundle{id: bundle_id} = bundle, %ProductAsset{id: asset_id}, opts) do
+    case Repo.get_by(BundleAsset, bundle_id: bundle_id, asset_id: asset_id) do
+      %BundleAsset{} = existing ->
+        {:ok, existing}
+
+      nil ->
+        position = Keyword.get_lazy(opts, :position, fn -> next_bundle_position(bundle_id) end)
+
+        attrs = %{bundle_id: bundle_id, asset_id: asset_id, position: position}
+
+        result =
+          %BundleAsset{}
+          |> BundleAsset.changeset(attrs)
+          |> Repo.insert()
+
+        case result do
+          {:ok, row} ->
+            broadcast_membership_change(bundle)
+            {:ok, row}
+
+          err ->
+            err
+        end
+    end
+  end
+
+  def add_asset_to_bundle(bundle_id, asset_id, opts)
+      when is_binary(bundle_id) and is_binary(asset_id) do
+    add_asset_to_bundle(get_bundle!(bundle_id), get_asset!(asset_id), opts)
+  end
+
+  defp next_bundle_position(bundle_id) do
+    BundleAsset
+    |> where(bundle_id: ^bundle_id)
+    |> select([b], coalesce(max(b.position), -1))
+    |> Repo.one()
+    |> Kernel.+(1)
+  end
+
+  defp broadcast_membership_change(%AssetBundle{} = bundle) do
+    reloaded = get_bundle!(bundle.id)
+    broadcast_bundle_change(reloaded, :bundle_membership_changed)
+    reloaded
+  end
+
+  @doc "Removes an asset from a bundle. No-op if the asset is not a member."
+  @spec remove_asset_from_bundle(AssetBundle.t(), ProductAsset.t() | Ecto.UUID.t()) ::
+          :ok | {:error, term()}
+  def remove_asset_from_bundle(%AssetBundle{id: bundle_id} = bundle, %ProductAsset{id: asset_id}) do
+    case Repo.get_by(BundleAsset, bundle_id: bundle_id, asset_id: asset_id) do
+      nil ->
+        :ok
+
+      row ->
+        {:ok, _} = Repo.delete(row)
+        broadcast_membership_change(bundle)
+        :ok
+    end
+  end
+
+  def remove_asset_from_bundle(%AssetBundle{} = bundle, asset_id) when is_binary(asset_id) do
+    remove_asset_from_bundle(bundle, get_asset!(asset_id))
+  end
+
+  @doc """
+  Reorders a bundle's assets. `ordered_asset_ids` is a list of asset ids
+  in the desired order. Assets in the list that are not members of the
+  bundle are ignored; members not in the list keep their current
+  position. Runs in a transaction so partial reorders don't leak.
+  """
+  @spec reorder_bundle_assets(AssetBundle.t(), [Ecto.UUID.t()]) ::
+          {:ok, AssetBundle.t()} | {:error, term()}
+  def reorder_bundle_assets(%AssetBundle{id: bundle_id} = bundle, ordered_asset_ids)
+      when is_list(ordered_asset_ids) do
+    Repo.transaction(fn ->
+      ordered_asset_ids
+      |> Enum.with_index()
+      |> Enum.each(fn {asset_id, index} ->
+        BundleAsset
+        |> where(bundle_id: ^bundle_id)
+        |> where(asset_id: ^asset_id)
+        |> Repo.update_all(set: [position: index])
+      end)
+    end)
+
+    {:ok, broadcast_membership_change(bundle)}
+  end
 end
