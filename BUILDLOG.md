@@ -85,7 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 12.2a: SEO checklist infrastructure
 
 Status: DONE
-Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `de8830f`. Gate: compile --warnings-as-errors clean, format clean, full test 675/0, credo baseline-diff empty, `mix test --cover` overall 57.76% (up from 56.67%).
+Merged: master @ `019ddf8` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 675-0; coverage 57.76% (+1.09). `@checks` canonical list exposed via `checks/0`; tests introspect rather than hard-code. Rescue-guard captures broken checks as `{:fail, "check raised: ..."}` so UI shows the specific failure. 4 real checks (TitleLength, MetaDescriptionLength, SingleH1, CoreAnswerInFirst150Words); 24 stubs. Hook ordering: SEO after nugget, runs even when nugget fails — operator ergonomics.
 Note: Second Phase 12 slice. 28-point SEO checklist infrastructure with runner + per-check modules + post-generation hook + dashboard drawer. Ships 4 real checks; 24 stubs defer to 12.2b/c per architect direction.
 
 **Schema + migration**:

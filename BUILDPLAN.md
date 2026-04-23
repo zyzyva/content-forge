@@ -252,7 +252,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 10. Goal: produce content that is AI-retriev
   - Store checklist results on the draft record for audit.
   - **Slicing note:** Three sub-slices — infrastructure (12.2a), mechanical checks (12.2b), semantic checks that need LLM or external data (12.2c).
 
-- **12.2a SEO checklist infrastructure**
+- **12.2a SEO checklist infrastructure** ✅ Shipped `019ddf8`.
   - New schema `ContentForge.ContentGeneration.SeoChecklist` at `lib/content_forge/content_generation/seo_checklist.ex` with fields: `draft_id` (fk, unique), `results` (map with 28 keys, each value an atom in `~w(pass fail not_applicable)a` plus an optional `note` string), `score` (integer 0-28 computed from pass count over non-applicable), `run_at` (utc_datetime_usec), plus timestamps. One checklist per draft; re-running replaces the row.
   - Migration creates `seo_checklists` with binary_id PK, fk to `drafts` with `on_delete: :delete_all`, unique index on `draft_id`.
   - New module `ContentForge.ContentGeneration.SeoChecklist.Runner` with public function `run/1` that takes a draft, dispatches to each of the 28 checks (the list of check modules is itself a `@checks` module attribute), and writes the aggregate result to the schema.
