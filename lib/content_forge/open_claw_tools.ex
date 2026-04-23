@@ -25,9 +25,9 @@ defmodule ContentForge.OpenClawTools do
   16.2 adds four read-only tools (`list_recent_assets`,
   `draft_status`, `upcoming_schedule`,
   `competitor_intel_summary`). Phase 16.3c adds two light-write
-  tools (`create_asset_bundle`, `add_tag_to_asset`). The 16.3d+
-  slices add `record_memory`, heavy writes with confirmation,
-  escalation, and full audit surfacing.
+  tools (`create_asset_bundle`, `add_tag_to_asset`). Phase 16.3d
+  adds `record_memory`. The 16.4+ slices add heavy writes with
+  confirmation, escalation, and full audit surfacing.
   """
 
   alias ContentForge.OpenClawTools.AddTagToAsset
@@ -36,6 +36,7 @@ defmodule ContentForge.OpenClawTools do
   alias ContentForge.OpenClawTools.CreateUploadLink
   alias ContentForge.OpenClawTools.DraftStatus
   alias ContentForge.OpenClawTools.ListRecentAssets
+  alias ContentForge.OpenClawTools.RecordMemory
   alias ContentForge.OpenClawTools.UpcomingSchedule
 
   @type ctx :: %{
@@ -53,7 +54,8 @@ defmodule ContentForge.OpenClawTools do
     "upcoming_schedule" => UpcomingSchedule,
     "competitor_intel_summary" => CompetitorIntelSummary,
     "create_asset_bundle" => CreateAssetBundle,
-    "add_tag_to_asset" => AddTagToAsset
+    "add_tag_to_asset" => AddTagToAsset,
+    "record_memory" => RecordMemory
   }
 
   @doc """

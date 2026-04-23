@@ -486,4 +486,75 @@ defmodule ContentForgeWeb.OpenClawToolControllerTest do
                json_response(conn, 422)
     end
   end
+
+  describe "16.3d record_memory" do
+    setup do
+      {:ok, product} =
+        Products.create_product(%{name: "Memory Co", voice_profile: "warm"})
+
+      {:ok, _} =
+        Operators.create_identity(%{
+          product_id: product.id,
+          identity: "cli:recorder",
+          role: "submitter"
+        })
+
+      %{product: product}
+    end
+
+    test "dispatches record_memory through the full HTTP pipeline",
+         %{conn: conn, product: product} do
+      body = %{
+        "session_id" => "sess-42",
+        "channel" => "cli",
+        "sender_identity" => "cli:recorder",
+        "params" => %{
+          "product" => product.id,
+          "content" => "Client prefers matte finishes.",
+          "tags" => ["preference"]
+        }
+      }
+
+      conn =
+        conn
+        |> put_req_header("x-openclaw-tool-secret", @secret)
+        |> post(~p"/api/v1/openclaw/tools/record_memory", body)
+
+      assert %{
+               "status" => "ok",
+               "result" => %{
+                 "memory_id" => memory_id,
+                 "product_id" => pid,
+                 "session_id" => "sess-42",
+                 "recorded_at" => recorded_at
+               }
+             } = json_response(conn, 200)
+
+      assert pid == product.id
+      assert is_binary(memory_id)
+      assert is_binary(recorded_at)
+
+      [row] = Products.list_recent_memories(product.id)
+      assert row.id == memory_id
+      assert row.tags == ["preference"]
+    end
+
+    test "record_memory 422 empty_content when content is whitespace",
+         %{conn: conn, product: product} do
+      body = %{
+        "session_id" => "sess-42",
+        "channel" => "cli",
+        "sender_identity" => "cli:recorder",
+        "params" => %{"product" => product.id, "content" => "   "}
+      }
+
+      conn =
+        conn
+        |> put_req_header("x-openclaw-tool-secret", @secret)
+        |> post(~p"/api/v1/openclaw/tools/record_memory", body)
+
+      assert %{"status" => "error", "error" => "empty_content"} =
+               json_response(conn, 422)
+    end
+  end
 end

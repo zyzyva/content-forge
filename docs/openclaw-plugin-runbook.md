@@ -173,6 +173,11 @@ The plugin ships these tools. Each corresponds to a module under
 - **`add_tag_to_asset`** - tag a single asset inside the
   product's scope (Phase 16.3c). Requires `:submitter` or
   higher. Tag is lowercased, trimmed, and deduplicated.
+- **`record_memory`** - persist a conversation-derived note
+  against the product (Phase 16.3d). Requires `:submitter` or
+  higher. `session_id` / `channel` / `sender_identity` come
+  from the invocation ctx, not params, so the agent cannot
+  spoof them.
 
 ## Future tools (ship pattern)
 
@@ -182,9 +187,8 @@ in the dispatch map in `ContentForge.OpenClawTools`, and gets a
 matching entry in the plugin's `index.js` with its own schema.
 The runbook above carries over unchanged for new tools.
 
-Phases 16.3 through 16.6 add:
+Phases 16.4 through 16.6 add:
 
-- **16.3** Light writes + role-based auth framework.
 - **16.4** Heavy writes with two-turn confirmation.
 - **16.5** Unified tool-invocation audit + dashboard.
 - **16.6** Escalate-to-human as a tool.
