@@ -161,7 +161,7 @@ Phase exit criteria: end-to-end image generation, image processing, and video re
   - Gate off with "unavailable" if OpenClaw is not configured.
   - **Slicing note:** Expands into an infra slice and a caller slice following the 11.1 pattern.
 
-- **11.2 (infra) OpenClaw HTTP client module**
+- **11.2 (infra) OpenClaw HTTP client module** ✅ Shipped `b2785d8`.
   - Ship a named client module at `ContentForge.OpenClaw` under `lib/content_forge/open_claw/` (or a single file if no helpers emerge), wrapping OpenClaw's bulk-generation endpoint.
   - One public function on the shape of `generate_variants(request, opts)` that accepts a request map (product brief, platform, angle, count, content_type) and returns a success tuple carrying the list of generated variants, or a classified error tuple.
   - Config namespace at `:content_forge, :open_claw` with `:base_url`, `:api_key`, `:default_timeout`. API key sourced from env at runtime via `config/runtime.exs`.
@@ -171,6 +171,7 @@ Phase exit criteria: end-to-end image generation, image processing, and video re
   - `Req.Test` stub from day one. Tests: happy-path batch generation, 429 transient, 500 transient, 400 permanent, missing-config no-HTTP downgrade.
 
 - **11.2 (caller) OpenClawBulkGenerator swap onto the client**
+  - **Prerequisite: live shape verification.** Before writing any swap code, issue one minimal generation request against the running OpenClaw instance and capture the actual response shape, the chosen auth header name, and the exact endpoint path. Compare against the target-shape assumption recorded in the `ContentForge.OpenClaw` moduledoc (`Bearer` header, `/api/v1/generate`). If the live shape differs, fix the client inline as part of this slice and document the delta in the handoff; bundling is acceptable because live reality forces it. If OpenClaw is unreachable at slice time, pause the slice and notify the architect rather than shipping blind against an unverified target.
   - Remove the hardcoded sample-content maps (`generate_social_content`, `generate_blog_content`, `generate_video_script_content`) and their surrounding placeholder scaffolding from the bulk generator job.
   - Build the prompt payload per platform and per content-type from the brief + product context (the existing `build_social_prompt`, `build_blog_prompt`, etc. can stay; only the call that consumes them changes).
   - Call the new OpenClaw client with the appropriate request shape for each content type (social, blog, video script).
