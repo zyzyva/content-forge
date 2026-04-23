@@ -64,6 +64,10 @@ defmodule ContentForgeWeb.Router do
       # Competitor intel
       get "/competitor-intel", CompetitorController, :intel
 
+      # Product assets
+      post "/assets/presigned-upload", ProductAssetController, :presigned_upload
+      post "/assets/register", ProductAssetController, :register
+
       # Publishing schedule
       post "/schedule", ScheduleController, :schedule
       get "/schedule", ScheduleController, :get_schedule

@@ -82,6 +82,34 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 13.1b: Presigned upload + register endpoints
+
+Status: IN PROGRESS (coder handoff)
+Note: Two new endpoints under the existing `:api`/`:api_auth` pipeline on `/api/v1/products/:product_id/assets/...`:
+
+- `POST /presigned-upload` returns a time-limited PUT URL, the chosen storage key, the expiry timestamp and `expires_in_seconds` (900s / 15 minutes), plus echoed content-type and byte-size. Storage key is built as `products/<product_id>/assets/<uuid>/<sanitised_filename>`; filename is path-basenamed then non-alphanumeric characters replaced with underscores to prevent `..` traversal or weird whitespace. The presign itself goes through a swappable storage impl: defaults to `ContentForge.Storage.presigned_put_url/3` (new function added this slice; wraps `ExAws.S3.presigned_url/5` with the content-type pinned as a query parameter). Tests substitute a pure-Elixir stub via `:content_forge, :asset_storage_impl`.
+- `POST /register` creates a `ProductAsset` row in `status: "pending"` with attrs built from the posted body (storage_key, filename, content_type, byte_size, optional uploader/tags/description; uploaded_at is set server-side to `DateTime.utc_now/0`). On success it enqueues `ContentForge.Jobs.AssetImageProcessor` or `ContentForge.Jobs.AssetVideoProcessor` based on `media_type` derived from the mime type. Both processor modules ship as stub workers this slice (no-op `perform/1`) so `assert_enqueued/1` has a worker module to match; 13.1d and 13.1e fill them in.
+
+Validation (shared by both endpoints):
+
+- Content-type allow-list: `image/jpeg`, `image/png`, `image/webp`, `image/heic`, `video/mp4`, `video/quicktime`, `video/x-m4v`. Anything else returns 415 with the allowed list in the body.
+- Byte-size caps: 50 MB for images, 500 MB for videos. Oversize returns 413 with `max_bytes` and `got_bytes` in the body.
+- Unknown `product_id` returns 404.
+- Missing required params return 422.
+- Presign failure surfaces as 502.
+- Missing bearer token returns 401 (existing `:api_auth` pipeline).
+
+Controller uses an Elixir `with` chain on both actions and a single `render_error_or_response/2` sink that pattern-matches the conn vs error tuple; `render_error/2` has one head per reason atom so the mapping is pattern-match-first.
+
+Storage impl injection: `Application.get_env(:content_forge, :asset_storage_impl, ContentForge.Storage)`. Tests set `PresignStub` / `PresignFailureStub` in-file (inner `defmodule`) and restore the prior value on exit.
+
+New test file `test/content_forge_web/controllers/product_asset_controller_test.exs` covers 17 cases:
+
+- Presigned upload: happy-path image (returns URL + storage_key + expiry + echoed fields), happy-path video with the video-size cap, unsupported content-type 415, oversized image 413, oversized video 413, missing required fields 422, unknown product 404, presign failure 502, unauthorised 401, filename sanitisation (..`/etc/` stripped and spaces/exotic characters collapsed to underscores).
+- Register: happy-path image creates pending row + enqueues AssetImageProcessor (refute the video worker was enqueued), happy-path video enqueues AssetVideoProcessor (refute image), disallowed content-type 415 creates no row and enqueues nothing, oversized image 413 creates no row, missing fields 422, duplicate storage_key 422 via the 13.1a partial-unique constraint, unauthorised 401.
+
+Gate: mix compile --warnings-as-errors clean, mix format clean, mix test 317/0 (300 prior + 17 new). Credo unchanged vs post-13.1a state: same baseline resolutions and same known `metrics_poller.ex` / `publisher.ex` / `video_producer.ex` line-shift carryovers per `f26d099` rule. Two transient credo findings introduced by the first draft of the controller (nested-module references to the processor modules) were resolved inline by adding aliases; final diff is zero new findings.
+
 ### Phase 13.1a: ProductAsset schema + context
 
 Status: DONE

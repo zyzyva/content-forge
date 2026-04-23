@@ -48,4 +48,21 @@ defmodule ContentForge.Storage do
   def get_publicUrl(key) when is_binary(key) do
     "https://#{@bucket}.#{@region}.r2.cloudflarestorage.com/#{key}"
   end
+
+  @doc """
+  Generates a presigned PUT URL that a client can use to upload directly
+  to R2. `expires_in` defaults to 900 seconds (15 minutes). The URL
+  pins the object key and the content-type query parameter; a client
+  that sent a different content type would be rejected by R2.
+  """
+  def presigned_put_url(key, content_type, opts \\ [])
+      when is_binary(key) and is_binary(content_type) do
+    expires_in = Keyword.get(opts, :expires_in, 900)
+    config = ExAws.Config.new(:s3)
+
+    ExAws.S3.presigned_url(config, :put, @bucket, key,
+      expires_in: expires_in,
+      query_params: [{"Content-Type", content_type}]
+    )
+  end
 end
