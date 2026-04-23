@@ -66,6 +66,11 @@ Note: Seven pages — products, detail, drafts, schedule, video, performance, cl
 Status: DONE
 Note: `ContentForge.MediaForge` at `lib/content_forge/media_forge.ex`, 22-test acceptance file, `Req.Test` stub baked in. Reviewer ACCEPT at `b3883c7`, merged to master as `ba3c3ee`.
 
+### Phase 10.1.1: classify/1 exhaustiveness for 3xx
+
+Status: IN PROGRESS (coder handoff)
+Note: Added `status in 300..399` clause returning `{:error, {:unexpected_status, status, body}}` to close the `classify/1` FunctionClauseError gap flagged during 10.1 review. New test asserts a stubbed 304 Not Modified produces the expected tuple. Gate green: compile/format clean, credo locations unchanged vs baseline, mix test 123/0. Awaiting reviewer.
+
 ## Outstanding
 
 See `BUILDPLAN.md` for the wave-by-wave plan. Short version:

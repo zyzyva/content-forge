@@ -33,6 +33,10 @@ defmodule ContentForge.MediaForge do
       failure, or other network-layer error
     * `{:error, {:http_error, status, body}}` -4xx response, do not retry
       without changing the input
+    * `{:error, {:unexpected_status, status, body}}` -3xx response that
+      reached the classifier (for example 304 Not Modified, or a 307/308
+      that was not auto-followed); callers decide whether to treat this
+      as fatal or to re-issue with different headers
     * `{:error, reason}` -unexpected condition, inspect `reason` for context
 
   Transient errors may be retried by the caller's Oban backoff policy.
@@ -46,9 +50,15 @@ defmodule ContentForge.MediaForge do
   @type err_not_configured :: {:error, :not_configured}
   @type err_transient :: {:error, {:transient, non_neg_integer() | atom(), any()}}
   @type err_permanent :: {:error, {:http_error, non_neg_integer(), any()}}
+  @type err_unexpected_status :: {:error, {:unexpected_status, non_neg_integer(), any()}}
   @type err_other :: {:error, any()}
   @type result ::
-          ok_result() | err_not_configured() | err_transient() | err_permanent() | err_other()
+          ok_result()
+          | err_not_configured()
+          | err_transient()
+          | err_permanent()
+          | err_unexpected_status()
+          | err_other()
 
   @doc "Returns `:ok` when a secret is configured, `:not_configured` otherwise."
   @spec status() :: :ok | :not_configured
@@ -142,6 +152,10 @@ defmodule ContentForge.MediaForge do
 
   defp classify({:ok, %Req.Response{status: status, body: body}}) when status in 200..299 do
     {:ok, body}
+  end
+
+  defp classify({:ok, %Req.Response{status: status, body: body}}) when status in 300..399 do
+    {:error, {:unexpected_status, status, body}}
   end
 
   defp classify({:ok, %Req.Response{status: status, body: body}}) when status in 400..499 do

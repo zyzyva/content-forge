@@ -122,6 +122,16 @@ defmodule ContentForge.MediaForgeTest do
                MediaForge.probe(%{path: "/foo.mp4"})
     end
 
+    test "304 Not Modified is classified as unexpected_status" do
+      Req.Test.stub(@stub_key, fn conn ->
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(304, "")
+      end)
+
+      assert {:error, {:unexpected_status, 304, ""}} = MediaForge.probe(%{path: "/foo.mp4"})
+    end
+
     test "classified errors do not retry inside the client" do
       call_counter = :counters.new(1, [])
 
