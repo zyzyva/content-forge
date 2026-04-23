@@ -288,7 +288,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 10. Goal: produce content that is AI-retriev
     - Dashboard: drafts review drawer shows the `research_source` label next to the SEO score, and the research block content is visible in the draft preview.
     - Tests: happy-path scoreboard-sourced enrichment injects a block with the source label; happy-path competitor-intel fallback; happy-path snapshot fallback; no-data case returns `:no_data` and tags the draft; hallucination case (LLM drops the data point) returns `:lost_data_point` and flips status to `needs_review`; `:not_configured` on the LLM client returns `{:error, :not_configured}` without writing; all sources empty returns `:no_data` without LLM call.
 
-- **12.4 Dashboard surfacing**
+- **12.4 Dashboard surfacing** ✅ Shipped `9d74483`.
   - Drafts page shows checklist status per item and blocks publishing on red checks unless manually overridden.
   - Additional requirements:
     - Per-check drawer + SEO score column already shipped under 12.2a. 12.4 adds the publish-gate logic plus an override path, plus a ResearchEnricher status indicator using the fields from 12.3.
