@@ -84,8 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 13.5b: Publisher rendition swap
 
-Status: READY FOR REVIEW
-Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (each gate invoked as a separate command with its own exit code, per the 13.5a lesson), mix test 425/0 (414 prior + 11 new). Credo by content unchanged vs post-13.5a: a would-be new `cond` finding in the LinkedIn branch of `put_platform_opts/3` fixed inline by reverting to `if/else`; zero net-new findings; nine baseline findings net-removed (one genuinely removed: the `Publisher.build_post_opts` cyclomatic-19 is gone now that the function decomposes into `put_primary_image/2` + `put_carousel/3` + `put_platform_opts/3` function-head-dispatched on platform).
+Status: DONE
+Merged: master @ `f0da860` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 425-0; credo net -9 (grandfathered `build_post_opts` cyclomatic-19 finally resolved via function-head decomposition). Legacy drafts zero-HTTP through 10.2b path; `@carousel_platforms` gates carousel opts to instagram/facebook only. 11 tests.
 Note: `ContentForge.Jobs.Publisher` now resolves platform-specific URLs from attached `draft_assets` before publishing, per BUILDPLAN 13.5b. Both entry paths (`publish_to_platform/4` for the `product_id+platform` args shape and `do_publish_approved/2` for the `draft_id` args shape) go through a new `resolve_post_assets/2` step before building opts. `resolve_post_assets/2` returns one of:
 
 - `{:ok, %{primary_url: _, gallery_urls: [...]}}` — continue to publish

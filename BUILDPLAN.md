@@ -374,7 +374,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 11. Leans heavily on Phase 10 Media Forge pl
   - `:not_configured` passes through from MediaForge and becomes `{:error, :not_configured}` at the resolver's surface. Transient errors propagate for Oban retry. Permanent errors return `{:error, {:permanent, reason}}` so callers can mark drafts blocked.
   - Tests: happy path creates the rendition and returns the URL; second call for the same (asset, platform) hits the cache and does not call MediaForge; `:not_configured` passes through without a rendition row; unknown platform returns the asset's primary URL; transient error propagates; permanent error surfaces clearly.
 
-- **13.5b Publisher resolution swap**
+- **13.5b Publisher resolution swap** ✅ Shipped `f0da860`.
   - Change `ContentForge.Jobs.Publisher.build_post_opts/3` to prefer the `RenditionResolver` path for any draft that has attached `draft_assets`. For each attached asset, resolve the URL via `RenditionResolver.resolve/2` with the draft's platform; choose the featured asset for the primary `image_url` opt and include any gallery assets where the platform supports carousels.
   - Legacy drafts (no attached assets, only `draft.image_url`) continue to publish with that URL unchanged.
   - On `{:error, :not_configured}` from the resolver, reuse the existing missing-image blocker from 10.2b: mark the draft blocked with a note `"rendition unavailable: media forge not configured"`, do not call the platform client. The dashboard's blocked-filter tab already surfaces this via the shared blocked label.
