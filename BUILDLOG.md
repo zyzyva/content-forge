@@ -84,8 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 14.1a: SMS schemas + context
 
-Status: READY FOR REVIEW
-Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates), mix test 451/0 (426 prior + 25 new). Credo by content unchanged vs post-13.4d: would-be new alias-order finding in the test file fixed inline; zero net-new findings; same nine baseline findings net-removed.
+Status: DONE
+Merged: master @ `9723086` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 451-0; credo unchanged. Cascade split per spec: phones + sessions delete_all; events nilify_all with `phone_number` captured inline. Pattern-match-first context. `expire_stale_sessions/1` single update_all with Postgres interval math, injectable `now` for tests. 25 tests.
 Note: Foundational SMS schemas + context per BUILDPLAN 14.1a. Three new schemas under `lib/content_forge/sms/`:
 
 - `ProductPhone` (whitelist): `phone_number` (E.164 via regex `^\+[1-9]\d{7,14}$`), `role` (`~w(owner submitter viewer)` inclusion), `display_label`, `active` (default true), `opt_in_at` (utc_datetime_usec, nullable - nil until explicit consent), `opt_in_source` (`~w(verbal form reply_yes)` inclusion, nullable). `belongs_to :product`. Composite unique on `(product_id, phone_number)`. A `deactivate_changeset/1` helper flips `active: false` without touching opt-in history.
