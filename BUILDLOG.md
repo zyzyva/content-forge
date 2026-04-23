@@ -84,7 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 10.5a: Webhook test output cleanup
 
-Status: IN PROGRESS (coder handoff)
+Status: DONE
+Merged: master @ `d402d8d` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 170-0, credo identical to post-10.5 state. Webhook suite output clean (11 dots, no warning noise).
 Note: Pure hygiene on `test/content_forge_web/controllers/media_forge_webhook_controller_test.exs`. The five rejection-path tests (stale timestamp, invalid signature, missing signature header, unknown job id, malformed payload) previously emitted unwrapped Logger warnings that polluted `mix test` output. Each is now wrapped in `ExUnit.CaptureLog.capture_log/1` using the same `send(self(), {:conn, conn}) / assert_received` pattern as `image_generator_test.exs`, and asserts a substring of the expected log line so the silence is intentional, not accidental. No behavior change. Gate: compile --warnings-as-errors clean, format clean, mix test 170/0, credo identical to post-10.5 state.
 
 ### Phase 10.5: Media Forge webhook receiver

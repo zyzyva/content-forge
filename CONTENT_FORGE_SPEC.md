@@ -397,3 +397,51 @@ Acceptance criteria:
 - [ ] Dashboard surfacing of webhook vs. polling as the resolution source is not part of this slice; the dashboard simply sees the resulting state transitions.
 - [ ] No backward-compatibility shim for a pre-webhook Media Forge; the spec assumes Media Forge always signs its webhooks as described.
 
+---
+
+### Integration 3: LLM Client (Anthropic)
+
+**Purpose:** Provide a named HTTP client for Anthropic's Messages API that every Content Forge caller uses when it needs a generative model call. This is the first of what may become a small family of provider clients (Anthropic, Google Gemini, xAI, OpenAI) behind a thin dispatcher. The goal is the same as Media Forge's client: one place for auth, retries, error classification, and test stubbing so brief generation, ranking, and future features do not each re-implement them.
+
+**Why this matters:** Content Forge today is a scaffold with hardcoded templated text where real LLM calls belong. Brief generation returns the same boilerplate for every product; the dashboard shows the scaffold as if it were real output. This violates the project rule against synthetic data reaching production flows. Shipping a single real provider first is the minimum useful step; multi-provider synthesis arrives in a follow-up slice (11.1b) but the client that unblocks every caller lands here.
+
+**Module location and shape:**
+- [ ] The public client module is `ContentForge.LLM.Anthropic` and lives at `lib/content_forge/llm/anthropic.ex`. Future sibling provider modules will live under `lib/content_forge/llm/`. Callers outside this directory only reference the public module.
+- [ ] The module exposes a single public completion function that takes a prompt (string or a list of message maps) and an options keyword list (model, max tokens, temperature, system prompt). It returns a success tuple carrying the completion text, or a classified error tuple.
+
+**Configuration:**
+- [ ] The API key is read from application configuration at `:api_key` under `:anthropic` within `:llm` within `:content_forge`. Production sources the key from an environment variable at runtime through `config/runtime.exs`. Test leaves the key unset by default so missing-key behavior is observable; individual tests may configure a key when they need to exercise the authenticated path.
+- [ ] The default model is read from the same configuration at `:default_model`. Callers may override per-call via options. A sensible default (for example the current Claude Sonnet) is configured in `config/config.exs` so no caller has to hardcode a model name.
+- [ ] The default max-tokens budget is read similarly at `:max_tokens`, overridable per call.
+- [ ] When the API key is missing at runtime, the module reports its status as not-configured and every call returns `{:error, :not_configured}` immediately, with zero HTTP I/O. Upstream callers (brief generator now, ranker later) treat this as a graceful downgrade: log the condition, surface "LLM unavailable" in the dashboard, skip the dependent step. No synthetic or placeholder text is written to the database.
+
+**Authentication and version headers:**
+- [ ] Every outbound request sets the `x-api-key` header with the configured key and the `anthropic-version` header with the currently supported API version string. Both are set inside the client, not at the call site; callers cannot omit either.
+
+**Endpoint:**
+- [ ] The client posts to Anthropic's Messages endpoint (`/v1/messages` under the Anthropic API base URL). The request body follows the Messages schema: model, max tokens, optional system prompt, messages array with alternating user and assistant turns, optional temperature. The caller's prompt is wrapped into this schema by the client.
+- [ ] The response is parsed into a success shape carrying the extracted text content (the first text block from the assistant reply) plus metadata (model echoed by the API, stop reason, usage token counts if available).
+
+**Error classification:**
+- [ ] A 5xx response from Anthropic, or a timeout from the HTTP layer, is returned as a transient error tuple whose second element is the reason. Callers may retry through Oban backoff.
+- [ ] A 429 rate-limit response is treated as transient (Anthropic honors retry-after). Callers may retry.
+- [ ] Any other 4xx response (invalid request, bad API key, insufficient credit) is returned as a permanent error tuple carrying the status code and the response body. Callers must not retry without changing the input.
+- [ ] A connection refusal or network-layer failure is returned as a transient-network error tuple with the reason carried. Callers may retry.
+- [ ] A 3xx response that reaches the classifier is returned as an unexpected-status error tuple carrying status and body. Catch-all for exhaustiveness.
+- [ ] Any other unexpected condition is returned as a plain error tuple with enough context in the reason to diagnose from logs. The client does not rescue-and-swallow silently.
+
+**Test stance:**
+- [ ] The `Req.Test` stub adapter is wired into this module from the first commit. The test suite uses stubbed responses for every code path and never reaches the live Anthropic API.
+- [ ] Minimum required tests at the end of the infra slice:
+  - [ ] A happy-path completion returns the expected text and metadata.
+  - [ ] A 429 stubbed response returns a transient error tuple; the client does not retry internally (Oban owns the retry policy).
+  - [ ] A 500 stubbed response returns a transient error tuple.
+  - [ ] A 400 stubbed response (invalid request) returns a permanent error tuple carrying status and body.
+  - [ ] A missing-API-key test asserts `{:error, :not_configured}` is returned without any HTTP request being recorded by the stub.
+
+**Out of scope for this slice:**
+- [ ] Adding sibling provider modules for Google Gemini, xAI, or OpenAI. Those land under 11.1b and later follow-up slices.
+- [ ] Changing any existing caller to use the new client. The brief-generator swap is a separate slice.
+- [ ] Streaming responses, tool use, or other advanced features beyond a single completion request. The client can be extended later without changing the public completion function's shape.
+
+

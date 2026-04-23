@@ -109,7 +109,7 @@ Both items below landed 2026-04-22 before any Phase 10 work. Retained here as a 
     - Tests cover: valid webhook updates the draft's `image_url`, valid webhook updates the video job to `encoded`, stale timestamp returns 400, bad signature returns 401, unknown job id returns 404, webhook arriving after polling already resolved returns 200 with a no-op.
     - No live Media Forge calls from the test suite; the webhook side is exercised directly via `Phoenix.ConnTest` with forged valid signatures.
 
-- **10.5a Webhook test output cleanup**
+- **10.5a Webhook test output cleanup** ✅ Shipped `d402d8d`.
   - The webhook receiver test file produces noisy output because five rejection paths (stale timestamp, bad signature, malformed body, unknown job id, unsigned request) log warnings that are not wrapped in `capture_log`. Engineering rule says test output must be clean.
   - Wrap each of the five log-producing assertions in `ExUnit.CaptureLog.capture_log/1`. For cases where the function under test also returns a value that the assertion needs, use the `send-to-self` pattern already documented in `CLAUDE.md`.
   - Pure test hygiene; no behavior change.
@@ -124,6 +124,29 @@ Phase exit criteria: end-to-end image generation, image processing, and video re
   - Replace any remaining template-text returns with real Anthropic / Google / xAI / OpenAI calls.
   - Pass performance context and competitor context into the prompt.
   - Stubbed in tests, live in dev/prod.
+  - **Slicing note:** This one BUILDPLAN entry expands into several coder handoffs, mirroring the Phase 10 pattern of "ship an infra client, then swap each caller". The slices below carve up the work.
+
+- **11.1 (infra) Anthropic LLM client module**
+  - Ship a named client module wrapping Anthropic's Messages API: base URL, `x-api-key` header, `anthropic-version` header, JSON body construction, timeout, retry policy, and transient-vs-permanent error classification.
+  - One public function on the module shape of `complete(prompt, opts)` returning a success tuple carrying the response text, or a classified error tuple.
+  - Configured from application env under `:content_forge, :llm, :anthropic` with `:api_key`, `:default_model`, `:max_tokens`. The API key is sourced from an environment variable at runtime via `config/runtime.exs`. When the key is absent, the client reports an `:not_configured` status and every call returns `{:error, :not_configured}` without any HTTP I/O, mirroring the Media Forge pattern.
+  - Error classification mirrors MediaForge: 5xx or timeout to transient, 4xx to permanent, connection failure to transient-network, 3xx catch-all to unexpected-status, and a pass-through clause for anything else.
+  - `Req.Test` stub adapter baked in from day one; no live Anthropic calls from the test suite.
+  - Tests: classification per branch, missing-key downgrade that records zero HTTP calls, one happy-path completion, one rate-limit (429) case returning the transient tuple, one explicit `:not_configured` case.
+
+- **11.1 (caller) Brief generator swap onto LLM client**
+  - Remove the hardcoded templated text from the content-brief and brief-rewrite paths.
+  - Build the existing context map into a prompt (keep the context shape; only the consumption changes) and call the new LLM client's completion function.
+  - On success, the returned text becomes the brief content; the `model_used` field reflects the actual provider and model name rather than the hardcoded "claude" string the placeholder uses today.
+  - On `{:error, :not_configured}`, log "LLM unavailable", return a skipped result, and do not create a brief record. No placeholder brief text ever reaches the database, consistent with the project rule that missing credentials downgrade gracefully rather than fabricating output.
+  - On transient errors let Oban retry. On permanent errors, cancel the job with the error recorded; no retry until the upstream is fixed.
+  - Tests: happy-path brief generation, missing-key skip that records no brief, transient error triggers retry, permanent error cancels the job. Stubbed Anthropic responses only.
+
+- **11.1b Multi-provider synthesis for briefs**
+  - Adds Google Gemini as a second provider (same client-module pattern) and updates the brief generator to query both Anthropic and Gemini in parallel, then synthesize the two drafts into a single brief. Satisfies the spec's "at least 2 smart models" acceptance criterion on Feature 3 Stage 1.
+  - Synthesis logic is the simplest thing that works: concatenate both drafts into the context of a final Anthropic call that writes the synthesized brief. More sophisticated merging can come later if A/B testing shows a reason.
+  - If only one provider is configured, the brief still generates from that one provider. If neither is configured, the skip path from the 11.1 caller slice fires.
+  - Tests cover both providers configured (synthesis path), one provider configured (fallback to single provider), and neither configured (skip).
 
 - **11.2 Bulk variant generation via OpenClaw**
   - Configure the live OpenClaw endpoint for bulk variant generation.
