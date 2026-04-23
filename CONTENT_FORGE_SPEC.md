@@ -311,7 +311,7 @@ Acceptance criteria:
 
 ### Feature 13: OpenClaw Tool Surface
 
-**Purpose:** Expose Content Forge's operations as a stable set of named tools that the OpenClaw agent can invoke from any channel it talks to — SMS, the OpenClaw CLI, Telegram, and any future conversational surface. A tool is registered once with the agent and is immediately available across every channel; the channel only handles inbound text and outbound delivery. This turns Content Forge from "a dashboard operators click through" into "the orchestration brain any conversational surface can drive."
+**Purpose:** Expose Content Forge's operations as a stable set of named tools that the OpenClaw agent can invoke from any channel it talks to: SMS, the OpenClaw CLI, Telegram, and any future conversational surface. A tool is registered once with the agent and is immediately available across every channel; the channel only handles inbound text and outbound delivery. This turns Content Forge from "a dashboard operators click through" into "the orchestration brain any conversational surface can drive."
 
 **Why this matters:** Content Forge already exposes its operations through a LiveView dashboard and a Review API. Agencies using SMS submission need the same operations invokable by the bot (create an upload link, list recent assets, check a draft's status, schedule a post, approve a blog). Without a shared tool surface, every new channel would re-implement its own subset, drift in auth and error handling, and force tool logic to live inside channel-specific handlers. The tool surface is also the extension point other ecosystem apps (contacts4us, Media Forge consumers, the chatbot consultancy) use to plug into the same agent: they register their own plugins against the gateway, and the agent ends up with a unified ecosystem tool surface.
 
@@ -327,17 +327,17 @@ Acceptance criteria:
 - [ ] The tool endpoint is the only surface authenticated this way; the Review API bearer token, the Twilio HMAC, and the Media Forge webhook signature all live on different pipelines.
 
 **Invocation context (ctx map, present on every tool call):**
-- [ ] `:session_id` — the OpenClaw agent session id so tools that persist conversation memory (Phase 16.3 onward) scope to the right thread.
-- [ ] `:channel` — a short identifier for the originating surface: `"sms"`, `"cli"`, `"telegram"`, etc. Tools use this when they need channel-specific behavior (for example, an authorization helper reaches for `ProductPhone` on `"sms"` and an `OperatorIdentity` on `"cli"`).
-- [ ] `:sender_identity` — the caller's channel-specific identifier: E.164 phone number for SMS, operator id for CLI, handle for Telegram. Product resolution and role checks pivot on this when an explicit `product` param is not supplied.
+- [ ] `:session_id`: the OpenClaw agent session id so tools that persist conversation memory (Phase 16.3 onward) scope to the right thread.
+- [ ] `:channel`: a short identifier for the originating surface: `"sms"`, `"cli"`, `"telegram"`, etc. Tools use this when they need channel-specific behavior (for example, an authorization helper reaches for `ProductPhone` on `"sms"` and an `OperatorIdentity` on `"cli"`).
+- [ ] `:sender_identity`: the caller's channel-specific identifier: E.164 phone number for SMS, operator id for CLI, handle for Telegram. Product resolution and role checks pivot on this when an explicit `product` param is not supplied.
 
 **Request body shape:**
 - [ ] Every POST body contains four top-level fields: `session_id` (string), `channel` (string), `sender_identity` (string or null), `params` (object). The controller builds the ctx map from the first three and passes `params` through to the tool module unchanged.
 
 **Response shape:**
-- [ ] Success — `200 {"status":"ok","result": <tool payload>}`. Result values are JSON-safe (atoms serialized to strings, `DateTime` values to ISO-8601).
-- [ ] Unknown tool — `404 {"status":"error","error":"unknown_tool","tool_name":"..."}`. Any tool name not in the dispatch map returns this shape so the agent can render "I do not know that tool."
-- [ ] Tool error — `422 {"status":"error","error":"<reason>"}`. The controller converts atoms and `{kind, details}` tuples to a human-readable reason string. The reason is the single canonical field the agent uses to decide how to phrase the failure to the user.
+- [ ] Success: `200 {"status":"ok","result": <tool payload>}`. Result values are JSON-safe (atoms serialized to strings, `DateTime` values to ISO-8601).
+- [ ] Unknown tool: `404 {"status":"error","error":"unknown_tool","tool_name":"..."}`. Any tool name not in the dispatch map returns this shape so the agent can render "I do not know that tool."
+- [ ] Tool error: `422 {"status":"error","error":"<reason>"}`. The controller converts atoms and `{kind, details}` tuples to a human-readable reason string. The reason is the single canonical field the agent uses to decide how to phrase the failure to the user.
 
 **Product resolution contract (shared across tools):**
 - [ ] Every tool that operates on a product supports two resolution paths. If `params["product"]` is present it is resolved first: treat as a UUID against `Products.get_product/1`; on cast failure or no row, fall through to a case-insensitive substring match against `Products.list_products/0` by name. A single match returns `{:ok, product}`; zero matches returns `{:error, :product_not_found}`; multiple matches returns `{:error, :ambiguous_product}` carrying the candidate names the agent should echo back.
@@ -346,10 +346,10 @@ Acceptance criteria:
 - [ ] Product resolution is shared between tool modules via `ContentForge.OpenClawTools.ProductResolver`. New tools that need a product reach for the resolver; they do not re-implement the UUID / fuzzy / session paths inline.
 
 **Error taxonomy (the canonical reasons tools return):**
-- [ ] `:product_not_found`, `:ambiguous_product`, `:missing_product_context` — product resolution outcomes described above.
-- [ ] `:not_found` — a specific record (draft, asset, bundle) identified by id does not exist or is not owned by the resolved product. Tools that accept an id always scope the lookup to the product.
-- [ ] `{:presign_failed, reason}` — storage adapter rejection for upload-link-style tools.
-- [ ] `:forbidden` — reserved for the authorization framework that 16.3 introduces. Read-only tools in 16.2 do not return this reason; any future write tool that calls the authorization helper surfaces forbidden through this reason.
+- [ ] `:product_not_found`, `:ambiguous_product`, `:missing_product_context`: product resolution outcomes described above.
+- [ ] `:not_found`: a specific record (draft, asset, bundle) identified by id does not exist or is not owned by the resolved product. Tools that accept an id always scope the lookup to the product.
+- [ ] `{:presign_failed, reason}`: storage adapter rejection for upload-link-style tools.
+- [ ] `:forbidden`: reserved for the authorization framework that 16.3 introduces. Read-only tools in 16.2 do not return this reason; any future write tool that calls the authorization helper surfaces forbidden through this reason.
 - [ ] Classified HTTP errors from downstream clients (Media Forge, LLM providers) surface as the same `{:transient, ...}` / `{:http_error, ...}` shapes the clients already use. Tools do not rewrap them.
 
 **Cross-channel invariants:**

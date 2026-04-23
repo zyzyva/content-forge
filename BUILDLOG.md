@@ -85,6 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 16.2: Read-only OpenClaw tools
 
 Status: DONE
+Merged: master @ `f373393` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 833-0, credo 26 vs 44 baseline (zero new in slice-touched files; drift on pre-existing files carries forward). Reviewer-only delta stripped 4 emdashes from `ProductResolver` moduledoc and 5 from `docs/openclaw-plugin-runbook.md` to honor the no-emdash rule; behavior unchanged. New-module coverage 85-95%. Architect sweep folded in at merge: stripped remaining 9 emdashes from the Feature 13 spec text I added at handoff so the SPEC matches the same discipline the code now enforces.
 Note: Four read-only tools land behind the 16.1 surface so the agent can answer status and reconnaissance questions: `list_recent_assets`, `draft_status`, `upcoming_schedule`, `competitor_intel_summary`. Product resolution is extracted into a shared `ContentForge.OpenClawTools.ProductResolver` that implements Feature 13's resolution contract (UUID → fuzzy name → SMS session fallback). `CreateUploadLink` keeps its existing id/name paths by delegating to the resolver and gains the new SMS-session path for free.
 
 **Prerequisite refactor (shipped in the same commit)**:
