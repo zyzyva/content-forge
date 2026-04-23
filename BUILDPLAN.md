@@ -47,16 +47,21 @@ Both items below landed 2026-04-22 before any Phase 10 work. Retained here as a 
   - Configured by env vars. Missing secret downgrades the client to `status: :unavailable`, which upstream callers surface in the UI.
   - Ships with `Req.Test` stub usage baked into the test suite.
 
-- **10.1.1 MediaForge.classify/1 exhaustiveness for 3xx**
-  - `classify/1` currently pattern-matches 2xx, 4xx, 5xx, timeout, transport/network, and catch-all `{:error, reason}`. An `{:ok, %Req.Response{status: 300..399}}` would raise `FunctionClauseError`. 304 Not Modified is the realistic case if a future caller enables conditional caching; other 3xx are also theoretically reachable if redirect-following is disabled per request.
-  - Add a head that pattern-matches `status in 300..399` and returns `{:error, {:unexpected_status, status, body}}`. Add a failing test asserting this tuple is returned when the stub responds with 304.
-  - Engineering rule requires exhaustive pattern matches; this closes the gap.
+- **10.1.1 MediaForge.classify/1 exhaustiveness for 3xx** ✅ Shipped `2fadc8f`.
+  - 3xx catch-all clause returning `{:error, {:unexpected_status, status, body}}`; 304 Not Modified test added. Exhaustiveness gap closed.
 
 - **10.2 Swap image generation onto Media Forge**
-  - Remove local stub from the image generation entry point.
-  - Issue generation via Media Forge and wait either by poll or by exposing a signed-webhook receiver.
-  - Persist the resulting image bytes or R2 key where the existing schema expects them.
-  - Cost reporting in the dashboard should read from Media Forge's `/api/v1/generation/costs` or our mirrored record, not placeholder numbers.
+  - Replace the placeholder URL return in `ContentForge.Jobs.ImageGenerator.generate_image/3` with a call into `ContentForge.MediaForge.generate_images/1`, using polling (job status) for async responses. Webhook-based resolution waits for Phase 10.5.
+  - Persist the resulting image URL or R2 key onto `draft.image_url`. If Media Forge returns a synchronous result, persist immediately; if async, poll `get_job/1` with capped retries and persist once the job reports a done state.
+  - When Media Forge reports `{:error, :not_configured}`, the job logs "Media Forge unavailable", returns `{:ok, :skipped}`, and leaves `draft.image_url` nil. No placeholder URL is ever written. Downstream publishing will treat a missing image as a blocker (spec change handled under 10.2 too).
+  - Align Oban queue configuration so this job actually runs in dev/prod: add `:content_generation`, `:ingestion`, and `:competitor` to `config :content_forge, Oban, queues: [...]` in `config/config.exs`. Multiple workers (`ImageGenerator`, `ContentBriefGenerator`, `OpenClawBulkGenerator`, `MultiModelRanker`, `ScriptGate`, `WinnerRepurposingEngine`, `SiteCrawler`, `RepoIngestion`, `CompetitorScraper`, `CompetitorIntelSynthesizer`) declare these queues but they are dormant without the config. Fixing this is a one-line change and a hard prerequisite for the swap to deliver anything visible.
+  - Fix the queue-override bug inside `ImageGenerator.process_all_social_posts/1` which currently enqueues child jobs with `queue: :image_generation` (a queue that does not exist) instead of using the worker's declared `:content_generation` queue. Remove the override.
+  - Tests use `Req.Test` to stub Media Forge responses; no live calls. At least one test for sync success, one for async success via a polled `get_job`, one for `:not_configured` downgrade, and one for transient vs permanent error handling.
+
+- **10.2a Media Forge cost mirror and dashboard surfacing** (split from 10.2 for scope control)
+  - Ingest Media Forge `/api/v1/generation/costs` into a lightweight mirror table (product id, cost cents, provider, generated_at) so the dashboard can display real per-product generation spend.
+  - Add a dashboard card on the performance or schedule page showing cumulative image generation cost for each product and a hot-rolling 7-day spend number.
+  - Backfill strategy for rows that existed before the mirror began: none; start collecting from slice merge forward.
 
 - **10.3 Swap video pipeline FFmpeg step onto Media Forge**
   - Video production pipeline currently calls FFmpeg locally in one step. Replace that step with a Media Forge `/api/v1/video/render` (or `/api/v1/video/batch` for multi-platform) call.
