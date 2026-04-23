@@ -84,8 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 13.4d: Banner stickiness hardening
 
-Status: READY FOR REVIEW
-Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates), mix test 426/0 (425 prior + 1 new). Credo by content unchanged vs post-13.5b: would-be new "Prefer using an implicit `try` rather than explicit `try`" finding fixed inline by hoisting the `after` block onto the function head (Elixir's implicit-try syntax); zero net-new findings; same nine baseline findings net-removed as post-13.5b.
+Status: DONE
+Merged: master @ `8f02110` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 426-0; credo unchanged. Implicit-`after` clause on `generate_with_featured/4` — no explicit try, no extra credo surface. Broadcast fires on every exit path including raise; exception bubbles to Oban for retry semantics. Regression test forces a raise and asserts banner clears. Phase 13 fully complete.
 Note: Closed the one gap the 13.4c reviewer flagged. `AssetBundleDraftGenerator.generate_with_featured/4` happy-path head now uses an implicit `try/after` by attaching the `after` block directly to the function body:
 
     defp generate_with_featured({:ok, asset}, bundle, platforms, n) do

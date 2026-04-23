@@ -352,7 +352,7 @@ Per `CONTENT_FORGE_SPEC.md` Feature 11. Leans heavily on Phase 10 Media Forge pl
 
 - **13.4c LiveView "Generate drafts" trigger from bundle drawer** ✅ Shipped `fde2561`.
 
-- **13.4d Banner stickiness hardening (small)**
+- **13.4d Banner stickiness hardening (small)** ✅ Shipped `8f02110`.
   - If `LLM.Anthropic.complete/2` (or any upstream) raises instead of returning `{:error, _}`, the generator worker's broadcast path never fires and the LiveView banner sticks forever on that bundle. `classify/1` covers every known error tuple shape so this is rare in practice, but a raise is a valid outcome that the broadcast contract currently does not survive.
   - Wrap the completion path in a `try/after` (or equivalent) so the `:finished` broadcast always fires on exit, regardless of whether the call returned or raised. Keep the error reporting path unchanged for the non-raise cases.
   - One regression test that forces a raise inside a stubbed Anthropic client and asserts the banner clears for that bundle id.
@@ -391,6 +391,27 @@ Per `CONTENT_FORGE_SPEC.md` Feature 12. Twilio + OpenClaw integration.
 - **14.1 Twilio inbound webhook**
   - Signed webhook receiver for SMS. Parses message, identifies contact, routes to a conversation session.
   - Validates Twilio signature. Unknown numbers optionally get a gated response.
+  - **Slicing note:** Schema foundation (14.1a) first, then the webhook receiver (14.1b), mirroring the 10.5 webhook pattern.
+
+- **14.1a SMS schemas and context (ProductPhone, SmsEvent, ConversationSession)**
+  - New schema `ContentForge.Sms.ProductPhone` at `lib/content_forge/sms/product_phone.ex` with fields: `product_id` (fk), `phone_number` (E.164 string, required, unique per product), `role` (enum `"owner" | "submitter" | "viewer"`), `display_label` (string), `active` (boolean default true), `opt_in_at` (utc_datetime_usec, nullable — nil until confirmation), `opt_in_source` (string, nullable — such as `"verbal"`, `"form"`, `"reply_yes"`), plus timestamps.
+  - New schema `ContentForge.Sms.SmsEvent` at `lib/content_forge/sms/sms_event.ex` with fields: `product_id` (fk nullable — inbound from unknown numbers has no product), `phone_number` (E.164 string, required), `direction` (enum `"inbound" | "outbound"`), `body` (text), `media_urls` ({:array, :string}), `status` (enum `"received" | "sent" | "delivered" | "failed" | "rejected_unknown_number" | "rejected_rate_limit"`), `twilio_sid` (string, nullable), plus timestamps.
+  - New schema `ContentForge.Sms.ConversationSession` at `lib/content_forge/sms/conversation_session.ex` with fields: `product_id` (fk), `phone_number` (E.164 string), `state` (enum `"idle" | "waiting_for_upload" | "waiting_for_context" | "status_query"`), `last_message_at` (utc_datetime_usec), `inactive_after_seconds` (integer, default 3600), plus timestamps. Unique on `(product_id, phone_number)`.
+  - Migration creates all three tables with binary_id PKs and appropriate FK cascade semantics (phones cascade on product delete, events nilify on product delete so audit history survives, sessions cascade on product delete).
+  - New context module `ContentForge.Sms` at `lib/content_forge/sms.ex` with: `lookup_phone/2` (by phone + product, returns nil if not whitelisted), `list_phones_for_product/2` (with active filter), `create_phone/1`, `update_phone/2`, `deactivate_phone/1`, `record_event/1` (inserts an SmsEvent row), `list_events/2` (with filters on product_id, phone_number, direction, status), `get_or_start_session/2` (idempotent lookup by phone+product; creates if missing; refreshes last_message_at), `set_session_state/2`, `expire_stale_sessions/1` (marks sessions past their inactive window).
+  - Tests cover: CRUD on all three schemas; `lookup_phone` returns nil for unknown numbers; `record_event` persists inbound and outbound shapes; `get_or_start_session` creates once, reuses on second call, refreshes timestamps; cascade semantics on product delete.
+
+- **14.1b Twilio inbound webhook receiver**
+  - New controller `ContentForgeWeb.TwilioWebhookController` at `lib/content_forge_web/controllers/twilio_webhook_controller.ex` with action `receive/2` mounted at `POST /webhooks/twilio/sms` outside the `/api/v1` pipeline. No bearer-token auth; instead a dedicated Twilio signature plug.
+  - New plug `ContentForgeWeb.Plugs.TwilioSignatureVerifier` at `lib/content_forge_web/plugs/twilio_signature_verifier.ex`. Reads `x-twilio-signature` header, reconstructs the expected signature (HMAC-SHA1 of the full request URL plus sorted POST param concatenation, keyed by Twilio auth token, base64-encoded), compares via `Plug.Crypto.secure_compare/2`. Mismatch returns 403; missing header returns 400. Twilio auth token sourced from `:content_forge, :twilio, :auth_token` with env-var runtime wiring; if unset the plug rejects every request (fail closed).
+  - The body-reader plug from the Media Forge webhook (10.5) is reused so raw body capture is available for any future signing variants; for Twilio the signature is over sorted form params, not raw body, so the shared reader does not interfere.
+  - On valid signature, the controller:
+    1. Extracts `From` (E.164 phone), `Body`, `NumMedia`, `MediaUrl0..N` from the form params.
+    2. Looks up the phone in `ProductPhone`. Unknown phone: records an `SmsEvent` with status `"rejected_unknown_number"` and returns a TwiML `<Message>` body asking the sender to contact the agency to get set up.
+    3. Known phone + active: calls `Sms.record_event/1` with direction `"inbound"`, status `"received"`, body, media URLs. Calls `Sms.get_or_start_session/2`. Returns an empty TwiML response (200) so Twilio does not auto-reply.
+    4. Known phone + inactive: records `SmsEvent` with status `"rejected_unknown_number"` (same rejection path; distinguished only in the audit log). Returns a polite-rejection TwiML.
+  - Routing downstream (to OpenClaw when it lands; to an auto-acknowledgement in the meantime) is out of scope for 14.1b and lands under 14.2.
+  - Tests: valid signed inbound from a whitelisted phone records the event and starts a session; valid signed inbound from an unknown phone records a rejection event and returns a gated TwiML; invalid signature returns 403; missing auth-token config returns 403 on every request (fail closed); malformed form params return 400 without recording an event.
 
 - **14.2 Conversation sessions**
   - Session schema that holds conversation state across messages.
