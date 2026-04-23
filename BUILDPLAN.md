@@ -185,6 +185,10 @@ Pick up after the feature waves clear. Any of these can be inserted earlier if i
   - At least one multi-step pipeline test per feature: product registered → brief generated → variants ranked → published → metrics collected → winner repurposed.
   - Against stubbed externals; live smoke is a separate manual runbook.
 
+- **15.3a Coverage uplift and threshold tightening**
+  - Baseline is `test_coverage: [summary: [threshold: 0]]` in `mix.exs` (acknowledged debt, overall ~18%). Pair with 15.3 work: as E2E tests land, raise the per-module threshold in tranches (start at 25, then 50, then back toward Elixir's default of 90).
+  - A dedicated cleanup slice at the end of the wave should set the final threshold and update `BUILDLOG.md` with the final coverage number.
+
 - **15.4 Load smoke**
   - Small load test against the Review API and the publishing endpoints to catch N+1s and session-handling issues before they bite in a real launch.
 
