@@ -28,18 +28,20 @@ defmodule ContentForgeWeb.Live.Dashboard.DashboardLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="space-y-8">
-      <div>
-        <h1 class="text-3xl font-bold">Dashboard</h1>
+    <main id="main-content" aria-labelledby="page-title" class="space-y-8">
+      <header>
+        <h1 id="page-title" class="text-3xl font-bold">Dashboard</h1>
         <p class="text-base-content/70 mt-1">ContentForge Management Console</p>
-      </div>
-      
-    <!-- Navigation Cards -->
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+      </header>
+
+      <nav
+        aria-label="Dashboard sections"
+        class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
+      >
         <a href={~p"/dashboard/products"} class="card bg-base-200 hover:bg-base-300 transition-colors">
           <div class="card-body">
             <div class="flex items-center gap-3">
-              <div class="p-2 bg-primary/20 rounded-lg">
+              <div class="p-2 bg-primary/20 rounded-lg" aria-hidden="true">
                 <.icon name="hero-cube" class="size-6 text-primary" />
               </div>
               <div>
@@ -53,7 +55,7 @@ defmodule ContentForgeWeb.Live.Dashboard.DashboardLive do
         <a href={~p"/dashboard/drafts"} class="card bg-base-200 hover:bg-base-300 transition-colors">
           <div class="card-body">
             <div class="flex items-center gap-3">
-              <div class="p-2 bg-warning/20 rounded-lg">
+              <div class="p-2 bg-warning/20 rounded-lg" aria-hidden="true">
                 <.icon name="hero-document-text" class="size-6 text-warning" />
               </div>
               <div>
@@ -67,7 +69,7 @@ defmodule ContentForgeWeb.Live.Dashboard.DashboardLive do
         <a href={~p"/dashboard/schedule"} class="card bg-base-200 hover:bg-base-300 transition-colors">
           <div class="card-body">
             <div class="flex items-center gap-3">
-              <div class="p-2 bg-info/20 rounded-lg">
+              <div class="p-2 bg-info/20 rounded-lg" aria-hidden="true">
                 <.icon name="hero-calendar" class="size-6 text-info" />
               </div>
               <div>
@@ -81,7 +83,7 @@ defmodule ContentForgeWeb.Live.Dashboard.DashboardLive do
         <a href={~p"/dashboard/video"} class="card bg-base-200 hover:bg-base-300 transition-colors">
           <div class="card-body">
             <div class="flex items-center gap-3">
-              <div class="p-2 bg-error/20 rounded-lg">
+              <div class="p-2 bg-error/20 rounded-lg" aria-hidden="true">
                 <.icon name="hero-film" class="size-6 text-error" />
               </div>
               <div>
@@ -98,7 +100,7 @@ defmodule ContentForgeWeb.Live.Dashboard.DashboardLive do
         >
           <div class="card-body">
             <div class="flex items-center gap-3">
-              <div class="p-2 bg-success/20 rounded-lg">
+              <div class="p-2 bg-success/20 rounded-lg" aria-hidden="true">
                 <.icon name="hero-chart-bar" class="size-6 text-success" />
               </div>
               <div>
@@ -112,7 +114,7 @@ defmodule ContentForgeWeb.Live.Dashboard.DashboardLive do
         <a href={~p"/dashboard/clips"} class="card bg-base-200 hover:bg-base-300 transition-colors">
           <div class="card-body">
             <div class="flex items-center gap-3">
-              <div class="p-2 bg-secondary/20 rounded-lg">
+              <div class="p-2 bg-secondary/20 rounded-lg" aria-hidden="true">
                 <.icon name="hero-scissors" class="size-6 text-secondary" />
               </div>
               <div>
@@ -126,7 +128,7 @@ defmodule ContentForgeWeb.Live.Dashboard.DashboardLive do
         <a href={~p"/dashboard/sms"} class="card bg-base-200 hover:bg-base-300 transition-colors">
           <div class="card-body">
             <div class="flex items-center gap-3">
-              <div class="p-2 bg-warning/20 rounded-lg">
+              <div class="p-2 bg-warning/20 rounded-lg" aria-hidden="true">
                 <.icon name="hero-chat-bubble-left-right" class="size-6 text-warning" />
               </div>
               <div>
@@ -143,7 +145,7 @@ defmodule ContentForgeWeb.Live.Dashboard.DashboardLive do
         >
           <div class="card-body">
             <div class="flex items-center gap-3">
-              <div class={provider_hub_icon_bg(@provider_summary)}>
+              <div class={provider_hub_icon_bg(@provider_summary)} aria-hidden="true">
                 <.icon name="hero-signal" class={provider_hub_icon_color(@provider_summary)} />
               </div>
               <div>
@@ -155,12 +157,11 @@ defmodule ContentForgeWeb.Live.Dashboard.DashboardLive do
             </div>
           </div>
         </a>
-      </div>
-      
-    <!-- Quick Stats -->
-      <div class="card bg-base-200">
+      </nav>
+
+      <section aria-labelledby="quick-overview-heading" class="card bg-base-200">
         <div class="card-body">
-          <h2 class="card-title">Quick Overview</h2>
+          <h2 id="quick-overview-heading" class="card-title">Quick Overview</h2>
           <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
             <div class="stat">
               <div class="stat-title text-xs">Total Products</div>
@@ -183,8 +184,8 @@ defmodule ContentForgeWeb.Live.Dashboard.DashboardLive do
             Use the navigation cards above to access detailed views
           </p>
         </div>
-      </div>
-    </div>
+      </section>
+    </main>
     """
   end
 end

@@ -82,6 +82,36 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 15.2a: WCAG AA audit on dashboard hub + products list + product detail
+
+Status: READY FOR REVIEW
+Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates; one formatter re-pass on a long `<nav>` attribute list), mix test 609/0 (605 prior + 4 new). Credo by content unchanged vs post-15.3.1: zero new findings.
+Note: WCAG AA audit + fixes on the three entry-surface pages per BUILDPLAN 15.2a.
+
+**Pages touched** (only three, per spec; other dashboard pages are separate follow-ups):
+- `/dashboard` (`Live.Dashboard.DashboardLive`)
+- `/dashboard/products` (`Live.Dashboard.Products.ListLive`)
+- `/dashboard/products/:id` (`Live.Dashboard.Products.DetailLive`)
+
+**Findings fixed inline**:
+
+- No `<main>` landmark on any of the three pages. All three now wrap content in `<main id="main-content" aria-labelledby="page-title">` with the h1 carrying `id="page-title"`. The `id="main-content"` anchor lines up with a future skip-link target once the global nav lands.
+- Hub's nav-card grid was a plain `<div>`. Changed to `<nav aria-label="Dashboard sections">` so the eight cards are a discoverable landmark for screen-reader rotors.
+- Each of the nine icon-backgrounds on the hub cards (Products / Drafts / Schedule / Video / Performance / Clips / SMS / Providers + the dynamic provider indicator) now carries `aria-hidden="true"` on the colored wrapper div so the decorative icon isn't announced — the visible text label inside each `<a>` is already the accessible name.
+- Products list: two `<input>` fields in the Quick Add form used only placeholders (not valid accessible names per WCAG 3.3.2). Wrapped each in a `<label>` with an `sr-only` label-text span AND added an `aria-label`. Same fix to the search input, plus changed its type to `type="search"` for better semantics.
+- Products list: delete button was icon-only with no accessible name. Added `aria-label="Delete product <name>"` (interpolated from the row product) + wrapped the hero icon in `<span aria-hidden="true">`. The inline `onclick="return confirm(...)"` also interpolates the product name now so the confirmation dialog is unambiguous.
+- Products list: "No products found" empty state picked up `role="status"` so assistive tech announces it when the grid clears under search.
+- Product detail: back-arrow link was icon-only with no accessible name. Added `aria-label="Back to products list"` + wrapped the icon in `<span aria-hidden="true">`. Header wrapped in semantic `<header>`.
+- Heading hierarchy checked on all three: exactly one `<h1>` per page, `<h2>` for major sections (Quick Overview, Quick Add, Search, Product list), `<h3>` for per-card product names in the list (linked to the detail page via `<.link>`). No level skips.
+- Individual `<section>` elements on the list page get `aria-labelledby` pointing at their heading; when the heading is visually absent it uses `sr-only`.
+- Product cards on the list page changed from `<div>` to `<article aria-labelledby="product-<id>-name">` so each card is a discoverable region.
+
+**Tests** in `test/content_forge_web/live/dashboard/a11y_landmarks_test.exs` (4 tests, async: false): for each page, assert `count_matches(html, ~r|<h1\b|) == 1`, `count_matches(html, ~r|<main\b|) == 1`, `html =~ "id=\"main-content\""`, `html =~ "aria-labelledby=\"page-title\""`; plus page-specific asserts for load-bearing aria-labels (hub's `aria-label="Dashboard sections"`, list's form input labels, list's dynamic "Delete product <name>" button label, detail's back-link `aria-label="Back to products list"`).
+
+**Not in scope this slice** (documented as follow-up territory): contrast math verification (requires tool or visual review against the daisyUI palette), focus-order smoke on the live tab widget in product detail, the remaining dashboard pages (drafts / schedule / video / performance / clips / sms / providers) are separate follow-up slices.
+
+Touched files: `lib/content_forge_web/live/dashboard/dashboard_live.ex` (main + nav + section landmarks, aria-hidden on decorative icon wrappers), `lib/content_forge_web/live/dashboard/products/list_live.ex` (main + section landmarks, labeled inputs, aria-labeled delete button, role=status empty state, article cards), `lib/content_forge_web/live/dashboard/products/detail_live.ex` (main + header landmark, aria-labeled back-link, icon wrapped in aria-hidden span), `test/content_forge_web/live/dashboard/a11y_landmarks_test.exs` (new), `BUILDLOG.md`.
+
 ### Phase 15.3.1: E2E happy-path integration test
 
 Status: DONE

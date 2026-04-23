@@ -503,21 +503,26 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="space-y-6">
-      <!-- Header -->
-      <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+    <main id="main-content" aria-labelledby="page-title" class="space-y-6">
+      <header class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <div class="flex items-center gap-2">
-            <.link navigate={~p"/dashboard/products"} class="btn btn-ghost btn-sm">
-              <.icon name="hero-arrow-left" class="size-4" />
+            <.link
+              navigate={~p"/dashboard/products"}
+              class="btn btn-ghost btn-sm"
+              aria-label="Back to products list"
+            >
+              <span aria-hidden="true">
+                <.icon name="hero-arrow-left" class="size-4" />
+              </span>
             </.link>
-            <h1 class="text-2xl font-bold">{@product.name}</h1>
+            <h1 id="page-title" class="text-2xl font-bold">{@product.name}</h1>
           </div>
           <p class="text-base-content/70 ml-8">
             Voice: {@product.voice_profile}
           </p>
         </div>
-      </div>
+      </header>
       
     <!-- Tabs -->
       <div role="tablist" class="tabs tabs-boxed">
@@ -1256,7 +1261,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
           </div>
         </div>
       </div>
-    </div>
+    </main>
     """
   end
 

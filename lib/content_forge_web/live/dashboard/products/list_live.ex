@@ -58,62 +58,77 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.ListLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="space-y-6">
-      <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+    <main id="main-content" aria-labelledby="page-title" class="space-y-6">
+      <header class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h1 class="text-2xl font-bold">Products</h1>
+          <h1 id="page-title" class="text-2xl font-bold">Products</h1>
           <p class="text-base-content/70">Manage your content products</p>
         </div>
-      </div>
-      
-    <!-- Quick Add Form -->
-      <div class="card bg-base-200">
+      </header>
+
+      <section aria-labelledby="quick-add-heading" class="card bg-base-200">
         <div class="card-body">
-          <h2 class="card-title text-base">Quick Add Product</h2>
+          <h2 id="quick-add-heading" class="card-title text-base">Quick Add Product</h2>
           <form phx-submit="add_product" class="flex flex-col sm:flex-row gap-4">
-            <input
-              type="text"
-              name="name"
-              placeholder="Product name"
-              class="input input-bordered flex-1"
-              required
-            />
-            <input
-              type="text"
-              name="voice_profile"
-              placeholder="Voice profile (e.g., professional, casual)"
-              class="input input-bordered flex-1"
-              required
-            />
+            <label class="form-control flex-1">
+              <span class="label-text sr-only">Product name</span>
+              <input
+                type="text"
+                name="name"
+                placeholder="Product name"
+                class="input input-bordered w-full"
+                aria-label="Product name"
+                required
+              />
+            </label>
+            <label class="form-control flex-1">
+              <span class="label-text sr-only">Voice profile</span>
+              <input
+                type="text"
+                name="voice_profile"
+                placeholder="Voice profile (e.g., professional, casual)"
+                class="input input-bordered w-full"
+                aria-label="Voice profile"
+                required
+              />
+            </label>
             <button type="submit" class="btn btn-primary">
               Add Product
             </button>
           </form>
         </div>
-      </div>
-      
-    <!-- Search -->
-      <div class="form-control">
-        <input
-          type="text"
-          name="search"
-          placeholder="Search products..."
-          class="input input-bordered w-full"
-          phx-change="search"
-          value={@search}
-        />
-      </div>
-      
-    <!-- Products Grid -->
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        <div
+      </section>
+
+      <section aria-labelledby="search-heading" class="form-control">
+        <h2 id="search-heading" class="sr-only">Search</h2>
+        <label class="block">
+          <span class="label-text sr-only">Search products</span>
+          <input
+            type="search"
+            name="search"
+            placeholder="Search products..."
+            class="input input-bordered w-full"
+            aria-label="Search products"
+            phx-change="search"
+            value={@search}
+          />
+        </label>
+      </section>
+
+      <section
+        aria-labelledby="products-grid-heading"
+        class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
+      >
+        <h2 id="products-grid-heading" class="sr-only">Product list</h2>
+        <article
           :for={product <- filtered_products(@products, @search)}
           class="card bg-base-200 hover:bg-base-300 transition-colors"
+          aria-labelledby={"product-#{product.id}-name"}
         >
           <div class="card-body">
             <div class="flex justify-between items-start">
               <div>
-                <h3 class="font-semibold text-lg">
+                <h3 id={"product-#{product.id}-name"} class="font-semibold text-lg">
                   <.link navigate={~p"/dashboard/products/#{product.id}"} class="hover:underline">
                     {product.name}
                   </.link>
@@ -124,19 +139,26 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.ListLive do
                 phx-click="delete_product"
                 phx-value-id={product.id}
                 class="btn btn-ghost btn-sm btn-circle text-error"
-                onclick="return confirm('Delete this product?')"
+                aria-label={"Delete product #{product.name}"}
+                onclick={"return confirm('Delete " <> product.name <> "?')"}
               >
-                <.icon name="hero-trash" class="size-4" />
+                <span aria-hidden="true">
+                  <.icon name="hero-trash" class="size-4" />
+                </span>
               </button>
             </div>
 
             <div class="flex gap-4 mt-2 text-sm">
               <span class="text-base-content/70">
-                <.icon name="hero-link" class="size-3 inline" />
+                <span aria-hidden="true">
+                  <.icon name="hero-link" class="size-3 inline" />
+                </span>
                 {if product.site_url, do: "Site configured", else: "No site"}
               </span>
               <span class="text-base-content/70">
-                <.icon name="hero-code-bracket" class="size-3 inline" />
+                <span aria-hidden="true">
+                  <.icon name="hero-code-bracket" class="size-3 inline" />
+                </span>
                 {if product.repo_url, do: "Repo configured", else: "No repo"}
               </span>
             </div>
@@ -147,17 +169,20 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.ListLive do
               </.link>
             </div>
           </div>
-        </div>
-      </div>
+        </article>
+      </section>
 
       <div
         :if={length(filtered_products(@products, @search)) == 0}
         class="text-center py-12 text-base-content/70"
+        role="status"
       >
-        <.icon name="hero-folder" class="size-12 mx-auto mb-4 opacity-50" />
+        <span aria-hidden="true">
+          <.icon name="hero-folder" class="size-12 mx-auto mb-4 opacity-50" />
+        </span>
         <p>No products found</p>
       </div>
-    </div>
+    </main>
     """
   end
 end
