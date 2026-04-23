@@ -82,6 +82,33 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 16.4c: schedule_reminder_change
+
+Status: DONE
+Note: Second heavy-write tool. Flips `ReminderConfig` cadence / enabled behind the 16.4a confirmation envelope, with a no-op short-circuit so users never confirm a change that would leave state identical. Reuses `Sms.get_reminder_config/1` and `Sms.upsert_reminder_config/2` verbatim; no schema or migration in this slice.
+
+**Tool** (`lib/content_forge/open_claw_tools/schedule_reminder_change.ex`):
+- `with` chain: resolve product → `Authorization.require(..., :owner)` → validate cadence (integer, 1..30 → `:invalid_cadence`) → validate enabled (boolean only, default true → `:invalid_enabled`). All four guards fire before any DB read, so a malformed or unauthorized request never reaches `ReminderConfig`.
+- `dispatch_turn/5` fetches the current config (via `Sms.get_reminder_config/1` which returns schema defaults when no row exists) and checks `same?/3`. No-op (`cadence_days` + `enabled` both match) short-circuits with `{:ok, %{changed: false, product_id, cadence_days, enabled}}` and never inserts a pending confirmation row. Actual changes branch on `params["confirm"]`: absent goes to `request_turn/6`, present goes to `confirm_turn/6`.
+- `request_turn` builds a diff preview (`%{summary, product_id, before, after}`) and calls `Confirmation.request/4`. The summary uses `describe/2` to render the current + target cadence in English ("off", "daily", "every N days") so the agent can read it back to the user without string interpolation in the prompt.
+- `confirm_turn` pipes `Confirmation.confirm/4` → `Sms.upsert_reminder_config/2`. Success returns `%{changed: true, ..., updated_at}` with the row's `updated_at` as ISO-8601. Changeset errors from the upsert flatten to `:update_failed`.
+
+**Dispatch + plugin + runbook** (`lib/content_forge/open_claw_tools.ex` + `~/.openclaw/plugins/content-forge/index.js` + `docs/openclaw-plugin-runbook.md`):
+- `@tools` grows to ten entries.
+- Node plugin adds `renderScheduleReminderConfirmation` + `renderScheduleReminderResult` helpers that format before/after diffs in the same English-readable cadence form the tool summary uses. The `schedule_reminder_change` execute handler uses `invokeConfirmable` (16.4b infrastructure) and branches on `envelope.status`.
+- Runbook catalogue entry calls out the no-op short-circuit so operators understand confirmation prompts only appear when state would actually change.
+
+**Tests** (12 new):
+- `test/content_forge/open_claw_tools/schedule_reminder_change_test.exs` (10 tests):
+  - Authorization: submitter = `:forbidden` (no pending row created).
+  - Validation: cadence 0 / 31 / non-integer / missing all return `:invalid_cadence`; non-boolean `enabled` returns `:invalid_enabled`.
+  - First turn: change request returns envelope with correct before/after; no-op returns `changed: false` + zero pending rows; omitted `enabled` param compares against the default `true`; uses schema defaults when no config row exists yet.
+  - Second turn: correct confirm persists the change and returns `updated_at`; wrong echo phrase returns `:confirmation_not_found` with no DB change.
+  - Resolution: ambiguous product short-circuits before auth.
+- `test/content_forge_web/controllers/open_claw_tool_controller_test.exs` (2 new): full two-turn HTTP cycle (confirmation_required with before/after preview, then `confirm` flips the row + returns `result.changed: true`), and a single-call no-op that returns `result.changed: false` without ever asking for confirmation.
+
+**Gate**: `mix compile --warnings-as-errors` clean, `mix format --check-formatted` clean, `mix test` 966/0 (12 new), `mix credo --strict` baseline-diff empty for slice-touched files. Zero emdashes in slice-touched files, the plugin, or the runbook.
+
 ### Phase 16.4b: approve_draft (first consumer of the confirmation envelope)
 
 Status: DONE

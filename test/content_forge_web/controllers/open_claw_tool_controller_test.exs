@@ -645,6 +645,95 @@ defmodule ContentForgeWeb.OpenClawToolControllerTest do
     end
   end
 
+  describe "16.4c schedule_reminder_change end-to-end" do
+    alias ContentForge.Operators
+    alias ContentForge.Sms
+    alias ContentForge.Sms.ReminderConfig
+
+    setup do
+      {:ok, product} =
+        Products.create_product(%{name: "NudgeLand", voice_profile: "warm"})
+
+      {:ok, _} =
+        Operators.create_identity(%{
+          product_id: product.id,
+          identity: "cli:nudge-owner",
+          role: "owner"
+        })
+
+      {:ok, _} =
+        Sms.upsert_reminder_config(product.id, %{cadence_days: 7, enabled: true})
+
+      %{product: product}
+    end
+
+    test "two-turn HTTP cycle flips cadence and enabled", %{conn: conn, product: product} do
+      request_body = %{
+        "session_id" => "http-nudge",
+        "channel" => "cli",
+        "sender_identity" => "cli:nudge-owner",
+        "params" => %{"product" => product.id, "cadence_days" => 3, "enabled" => false}
+      }
+
+      first_conn =
+        conn
+        |> put_req_header("x-openclaw-tool-secret", @secret)
+        |> post(~p"/api/v1/openclaw/tools/schedule_reminder_change", request_body)
+
+      assert %{
+               "status" => "confirmation_required",
+               "echo_phrase" => echo,
+               "preview" => %{
+                 "before" => %{"cadence_days" => 7, "enabled" => true},
+                 "after" => %{"cadence_days" => 3, "enabled" => false}
+               }
+             } = json_response(first_conn, 200)
+
+      confirm_body = put_in(request_body, ["params", "confirm"], echo)
+
+      second_conn =
+        conn
+        |> put_req_header("x-openclaw-tool-secret", @secret)
+        |> post(~p"/api/v1/openclaw/tools/schedule_reminder_change", confirm_body)
+
+      assert %{
+               "status" => "ok",
+               "result" => %{
+                 "changed" => true,
+                 "cadence_days" => 3,
+                 "enabled" => false
+               }
+             } = json_response(second_conn, 200)
+
+      assert %ReminderConfig{cadence_days: 3, enabled: false} =
+               ContentForge.Repo.get_by(ReminderConfig, product_id: product.id)
+    end
+
+    test "no-op request returns changed: false in a single HTTP call",
+         %{conn: conn, product: product} do
+      body = %{
+        "session_id" => "http-noop",
+        "channel" => "cli",
+        "sender_identity" => "cli:nudge-owner",
+        "params" => %{"product" => product.id, "cadence_days" => 7, "enabled" => true}
+      }
+
+      conn =
+        conn
+        |> put_req_header("x-openclaw-tool-secret", @secret)
+        |> post(~p"/api/v1/openclaw/tools/schedule_reminder_change", body)
+
+      assert %{
+               "status" => "ok",
+               "result" => %{
+                 "changed" => false,
+                 "cadence_days" => 7,
+                 "enabled" => true
+               }
+             } = json_response(conn, 200)
+    end
+  end
+
   describe "16.4a confirmation_required response" do
     defmodule ConfirmationRequiredStub do
       @moduledoc false
