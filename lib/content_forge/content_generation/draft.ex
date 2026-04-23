@@ -18,6 +18,7 @@ defmodule ContentForge.ContentGeneration.Draft do
 
     belongs_to :product, ContentForge.Products.Product
     belongs_to :content_brief, ContentForge.Products.ContentBrief
+    belongs_to :bundle, ContentForge.ProductAssets.AssetBundle
 
     belongs_to :repurposed_from, ContentForge.ContentGeneration.Draft,
       foreign_key: :repurposed_from_id
@@ -38,6 +39,7 @@ defmodule ContentForge.ContentGeneration.Draft do
     |> cast(attrs, [
       :product_id,
       :content_brief_id,
+      :bundle_id,
       :content,
       :platform,
       :content_type,
