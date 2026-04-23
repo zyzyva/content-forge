@@ -68,7 +68,8 @@ defmodule ContentForge.MixProject do
       {:bandit, "~> 1.5"},
       {:oban, "~> 2.18"},
       {:ex_aws, "~> 2.5"},
-      {:ex_aws_s3, "~> 2.4"}
+      {:ex_aws_s3, "~> 2.4"},
+      {:floki, "~> 0.37"}
     ]
   end
 

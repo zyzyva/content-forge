@@ -1,0 +1,10 @@
+# Project Rules
+
+- Content Forge is the orchestration brain of the zyzyva ecosystem. It plans, drafts, ranks, publishes, monitors, and iterates on content for a stable of products. It does not do heavy media processing or raw AI image generation itself — that is Media Forge's job.
+- Every feature should earn its keep against one question: does this move the needle on paying users or extend runway? Features that make the dashboard prettier without shortening time-to-published-content or improving win rate should be deferred.
+- Content Forge owns: product registry, content ingestion/crawling, brief generation, bulk variant generation, multi-model ranking, video production orchestration, social + blog publishing, performance feedback loop, review API, LiveView dashboard, SEO quality pipeline, product asset management, SMS gateway.
+- Content Forge does NOT own: raw image EXIF/crop/format conversion, video transcoding, platform renditions, AI image generation providers. Those live in Media Forge. If a slice is tempted to re-implement one of those, route it to the Media Forge HTTP client instead.
+- Content Forge does NOT own: legal, billing, CRM, or analytics dashboards for the broader business. Those live elsewhere.
+- When scope creep tempts a feature into "Content Forge will also do X" — if X is processing, route to Media Forge; if X is user-facing CRUD on contacts/companies, route to contacts4us or the ecosystem layer; otherwise push back on the user before building.
+- Keep dependencies on external services explicit. Every Media Forge / OpenClaw / Twilio / Apify / Anthropic / social platform integration should live behind a named module so it is stubbable in tests and swappable in prod.
+- No placeholder / mock data reaches production flows. If a slice cannot wire a real provider, it must be gated by config so the dashboard shows "unavailable" rather than returning synthetic output.

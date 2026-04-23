@@ -22,6 +22,16 @@ defmodule ContentForgeWeb.Router do
     pipe_through :browser
 
     get "/", PageController, :home
+
+    # Dashboard LiveViews
+    live "/dashboard", Live.Dashboard.DashboardLive, :index
+    live "/dashboard/products", Live.Dashboard.Products.ListLive, :index
+    live "/dashboard/products/:id", Live.Dashboard.Products.DetailLive, :show
+    live "/dashboard/drafts", Live.Dashboard.Drafts.ReviewLive, :index
+    live "/dashboard/schedule", Live.Dashboard.Schedule.Live, :index
+    live "/dashboard/video", Live.Dashboard.Video.StatusLive, :index
+    live "/dashboard/performance", Live.Dashboard.Performance.DashboardLive, :index
+    live "/dashboard/clips", Live.Dashboard.Clips.QueueLive, :index
   end
 
   scope "/api/v1", ContentForgeWeb do
@@ -29,6 +39,50 @@ defmodule ContentForgeWeb.Router do
     pipe_through :api_auth
 
     resources "/products", ProductController, only: [:index, :show, :create, :update, :delete]
+
+    scope "/products/:product_id" do
+      resources "/competitors", CompetitorController,
+        only: [:index, :show, :create, :update, :delete]
+
+      # Drafts endpoints
+      resources "/drafts", DraftController, only: [:index, :create]
+
+      # Content generation triggers
+      post "/generate", DraftController, :generate
+      get "/brief", DraftController, :get_brief
+
+      # Competitor intel
+      get "/competitor-intel", CompetitorController, :intel
+
+      # Publishing schedule
+      post "/schedule", ScheduleController, :schedule
+      get "/schedule", ScheduleController, :get_schedule
+
+      # Engagement metrics
+      get "/engagement-metrics", ScheduleController, :get_engagement_metrics
+      post "/engagement-metrics/refresh", ScheduleController, :refresh_engagement_metrics
+
+      # Performance metrics & scoreboard
+      get "/scoreboard", MetricsController, :scoreboard
+      get "/calibration", MetricsController, :calibration
+      get "/metrics", MetricsController, :metrics
+      get "/hot", MetricsController, :hot
+      get "/needs-reply", MetricsController, :needs_reply
+    end
+
+    # Video retention and clip endpoints
+    scope "/videos" do
+      get "/:video_id/retention", MetricsController, :video_retention
+      post "/:video_id/clip", MetricsController, :clip
+    end
+
+    # Individual draft endpoints
+    resources "/drafts", DraftController, only: [:show]
+
+    # Draft actions
+    post "/drafts/:id/approve", DraftController, :approve
+    post "/drafts/:id/reject", DraftController, :reject
+    post "/drafts/:id/score", DraftController, :score
   end
 
   # Other scopes may use custom stacks.

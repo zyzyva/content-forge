@@ -104,15 +104,15 @@ Acceptance criteria:
 **Purpose:** Publish approved short-form posts to Twitter/X, LinkedIn, Reddit, and Facebook/Instagram.
 
 Acceptance criteria:
-- [ ] Twitter/X: Post text (up to 280 chars) with image attachment via Twitter v2 API
-- [ ] LinkedIn: Post text + image to a personal profile or company page via LinkedIn API
-- [ ] Reddit: Submit a text post to a configured subreddit via Reddit API (image optional per subreddit rules)
-- [ ] Facebook/Instagram: Post text + image via Meta Graph API
-- [ ] All social posts include the AI-generated image from Stage 3.5 -- image is required, not optional
-- [ ] Each connector retrieves its OAuth tokens / API keys from 1Password at runtime
-- [ ] A failed publish is retried via Oban (up to 3 attempts) and flagged if all retries fail
-- [ ] Published posts record the platform post ID, timestamp, and link
-- [ ] Post timing optimization: track engagement by hour-of-day and day-of-week per platform per product. The scheduler picks optimal posting windows based on historical performance. Falls back to configured cadence when insufficient data exists (fewer than 20 published posts).
+- [x] Twitter/X: Post text (up to 280 chars) with image attachment via Twitter v2 API
+- [x] LinkedIn: Post text + image to a personal profile or company page via LinkedIn API
+- [x] Reddit: Submit a text post to a configured subreddit via Reddit API (image optional per subreddit rules)
+- [x] Facebook/Instagram: Post text + image via Meta Graph API
+- [x] All social posts include the AI-generated image from Stage 3.5 -- image is required, not optional
+- [x] Each connector retrieves its OAuth tokens / API keys from 1Password at runtime
+- [x] A failed publish is retried via Oban (up to 3 attempts) and flagged if all retries fail
+- [x] Published posts record the platform post ID, timestamp, and link
+- [x] Post timing optimization: track engagement by hour-of-day and day-of-week per platform per product. The scheduler picks optimal posting windows based on historical performance. Falls back to configured cadence when insufficient data exists (fewer than 20 published posts).
 
 ---
 
@@ -230,115 +230,79 @@ Acceptance criteria:
 
 ---
 
-## Implementation Checklist
+### Feature 10: SEO Quality Pipeline (inspired by seo-agi)
 
-### Phase 1: Foundation (items 1a–1c are independent)
+**Purpose:** Add SEO-optimized content generation features including AI Summary Nuggets for LLM citation, quality checklists, and GEO optimization.
 
-- [ ] 1a. Scaffold new Phoenix app `content_forge` with Ecto/PostgreSQL, Oban, and 1Password integration — product registry context
-- [ ] 1b. REST API skeleton: authentication middleware, JSON response helpers, versioned routes
-- [ ] 1c. Cloudflare R2 client module (reuse ExAws.S3 pattern from other apps)
-- [ ] 1d. Product registry CRUD: Ecto schema (including voice_profile text field), context functions, LiveView UI, API endpoints. Generation runs validate voice_profile is present before starting. (depends on 1a, 1b)
-- [ ] 1e. Blog webhook registry: schema + CRUD + HMAC signing util (depends on 1d)
-
-### Phase 2: Content Ingestion + Competitor Intelligence (items 2a–2b, 2d are independent)
-
-- [ ] 2a. Repo cloning + extraction: Oban job that git clones to temp dir, reads README/docs, extracts text up to token limit, stores snapshot in R2
-- [ ] 2b. Site crawler: Oban job that fetches N pages via WebFetch/Playwright, extracts text + screenshots, stores in R2
-- [ ] 2c. Product snapshot schema + storage: link snapshot metadata (timestamp, R2 keys) to product in DB (depends on 2a, 2b)
-- [ ] 2d. Competitor account registry: schema (product_id, platform, handle/URL), CRUD in Products context, API endpoints
-- [ ] 2e. Competitor scraper: Oban job that scrapes recent posts from competitor accounts via Apify, scores by relative engagement, stores raw data (depends on 2d)
-- [ ] 2f. Competitor intel synthesizer: Oban job that takes scraped competitor posts and generates a "competitor intel" summary (trending topics, winning formats, effective hooks) via a smart model. Stored per product with timestamp. (depends on 2e)
-
-### Phase 3: AI Generation Pipeline (3a -> 3b -> 3c -> 3d -> 3e sequential, 3f independent)
-
-- [ ] 3a. Content brief system: brief schema with version history (brief_versions table). On first run, query Claude/Gemini/xAI with snapshot + competitor intel context, synthesize into initial brief. On subsequent runs with performance data, rewrite the brief using scoreboard + calibration + competitor intel instead of appending.
-- [ ] 3b. OpenClaw bulk generation: Oban job calls OpenClaw API with content brief (including performance insights + competitor intel) -> N variants per platform, N blog drafts, N video scripts; store all as draft records with angle/type label
-- [ ] 3c. Multi-model ranking with performance context: Oban job calls each smart model with: the drafts to score, the product's performance scoreboard, and that model's own calibration data (avg predicted vs actual delta). Models score and critique with awareness of what has actually worked. Store per-model scores + critique; compute composite score; promote top N per type to review queue (depends on 3b)
-- [ ] 3d. Script gate: second Oban ranking pass on video scripts only; scripts below threshold are archived; approved scripts enqueue video production jobs (depends on 3c)
-- [ ] 3e. Image generation for social posts: Oban job for each ranked social post. Smart model writes an image prompt from post text + product branding. Image generated via configurable provider (Flux/DALL-E), stored in R2, linked to draft. Required before scheduling. (depends on 3c)
-- [ ] 3f. Winner repurposing engine: Oban job triggered when scoreboard labels a piece as "winner". Generates cross-platform variants (Twitter -> LinkedIn/Reddit/blog, blog -> social + video script). Repurposed drafts enter Stage 3b with repurposed_from link. (depends on Phase 7 scoreboard, runs async)
-
-### Phase 4: Short-form Publishing (4a–4d are independent of each other, depend on Phase 3)
-
-- [ ] 4a. Twitter/X connector: OAuth2 client, post text + image, retry on failure, record post ID
-- [ ] 4b. LinkedIn connector: OAuth2 client, post to profile/page, retry on failure
-- [ ] 4c. Reddit connector: OAuth2 client, submit text post to configured subreddit
-- [ ] 4d. Facebook/Instagram connector: Meta Graph API client, post text + image
-- [ ] 4e. Oban scheduler with timing optimization: per-product, per-platform job that picks next approved draft and calls the right connector. Tracks engagement by hour-of-day and day-of-week per platform per product. Picks optimal posting windows from historical data (requires 20+ published posts, falls back to configured cadence before that). (depends on 4a-4d)
-
-### Phase 5: Blog Publishing (depends on Phase 3)
-
-- [ ] 5a. Blog article R2 storage: write markdown to R2 with stable URL on approval
-- [ ] 5b. Webhook delivery: Oban job that POSTs to each registered endpoint, HMAC-signed, with retry
-- [ ] 5c. Delivery status tracking: record success/failure per endpoint per article
-
-### Phase 6: Video Production (6a–6c are independent, 6d–6f sequential; all depend on Phase 3 script gate)
-
-- [ ] 6a. ElevenLabs voiceover: HTTP client, send script text, receive and store MP3 in R2 keyed to script ID
-- [ ] 6b. Playwright screen recorder: headless browser navigates live site, records walkthrough as video, stores in R2
-- [ ] 6c. HeyGen talking head: API client, submit script + avatar config, poll for completion, store in R2
-- [ ] 6d. Remotion Node.js sidecar: small Node/Bun service that accepts render jobs via HTTP; Elixir sends script + asset URLs, sidecar assembles and returns video URL
-- [ ] 6e. FFmpeg final encode: normalize format, burn in any overlays, produce final MP4 in R2 (depends on 6d)
-- [ ] 6f. YouTube upload: OAuth2 client with encrypted token refresh, upload video with AI-generated title/description/tags/thumbnail, record video ID (depends on 6e)
-- [ ] 6g. Video production Oban workflow: orchestrate all steps, track per-step status in DB, retry on failure, pause + alert after 3 failures (depends on 6a–6f)
-
-### Phase 7: Metrics & Feedback Loop (depends on Phase 4, 5, 6 publishing)
-
-- [ ] 7a. Performance scoreboard schema + context: content_scoreboard table with all fields from spec, winner/loser labeling logic (compare to rolling platform average), context functions for querying by product/platform/angle/date
-- [ ] 7b. Model calibration schema + updater: model_calibration table, Oban job that recalculates avg_score_delta per model per product per platform after each metrics sync
-- [ ] 7c. YouTube Analytics poller: Oban scheduled job pulls views, watch time, retention curve, engagement at 24h/7d/30d after upload; populates scoreboard
-- [ ] 7d. Social metrics poller: per-platform jobs pull likes/shares/impressions/clicks for each published post at same intervals; populates scoreboard
-- [ ] 7d2. Long-tail metrics poller: weekly Oban job re-checks ALL published content (not just recent). Compares current metrics to last recorded values. If engagement changed by more than a configurable threshold (default 20%), updates the scoreboard, re-labels winner/loser status, and flags the content as "resurfaced" so the next brief rewrite notices late bloomers. This catches posts that go viral months later or slowly accumulate SEO traffic over time.
-- [ ] 7e. Retention curve analyzer: detects high-engagement segments (above threshold, above min duration), creates clip suggestions with timestamp range + suggested title
-- [ ] 7f. Clip production job: when a clip is approved, cut the source video using FFmpeg and enqueue for short-form publishing
-- [ ] 7g. Content brief rewrite job: Oban job triggered when 5+ new measured pieces exist since last rewrite. Sends scoreboard + calibration + current brief + snapshot to a smart model. Replaces the current brief with the rewrite, stores old version in brief_versions table.
-- [ ] 7h. Scoreboard and calibration API endpoints: GET /api/products/:id/scoreboard, GET /api/products/:id/calibration
-- [ ] 7i. Engagement spike detector: hourly Oban poller for first 24h after publishing. If a post's engagement in first hour exceeds 3x the product's platform average, flag as "hot". Dashboard shows hot posts prominently. API: GET /api/products/:id/hot
-- [ ] 7j. Comment volume monitor: pull comment counts alongside other metrics. When a post exceeds configurable threshold (default 10 comments), flag as "needs reply" on dashboard. API: GET /api/products/:id/needs-reply. Include direct link to the post on the platform so human can respond immediately.
-- [ ] 7k. Winner repurposing trigger: when scoreboard labels a piece as "winner", enqueue the repurposing engine (Phase 3, item 3f) to generate cross-platform variants automatically
-
-### Phase 8: Dashboard (depends on Phases 1–7)
-
-- [ ] 8a. Products list + detail LiveView
-- [ ] 8b. Draft review queue LiveView (all variants, composite + per-model scores, critiques, approve/reject)
-- [ ] 8c. Script ranking LiveView (video scripts ranked with gate threshold visible)
-- [ ] 8d. Schedule + publishing history LiveView with live metrics inline
-- [ ] 8e. Video pipeline status board LiveView (per-step progress)
-- [ ] 8f. Performance dashboard: trends, retention curves, clip flags, competitor intel comparison
-- [ ] 8g. Clip queue LiveView (approve flagged segments for short-form production)
-- [ ] 8h. Hot posts + needs-reply queue LiveView (engagement spikes, high-comment posts with direct platform links)
-- [ ] 8i. Competitor intel LiveView (trending topics, top competitor content, side-by-side with your performance)
-- [ ] 8j. Mobile responsiveness + accessibility pass
+Acceptance criteria:
+- [ ] AI Summary Nugget: Every generated content (blog posts, social posts) includes a 200-character fact-dense block at the top designed for LLM citation (Perplexity, ChatGPT, Gemini)
+- [ ] 28-Point Quality Checklist: Generated content is validated against a checklist including: information gain over top 10 Google results, core answer in first 150 words, fast-scan summary in first 200 words, JSON-LD schema matching page type, FAQ section with PAA questions, single H1 tag, title tag <60 chars, meta description <155 chars
+- [ ] Original Research Block: Option to include a data experiment or first-hand observation section for E-E-A-T (Experience) signals
+- [ ] Geo/LLM Optimization: Content includes entity-rich writing, RAG targeting for zero-volume long-tail queries, FAQ patterns optimized for AI citation
+- [ ] Recursive Fact-Checking: Claims in generated content are validated against 2+ sources for entity consensus (optional, can be toggled per product)
+- [ ] Quality Score Display: Each draft shows its quality checklist score (X/28) in the dashboard and API
+- [ ] "Not For You" Block: Generated content includes an optional honest section telling readers when the product/service is a bad fit (trust signal)
 
 ---
 
-## Parallelization Notes
+### Feature 11: Product Asset Management
 
-- Phase 1 items 1a, 1b, 1c can be built simultaneously by separate agents
-- Phase 2 items 2a, 2b, and 2d (repo ingestion, site crawler, competitor registry) are fully independent
-- Phase 3 item 3e (image generation) and 3f (winner repurposing) are independent of each other
-- Phase 4 items 4a-4d (social connectors) are all independent -- one agent per connector
-- Phase 6 items 6a, 6b, 6c (voiceover, screen recording, talking head) are independent until assembly
-- Phase 7 items 7c and 7d (YouTube vs social metrics) are independent; 7i and 7j (spike detector, comment monitor) are independent
-- Phase 8 LiveView pages can all be built in parallel once data layers exist
+**Purpose:** Allow human-provided media (photos and videos from clients) to be uploaded, organized per product, and used as the foundation for content generation. Today Content Forge assumes AI generates images from scratch. In reality, the most valuable content for many products (contractors, restaurants, retail, real estate, events) is built around real photos of real work — before/after shots, finished jobs, satisfied customers, event highlights. This feature makes the human-provided media the starring input to the content pipeline, with AI writing the surrounding copy instead of fabricating visuals.
+
+**Why this matters for agencies:** A marketing agency managing multiple client brands needs a place to store each client's media separately, kept organized, and made available to the content generation pipeline. Without this, agencies have to manually attach images to every draft in every platform, which defeats the point of automation.
+
+Acceptance criteria:
+- [ ] ProductAsset schema: belongs to a product, stores a storage key (Bunny Storage or R2), media type (image or video), original filename, MIME type, file size, duration for videos, width, height, upload timestamp, uploader identity, an array of tags, a free-form description, and a status indicating whether the asset has been processed and is ready to use
+- [ ] Support for image formats (JPEG, PNG, WebP, HEIC) and video formats (MP4, MOV, M4V, and other common phone-recorded formats)
+- [ ] Storage backend is configurable per deployment: either Cloudflare R2 or Bunny Storage
+- [ ] Presigned upload URL generation so the client's browser or phone uploads directly to storage, not through the Phoenix application — this avoids piping large files through the web server
+- [ ] Image processing on ingestion: basic validation of dimensions and file size, automatic rotation from EXIF orientation data, generation of a smaller preview thumbnail stored alongside the original
+- [ ] Video processing on ingestion: the asset is handed off to the external video processing service (see Video Service spec in its own repository) for probing, format normalization, and generation of standard renditions. The video service returns metadata and storage keys for the rendered outputs, which are recorded as related assets linked to the original
+- [ ] Platform rendition strategy: videos may have multiple renditions stored (horizontal landscape for feed posts, vertical for stories/reels, trimmed short-form versions for TikTok and Reels). Images may have crop variants for platforms that strongly prefer specific aspect ratios
+- [ ] Asset library UI on the product detail page: browsable grid or list of assets with thumbnails, filter by tag and media type, search by description, sortable by upload date
+- [ ] Assets can be tagged with multiple labels (for example "kitchen remodel", "before", "after", "exterior") — tags are free-form per product with autocomplete from previously used tags
+- [ ] Asset deletion: soft delete with a grace period, then hard delete of the underlying storage objects. Deleting an asset that is referenced by a published draft flags the publication for awareness rather than silently breaking
+- [ ] Asset bundles: related assets can be grouped into a named job or event bundle. A bundle has its own context text describing what the collection represents ("Johnson family kitchen remodel, 3 weeks, quartz counters, custom cabinets"). Content generation can target an entire bundle rather than individual assets, producing coordinated multi-platform campaigns around a single job
+- [ ] Draft generation from assets: a new job type that takes a set of asset IDs (or a bundle ID) plus optional context text, and produces drafts across all enabled platforms for the product, where each draft is associated with the appropriate asset as its featured media
+- [ ] Draft schema extended: drafts can reference one or more ProductAssets through a many-to-many association, and the publisher knows to attach the matching asset URL when it calls each platform's publishing API
+- [ ] Platform-asset compatibility: when generating drafts, the system prefers assets that match each platform's ideal format (vertical video for Reels/Shorts/TikTok, horizontal for YouTube/LinkedIn, images for Twitter if no fitting video exists). If no compatible asset exists for a platform, the draft for that platform is either skipped with a note, or falls back to image-only using whatever photo is available
+- [ ] REST API: endpoints to initiate an upload and receive a presigned URL, list assets for a product with filters, get a single asset by ID, update asset tags and description, delete an asset, list bundles, create a bundle, add or remove assets from a bundle, and trigger generation from an asset or bundle
+- [ ] Dashboard workflow: from a product detail page, the agency user can click "upload media", drag files (or use a mobile file picker), see upload progress, add tags and context, and then click "generate posts" to kick off drafts. The review queue then shows the drafts with their associated media visible inline
+- [ ] Asset usage tracking: each asset records which drafts reference it, which drafts have been approved, and which have been published. This creates an attribution trail from a single photo to the posts it spawned
+- [ ] Quota and storage cost tracking: per-product storage usage is tracked so an agency can see how much each client's media consumes and make informed decisions about retention policies
 
 ---
 
-## Out of Scope
+### Feature 12: SMS Gateway and Conversational Bot
 
-- Native mobile apps — web-only (mobile-responsive LiveView)
-- TikTok — API is restricted; add later if access becomes available
-- Paid ad management — this is organic content only
-- Comment monitoring / social listening — publish-only for now
-- Multi-user / team accounts — solo founder only at launch
-- Billing / subscriptions — internal tool, no paywall
+**Purpose:** Enable phone-based media submission and ongoing conversational interaction with Content Forge so that clients can text photos, videos, and context directly to their marketing assistant instead of using a web form. The bot receives inbound messages, has conversations with authorized senders, requests additional information when needed, collects media via upload links, confirms when drafts are ready for review, sends reminders when a client has gone quiet, and escalates to human staff when it cannot handle a request confidently.
 
----
+**Why this matters:** Most of the valuable media agencies want (finished jobs, before/after photos, event moments) is captured on a phone by a non-technical person who has no interest in logging into a dashboard. The difference between "marketing system that works" and "marketing system that gets ignored" is whether that person can just text a photo and have everything else handled for them. SMS is the universal interface that every phone supports, and a conversational bot is the minimum viable experience.
 
-## Architecture Decisions
+Acceptance criteria:
+- [ ] Twilio integration: an inbound webhook endpoint receives SMS and MMS messages, and an outbound wrapper service sends replies via Twilio's messaging API. Credentials are loaded from environment variables or 1Password
+- [ ] ProductPhone schema: associates phone numbers with products. Multiple phone numbers can be associated with a single product (the business owner, a project manager, a spouse, etc.). Each phone number has a role (owner, submitter, viewer), a display label, and an active flag
+- [ ] Whitelist enforcement: when an inbound SMS arrives, the sender's phone number is looked up against ProductPhone. If the number is not found or is inactive, the message is rejected with a polite reply such as "This number isn't recognized. Please contact your agency to get set up." All rejected attempts are logged for agency review
+- [ ] Whitelist promotion: when an unauthorized number attempts contact, the agency user sees the attempt in a dashboard view and can approve it by assigning it to an existing product with a chosen role, which adds it to the whitelist
+- [ ] Role-based permissions: owners can approve publications and change product settings via SMS commands, submitters can send media and context but cannot approve, and viewers can ask status questions but cannot trigger actions
+- [ ] SmsEvent audit log: every inbound and outbound message is recorded with the phone number, direction, product association if any, message body, media URLs if present, the agent response if any, a status code, and a timestamp. This log is the source of truth for troubleshooting, compliance, and usage reporting
+- [ ] Conversation session tracking: a ConversationSession per product tracks the active conversation context, last message timestamp, and current flow state (such as waiting for upload, waiting for context, status query, or idle). Sessions expire after a period of inactivity and a new session starts on the next message
+- [ ] OpenClaw integration: Content Forge forwards inbound messages to a configured OpenClaw endpoint or internal agent runtime, passing the product identity, sender identity, message content, attached media URLs, conversation history, and available tools. OpenClaw returns either a text response to send via SMS or a structured tool call for Content Forge to execute on its behalf
+- [ ] Bot tool surface: the OpenClaw agent has access to a specific set of tools, including sending a reply via SMS, creating a one-time upload link for media submission, listing recently uploaded assets for the product, creating a new asset bundle with a given name, triggering draft generation from an asset or bundle, checking the status of a draft, checking the schedule of upcoming posts, escalating a message to a human staff member, scheduling a follow-up reminder, and recording conversational notes into the product's memory
+- [ ] Upload link flow: when the bot calls the create upload link tool, Content Forge generates a unique short-lived URL pointing to a mobile-optimized upload page. The URL is sent via SMS reply. When the client opens the link, they see a simple page with a file picker, a text field for notes, and an upload button. Files upload directly to storage via presigned URLs. On successful upload the assets are created and associated with the product and with the current conversation session
+- [ ] Mobile upload page: works on iOS and Android browsers, opens the camera roll or camera directly via standard file input, shows upload progress for each file, handles multiple files at once, and gracefully handles interruptions (tab closed, connection lost) by allowing resume
+- [ ] Proactive reminder system: a scheduled Oban job runs hourly and checks every active product with reminders enabled. For each product where the time since the last inbound message exceeds the configured reminder cadence, the job triggers OpenClaw with a "craft a reminder message" instruction. The agent writes a personalized reminder using the product's brand voice and any recent context, and the message is sent via SMS
+- [ ] Smart reminder scheduling: reminders only send during business hours for the product's configured timezone, respect weekends and major holidays by default (configurable per product), and adapt their cadence based on historical response patterns. If a client typically responds within 3 days of being reminded, future reminders schedule at 3-day intervals. If responses take longer, the cadence relaxes
+- [ ] Reminder backoff and escalation: after a configurable number of consecutive ignored reminders (default 2), the tone shifts from friendly nudge to "checking in, everything okay?". After a further threshold (default 4 total ignored reminders), the system stops sending reminders and notifies agency staff that the client has gone dormant and may need a human call
+- [ ] Reminder opt-out: every reminder includes instructions to reply STOP to pause reminders. A STOP reply pauses reminders for the default period (one week) and records the opt-out event. The next reminder after the pause period resumes the normal cycle
+- [ ] Per-product phone numbers (optional): the agency can optionally provision a dedicated Twilio phone number for each client, so each client saves a unique "marketing assistant" number in their contacts. Content Forge tracks the provisioned number per product and routes inbound messages to the correct product based on which number received them
+- [ ] Rate limiting: outbound SMS per conversation is capped at a configurable number per day to prevent runaway costs if a conversation goes wrong. Exceeding the limit triggers an escalation to agency staff rather than silently dropping messages
+- [ ] Status query handling: the bot can answer questions like "when does my Facebook post go out?", "is the Johnson kitchen post ready?", "how did last week's posts do?" by calling the appropriate tools and reporting factual results. The bot must always verify status via tool calls before making factual claims — it cannot invent schedules or engagement numbers
+- [ ] Simple edit requests: the bot can handle basic edit requests like "make the LinkedIn one more formal" or "change the caption to mention the 2-week timeline" by regenerating the specific draft variant with modified instructions. More complex changes escalate to human staff
+- [ ] Escalation to human staff: when the bot cannot confidently handle a request — either because the request is outside its tool surface, involves pricing or contract questions, involves a complaint, or involves any ambiguity about client intent — it responds with a polite holding message and creates an internal notification for agency staff. Notification channels include Slack, email, or a flagged entry in the Content Forge dashboard (whichever the agency has configured)
+- [ ] TCPA compliance logging: each phone number whitelist entry records an opt-in timestamp and an opt-in source (such as "verbal during onboarding call", "filled form", "replied YES to confirmation"). The agency can export the opt-in log for any client on request
+- [ ] Initial opt-in flow: when a new phone number is added to a product whitelist, the first outbound message from Content Forge explicitly asks for confirmation: "Hi, this is [agency]'s marketing assistant for [brand]. Reply YES to confirm you'd like to receive messages from us, or STOP to opt out." No further outbound messages are sent until a YES is received
+- [ ] Conversation memory: the bot writes useful context from conversations into the product's Memory-Wiki automatically — client preferences, patterns, seasonal business cycles, notable past jobs. This makes future conversations smarter. Sensitive content (complaints, pricing discussions) is flagged and not auto-written
+- [ ] REST API for dashboard control: endpoints to list phones associated with a product, add or remove a phone from the whitelist, view the conversation history for a phone or product, manually send an outbound message, pause reminders for a product, and export the opt-in log for compliance purposes
+- [ ] Cost tracking: per-product SMS volume (inbound and outbound) is tracked and surfaced in the dashboard so agencies can see what each client is costing them in messaging fees
 
-- **Remotion runtime:** Node.js sidecar service running alongside the Elixir app. Elixir sends render jobs via HTTP. Simple, runs on existing servers.
-- **YouTube OAuth tokens:** Encrypted in PostgreSQL. App handles token refresh automatically. Consistent with needing autonomous operation.
-- **Reddit config:** Default subreddits stored per product in the publishing target config. AI can suggest a different subreddit per draft at generation time.
-- **Blog webhook payload (minimal):** POST body contains `r2_url`, `title`, `slug`, `published_at`, `product_slug`, `tags[]`, `seo_description`. Receiver fetches markdown from R2 using the URL. No full content inline.
-- **HeyGen:** Avatar and voice selection will be configurable per product. Evaluate cost per render before enabling by default — gate behind a feature flag.

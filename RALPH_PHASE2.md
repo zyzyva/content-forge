@@ -13,12 +13,19 @@ Steps each iteration:
 4) Run mix compile --warnings-as-errors && mix format && mix test. All must pass.
 5) Commit with a descriptive message and push.
 6) Check off the item in CONTENT_FORGE_SPEC.md.
-7) When ALL Phase 2 items (2a-2f) are checked off, run the REVIEW STEP below.
-8) If the review passes with no critical issues, output the completion promise.
-9) If the review finds issues, fix them, re-run tests, commit, and re-run the review.
+7) Log progress to Lead Intelligence: call the log_plan_result MCP tool with plan_id 13 and a note like "Completed 2a: repo cloner job" (use the actual item and a brief description).
+8) When ALL Phase 2 items (2a-2f) are checked off, run the REVIEW STEP below.
+9) If the review passes with no critical issues, do the COMPLETION STEP.
+10) If the review finds issues, fix them, re-run tests, commit, and re-run the review.
 
 REVIEW STEP:
-bash pty:true timeout:300 workdir:~/projects/content-forge command:"claude -p 'Review Phase 2 of ContentForge. Read CONTENT_FORGE_SPEC.md Phase 2 requirements. Review all new code added for Phase 2 (git diff main..HEAD or review lib/content_forge/ingestion/, lib/content_forge/competitors/, and related files). Check: 1) Every Phase 2 acceptance criterion is implemented and tested. 2) Repo cloning handles errors gracefully (missing repos, auth failures, huge repos). 3) Site crawler respects configurable page limits and handles broken pages. 4) Competitor scraper uses Apify correctly with rate limiting. 5) Competitor intel synthesizer calls a smart model and stores results properly. 6) Snapshots are stored in R2 with correct metadata. 7) All Oban jobs have retry logic. 8) Tests are thorough, not placeholders. Report CRITICAL or MINOR issues. End with REVIEW_PASSED if no critical issues.' --permission-mode bypassPermissions --output-format text"
+bash pty:true timeout:300 workdir:~/projects/content-forge command:"claude --model claude-opus-4-6 --effort high -p 'Review Phase 2 of ContentForge. Read CONTENT_FORGE_SPEC.md Phase 2 requirements. Review all new code added for Phase 2 (git diff main..HEAD or review lib/content_forge/ingestion/, lib/content_forge/competitors/, and related files). Check: 1) Every Phase 2 acceptance criterion is implemented and tested. 2) Repo cloning handles errors gracefully (missing repos, auth failures, huge repos). 3) Site crawler respects configurable page limits and handles broken pages. 4) Competitor scraper uses Apify correctly with rate limiting. 5) Competitor intel synthesizer calls a smart model and stores results properly. 6) Snapshots are stored in R2 with correct metadata. 7) All Oban jobs have retry logic. 8) Tests are thorough, not placeholders. Report CRITICAL or MINOR issues. End with REVIEW_PASSED if no critical issues.' --permission-mode auto --output-format text"
+
+COMPLETION STEP (only after REVIEW_PASSED):
+1) Call the complete_plan_step MCP tool with plan_id 13 and step text "Phase 2: Content Ingestion + Competitor Intelligence (2a repo cloner, 2b site crawler, 2c snapshots, 2d competitor accounts, 2e competitor scraper, 2f intel synthesizer)".
+2) Call the log_plan_result MCP tool with plan_id 13 and message "Phase 2 complete. All items 2a-2f implemented, tested, reviewed. REVIEW_PASSED."
+3) Run: bash command:"openclaw message send --target telegram --message 'ContentForge Phase 2 complete. Ingestion and competitor intelligence done. Ready for Phase 3.'"
+4) Output the completion promise.
 
 Details per item:
 - 2a: Oban job that git clones a repo URL to a temp dir, reads README, docs/, CHANGELOG, key source files (lib/, src/). Extracts text up to configurable token limit. Stores as a product snapshot in R2. Cleans up temp dir. Tests with mocked git clone.
