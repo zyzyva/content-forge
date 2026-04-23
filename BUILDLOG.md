@@ -82,6 +82,60 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 16.1: OpenClaw plugin scaffold + tool-execution HTTP surface
+
+Status: DONE
+Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `95b3987`. Gate: compile --warnings-as-errors clean, format clean (ran LAST), full test 790/0 (7 new), credo baseline-diff empty + per-touched-file clean.
+
+Note: First slice of Phase 16 (OpenClaw Tool Surface / ecosystem unlock). Ships the full loop: Node plugin → HTTP controller → tool dispatch module → reusable 13.1b presign infrastructure. Makes Content Forge invokable from any OpenClaw-connected channel (SMS via 14.2c, CLI, future Telegram, etc.) without per-channel code.
+
+**Node plugin** (`~/.openclaw/plugins/content-forge/`, lives outside the repo):
+- `openclaw.plugin.json` - id `content-forge`, config schema requires `toolSecret`, optional `baseUrl` (default `http://localhost:4000/api/v1/openclaw`).
+- `package.json` - `type: "module"`, `main: "index.js"`.
+- `index.js` - default-exported `register(api)` function. Declares `create_upload_link` tool with a JSON Schema for `product` (required) + `filename` / `content_type` / `expires_in_seconds` (optional). Each `execute` proxies via `fetch` to `POST <baseUrl>/tools/<tool_name>` with `X-OpenClaw-Tool-Secret` header, 15s AbortController timeout. Renders the result as markdown for the agent reply (`Upload link for **<product>** (expires ...): <url>`).
+
+**Auth plug** (`lib/content_forge_web/plugs/open_claw_tool_auth.ex`):
+- Constant-time compare (`Plug.Crypto.secure_compare/2`) between the `X-OpenClaw-Tool-Secret` header and `Application.get_env(:content_forge, :open_claw_tool_secret)`.
+- Fails closed: missing config, missing header, or mismatch all return 401. Error body deliberately bland so probing can't distinguish states.
+
+**Controller** (`lib/content_forge_web/controllers/open_claw_tool_controller.ex`):
+- Route `POST /api/v1/openclaw/tools/:tool_name` under a new `:open_claw_tool_auth` pipeline (accepts JSON + the new auth plug + the existing query-count plug for observability).
+- Thin controller: builds invocation `ctx` from body (`session_id`, `channel`, `sender_identity`), delegates to `OpenClawTools.dispatch(tool_name, ctx, params)`, serializes result. Response shapes: 200 `{"status": "ok", "result": ...}`, 404 `{"status": "error", "error": "unknown_tool"}`, 422 `{"status": "error", "error": <reason>}`.
+- `DateTime` values in result maps auto-serialize to ISO8601 via `serialize_value/1`.
+
+**Dispatch module** (`lib/content_forge/open_claw_tools.ex`):
+- Central `@tools` map of name → module. Phase 16.1 ships one entry: `"create_upload_link" => CreateUploadLink`.
+- `dispatch/3` pattern-matches tool_name, delegates to `module.call(ctx, params)`. Unknown name returns `{:error, :unknown_tool}`.
+
+**First tool** (`lib/content_forge/open_claw_tools/create_upload_link.ex`):
+- Resolves `product` param by trying `Products.get_product/1` first (UUID path), catching `Ecto.Query.CastError`, then falling back to case-insensitive substring match on `Products.list_products/0` names. Single match returns `{:ok, product}`; zero matches `{:error, :product_not_found}`; multiple `{:error, :ambiguous_product}`.
+- Reuses the exact same `build_storage_key/2` + `sanitize_filename/1` + `presign_put/3` chain the 13.1b `ProductAssetController` already uses, so the URL format + storage-key layout stay identical between the operator-dashboard path and the agent-tool path. No divergence.
+- Defaults: `filename: "upload.bin"`, `content_type: "application/octet-stream"`, `expires_in_seconds: 900`.
+- Storage adapter is pluggable via `:asset_storage_impl` config key (same seam the existing controller + LiveView paths use), so tests stub with a trivial `presigned_put_url/3` module.
+
+**Tests** (`test/content_forge_web/controllers/open_claw_tool_controller_test.exs`, 7 tests):
+- Auth: 401 on missing header, 401 on wrong secret, 401 when server-side secret is unset (all three code paths through the plug).
+- Dispatch happy path: seeds a product named "Acme Widgets Inc", POSTs with `"product" => "Acme"` (substring match), asserts the response contains `url`, `storage_key` starting with `products/<product.id>/assets/`, correct `product_id`, `product_name`, `expires_in_seconds: 900`.
+- 404 on unknown tool name.
+- 422 on `:product_not_found` (classified error reaches the client as a readable string).
+- 422 on `:ambiguous_product` (two products whose names both contain "Ambiguous").
+
+**Runbook** (`docs/openclaw-plugin-runbook.md`, new):
+- Step-by-step operator guide: generate shared secret, set on both Content Forge and plugin sides, restart OpenClaw gateway, verify tool registration via `curl localhost:18789/v1/tools`, run `openclaw agent --message "create me an upload link for Acme"` end-to-end.
+- Troubleshooting section covers 401 (secret mismatch), tool-not-listed (plugin dir / gateway cache), `ambiguous_product` / `product_not_found`.
+- Documents the "future tools ship pattern" so 16.2+ slices only need to drop a new `<name>.ex` module + add the entry to the `@tools` map + register in `index.js`.
+
+**What was explicitly NOT changed** (kept out of scope):
+- No plugin-shape ExUnit test. The Node plugin's structural correctness is verified by the OpenClaw gateway loading it at startup; wiring a Node-runtime ExUnit harness for this would be substantial infra for marginal gain. The plugin is small and the runbook covers the live-verification procedure.
+- No TTL / rotation on the tool secret. Single-static-secret today; 16.x can add per-tenant or time-windowed secrets if needed.
+- No rate limiting on the tool endpoint. The plug is fail-closed and the secret is long; DoS-from-compromised-secret is a later slice.
+- No audit log per tool invocation. That's Phase 16.5.
+- No role-based auth on the tool itself - the secret gate is all Phase 16.1 has. 16.3 adds the role framework.
+- No second tool. 16.2 is the read-only tool pack; this slice intentionally stops at `create_upload_link` so the end-to-end loop ships first, then the tool catalogue expands.
+- The plugin files live outside the repo at `~/.openclaw/plugins/content-forge/`. They are duplicated nowhere - the runbook is the single source of truth for recreating them on a new machine.
+
+**Gate**: compile --warnings-as-errors clean, format clean (ran LAST after credo + test cycles), full test 790/0 (7 new in `open_claw_tool_controller_test.exs`), credo --strict baseline-diff empty + per-touched-file clean. Rebased cleanly on master @ `95b3987`.
+
 ### Phase 14.2c-H: Agent gateway hardening
 
 Status: DONE

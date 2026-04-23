@@ -19,6 +19,12 @@ defmodule ContentForgeWeb.Router do
     plug ContentForgeWeb.Plugs.ApiAuth
   end
 
+  pipeline :open_claw_tool_auth do
+    plug :accepts, ["json"]
+    plug ContentForgeWeb.Plugs.QueryCountHeader
+    plug ContentForgeWeb.Plugs.OpenClawToolAuth
+  end
+
   pipeline :media_forge_webhook do
     plug :accepts, ["json"]
     plug ContentForgeWeb.Plugs.MediaForgeWebhookVerifier
@@ -111,6 +117,12 @@ defmodule ContentForgeWeb.Router do
     post "/drafts/:id/approve_override", DraftController, :approve_override
     post "/drafts/:id/reject", DraftController, :reject
     post "/drafts/:id/score", DraftController, :score
+  end
+
+  scope "/api/v1/openclaw", ContentForgeWeb do
+    pipe_through :open_claw_tool_auth
+
+    post "/tools/:tool_name", OpenClawToolController, :invoke
   end
 
   # Other scopes may use custom stacks.

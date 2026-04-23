@@ -1,0 +1,64 @@
+defmodule ContentForge.OpenClawTools do
+  @moduledoc """
+  Dispatch entry point for OpenClaw agent tool invocations.
+
+  The OpenClaw gateway registers Content Forge tools via the Node
+  plugin at `~/.openclaw/plugins/content-forge/index.js`. When
+  the agent calls a tool, the plugin POSTs to
+  `/api/v1/openclaw/tools/:tool_name`. The controller
+  (`ContentForgeWeb.OpenClawToolController`) authenticates via
+  the `X-OpenClaw-Tool-Secret` header and delegates to this
+  module's `dispatch/3`.
+
+  Each tool is its own module under
+  `ContentForge.OpenClawTools.<Name>` implementing a single
+  `call/2` callback:
+
+      @callback call(ctx :: map(), params :: map()) ::
+                  {:ok, map()} | {:error, term()}
+
+  The `ctx` map carries invocation metadata from OpenClaw:
+  `:session_id`, `:channel` (`"sms" | "cli" | ...`), and
+  `:sender_identity` (phone number, operator id, etc.).
+
+  Phase 16.1 ships the first tool: `create_upload_link`. The
+  16.2+ slices add read-only tools, light writes, heavy writes
+  with confirmation, escalation, and full audit surfacing.
+  """
+
+  alias ContentForge.OpenClawTools.CreateUploadLink
+
+  @type ctx :: %{
+          optional(:session_id) => String.t(),
+          optional(:channel) => String.t(),
+          optional(:sender_identity) => String.t()
+        }
+
+  @type result :: {:ok, map()} | {:error, :unknown_tool | term()}
+
+  @tools %{
+    "create_upload_link" => CreateUploadLink
+  }
+
+  @doc """
+  Returns the set of registered tool names. Useful for tests
+  and for the Node plugin (if it ever wants to self-introspect
+  the available tools via a meta endpoint).
+  """
+  @spec registered_tools() :: [String.t()]
+  def registered_tools, do: Map.keys(@tools)
+
+  @doc """
+  Dispatches a tool invocation to the matching module.
+
+  Returns `{:error, :unknown_tool}` for unregistered tool names
+  so the controller can respond 404.
+  """
+  @spec dispatch(String.t(), ctx(), map()) :: result()
+  def dispatch(tool_name, ctx, params) when is_binary(tool_name) and is_map(params) do
+    case Map.fetch(@tools, tool_name) do
+      {:ok, module} -> module.call(ctx, params)
+      :error -> {:error, :unknown_tool}
+    end
+  end
+end
