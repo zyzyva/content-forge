@@ -637,7 +637,7 @@ Phase exit criteria: a marketer can text a photo in, get it tagged into a produc
     - Schema: inclusion validation on role, required-field checks, partial-unique on `(product_id, identity) WHERE active`, `lookup_active_identity` excludes inactive rows.
   - No tools change in this slice. The helper is plumbing. 16.3b is the first consumer.
 
-- **16.3b CreateUploadLink hardening (first consumer of the helper)** *(DONE - see `BUILDLOG.md` Phase 16.3b)*
+- **16.3b CreateUploadLink hardening (first consumer of the helper)** ✅ Shipped `7a269fc`.
   - Blocks: none. Blocked by: 16.3a.
   - Apply the authorization helper to `create_upload_link`: the tool now requires `:submitter` before presigning. This closes the forward-looking gap the 16.1 reviewer flagged: agent-authorized callers can no longer presign upload URLs without an explicit role on the caller.
   - Extract a shared `ContentForge.ProductAssets.AcceptedContentTypes` module listing the image + video MIME types `ProductAssetController` already enforces (image/jpeg, image/png, image/webp, image/heic, video/mp4, video/quicktime, video/x-m4v). The 13.1b controller and the tool path both import the list; zero divergence. The tool returns `:unsupported_content_type` when the requested content-type is not on the list.
