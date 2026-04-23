@@ -18,6 +18,24 @@
 - Every handoff must include: commit hash, branch name, what changed, what was verified (which commands passed).
 - Use `swarmtools/notify-agent.sh` for all handoffs.
 
+### Handoff brevity
+
+Handoff messages are facts only. Keep them under ~6 lines. Required shape:
+
+1. Slice identifier and one-line delta ("Phase 10.1: ContentForge.MediaForge shipped, 12 tests.").
+2. Commit hash + branch name.
+3. One-line verification summary ("gate: compile/format/test/credo-baseline all green").
+4. Any blocker or follow-up the receiver must know (optional).
+
+Do not:
+
+- Re-paste commit messages, diffs, spec excerpts, or code snippets. The receiver reads git, `CONTENT_FORGE_SPEC.md`, and `BUILDPLAN.md` themselves.
+- Narrate your reasoning, planning steps, or summaries of what you considered. If the reasoning matters for future slices, commit it to `BUILDLOG.md`; otherwise drop it.
+- List checklist items the receiver will re-verify anyway (they run their own gate).
+- Preface with pleasantries, acknowledgments, or "Standing by" padding.
+
+The receiver does not need context you already wrote down elsewhere. Assume they will read `git log`, `BUILDLOG.md`, and the spec before doing anything.
+
 ## Commits
 
 - Commit frequently with small atomic commits as work progresses.
