@@ -1,5 +1,26 @@
 defmodule ContentForge.Jobs.SiteCrawlerTest do
-  use ExUnit.Case, async: true
+  use ContentForge.DataCase, async: false
+
+  use Oban.Testing, repo: ContentForge.Repo
+
+  import ExUnit.CaptureLog
+
+  alias ContentForge.Jobs.SiteCrawler
+
+  describe "perform/1 entry guards" do
+    test "returns {:error, :not_found} when product does not exist" do
+      log =
+        capture_log(fn ->
+          assert {:error, :not_found} =
+                   perform_job(SiteCrawler, %{
+                     "product_id" => Ecto.UUID.generate(),
+                     "site_url" => "https://example.com"
+                   })
+        end)
+
+      assert log =~ "Site crawl failed"
+    end
+  end
 
   describe "extract_links/2 logic (via Floki)" do
     test "resolves relative href to absolute URL using base URI" do

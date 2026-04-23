@@ -157,7 +157,11 @@ defmodule ContentForge.Publishing.Facebook do
   @spec fetch_metrics(String.t(), map()) :: {:ok, map()} | {:error, String.t()}
   def fetch_metrics(post_id, %{facebook_access_token: token} = _credentials) do
     url = "#{@base_url}/#{post_id}"
-    params = [access_token: token, fields: "reactions.summary(true),comments.summary(true),shares"]
+
+    params = [
+      access_token: token,
+      fields: "reactions.summary(true),comments.summary(true),shares"
+    ]
 
     case Req.get(url, params: params) do
       {:ok, %{status: status, body: body}} when status in 200..299 ->
@@ -185,10 +189,11 @@ defmodule ContentForge.Publishing.Facebook do
 
     case Req.get(url, params: params) do
       {:ok, %{status: status, body: body}} when status in 200..299 ->
-        {:ok, %{
-          "likes" => body["like_count"] || 0,
-          "comments" => body["comments_count"] || 0
-        }}
+        {:ok,
+         %{
+           "likes" => body["like_count"] || 0,
+           "comments" => body["comments_count"] || 0
+         }}
 
       {:ok, %{status: status, body: body}} ->
         Logger.error("Instagram metrics error #{status}: #{inspect(body)}")

@@ -79,14 +79,22 @@ defmodule ContentForge.Jobs.MetricsPoller do
         case fetch_and_update_engagement(post, product) do
           {:ok, updated_post} ->
             case measure_and_record_post(product, updated_post) do
-              {:ok, _} -> acc + 1
+              {:ok, _} ->
+                acc + 1
+
               {:error, reason} ->
-                Logger.warning("MetricsPoller: Failed to record post #{post.id}: #{inspect(reason)}")
+                Logger.warning(
+                  "MetricsPoller: Failed to record post #{post.id}: #{inspect(reason)}"
+                )
+
                 acc
             end
 
           {:error, reason} ->
-            Logger.warning("MetricsPoller: Failed to fetch metrics for post #{post.id}: #{inspect(reason)}")
+            Logger.warning(
+              "MetricsPoller: Failed to fetch metrics for post #{post.id}: #{inspect(reason)}"
+            )
+
             acc
         end
       end)
@@ -133,7 +141,10 @@ defmodule ContentForge.Jobs.MetricsPoller do
         end
 
       {:error, :no_credentials} ->
-        Logger.warning("MetricsPoller: No credentials for #{post.platform}, skipping post #{post.id}")
+        Logger.warning(
+          "MetricsPoller: No credentials for #{post.platform}, skipping post #{post.id}"
+        )
+
         {:error, :no_credentials}
 
       {:error, reason} ->
@@ -309,7 +320,8 @@ defmodule ContentForge.Jobs.MetricsPoller do
     (data["likes"] || 0) + (data["retweets"] || 0) * 3 + (data["replies"] || 0) * 2
   end
 
-  defp extract_engagement(data, platform) when is_map(data) and platform in ["linkedin", "facebook"] do
+  defp extract_engagement(data, platform)
+       when is_map(data) and platform in ["linkedin", "facebook"] do
     (data["likes"] || 0) + (data["comments"] || 0) * 3 + (data["shares"] || 0) * 2
   end
 
@@ -337,7 +349,9 @@ defmodule ContentForge.Jobs.MetricsPoller do
       |> Repo.all()
 
     case scores do
-      [] -> nil
+      [] ->
+        nil
+
       _ ->
         score_values = Enum.map(scores, & &1.composite_score)
         Enum.sum(score_values) / length(score_values)
@@ -406,9 +420,7 @@ defmodule ContentForge.Jobs.MetricsPoller do
   end
 
   defp trigger_rewrite(product, platform) do
-    Logger.warning(
-      "MetricsPoller: Enqueueing brief rewrite for #{product.name} on #{platform}"
-    )
+    Logger.warning("MetricsPoller: Enqueueing brief rewrite for #{product.name} on #{platform}")
 
     %{"product_id" => product.id, "force_rewrite" => true}
     |> ContentForge.Jobs.ContentBriefGenerator.new()

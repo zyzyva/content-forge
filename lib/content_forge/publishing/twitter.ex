@@ -147,12 +147,13 @@ defmodule ContentForge.Publishing.Twitter do
   def fetch_metrics(tweet_id, %{twitter_access_token: _token} = credentials) do
     case twitter_request(:get, "/tweets/#{tweet_id}?tweet.fields=public_metrics", credentials) do
       {:ok, %{"data" => %{"public_metrics" => m}}} ->
-        {:ok, %{
-          "likes" => m["like_count"] || 0,
-          "retweets" => m["retweet_count"] || 0,
-          "replies" => m["reply_count"] || 0,
-          "quotes" => m["quote_count"] || 0
-        }}
+        {:ok,
+         %{
+           "likes" => m["like_count"] || 0,
+           "retweets" => m["retweet_count"] || 0,
+           "replies" => m["reply_count"] || 0,
+           "quotes" => m["quote_count"] || 0
+         }}
 
       {:ok, body} ->
         Logger.error("Twitter metrics unexpected response: #{inspect(body)}")

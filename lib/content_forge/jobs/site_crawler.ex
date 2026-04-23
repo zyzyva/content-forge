@@ -138,7 +138,9 @@ defmodule ContentForge.Jobs.SiteCrawler do
     uri = %{uri | fragment: nil, query: nil}
     to_string(uri)
   rescue
-    _ -> nil
+    ArgumentError ->
+      Logger.debug("Skipping malformed href: #{inspect(href)}")
+      nil
   end
 
   defp is_external?(url, base_url) do

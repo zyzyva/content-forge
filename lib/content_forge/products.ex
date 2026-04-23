@@ -165,7 +165,7 @@ defmodule ContentForge.Products do
       |> Enum.map(& &1.id)
 
     CompetitorPost
-    |> where(competitor_account_id: ^account_ids)
+    |> where([c], c.competitor_account_id in ^account_ids)
     |> order_by(desc: :engagement_score)
     |> limit(^max)
     |> Repo.all()

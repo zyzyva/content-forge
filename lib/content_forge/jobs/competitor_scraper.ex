@@ -2,6 +2,14 @@ defmodule ContentForge.Jobs.CompetitorScraper do
   @moduledoc """
   Oban job that scrapes recent posts from competitor accounts via Apify,
   scores posts by engagement relative to account average, and stores raw data.
+
+  Gated behind two pieces of configuration:
+
+    * `:apify_token` — Apify API token.
+    * `:scraper_adapter` — module implementing `fetch_posts/1` per platform.
+
+  When either is missing the job is discarded (no retries, no synthetic
+  output). Real adapter implementations land in Phase 11; see `BUILDPLAN.md`.
   """
   use Oban.Worker, queue: :competitor, max_attempts: 3
 
@@ -10,41 +18,56 @@ defmodule ContentForge.Jobs.CompetitorScraper do
   alias ContentForge.Products
   alias ContentForge.Products.CompetitorAccount
 
-  @apify_token Application.compile_env(:content_forge, :apify_token)
-
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"product_id" => product_id}}) do
+    case {apify_token(), scraper_adapter()} do
+      {nil, _} ->
+        Logger.info(
+          "CompetitorScraper skipped for product #{product_id}: apify_token not configured"
+        )
+
+        {:discard, :apify_not_configured}
+
+      {_token, nil} ->
+        Logger.info(
+          "CompetitorScraper skipped for product #{product_id}: scraper_adapter not configured"
+        )
+
+        {:discard, :scraper_adapter_not_configured}
+
+      {_token, adapter} ->
+        scrape_for_product(product_id, adapter)
+    end
+  end
+
+  defp scrape_for_product(product_id, adapter) do
     Logger.info("Starting competitor scraping for product #{product_id}")
 
     accounts = Products.list_active_competitor_accounts_for_product(product_id)
 
-    if accounts == [] do
-      Logger.info("No active competitor accounts for product #{product_id}")
-      :ok
-    else
-      results =
-        Enum.map(accounts, fn account ->
-          scrape_account(account)
-        end)
+    case accounts do
+      [] ->
+        Logger.info("No active competitor accounts for product #{product_id}")
+        :ok
 
-      successful = Enum.count(results, &match?({:ok, _}, &1))
+      _ ->
+        results = Enum.map(accounts, &scrape_account(&1, adapter))
+        successful = Enum.count(results, &match?({:ok, _}, &1))
 
-      Logger.info(
-        "Competitor scraping completed for product #{product_id}, scraped #{successful} accounts"
-      )
+        Logger.info(
+          "Competitor scraping completed for product #{product_id}, scraped #{successful} accounts"
+        )
 
-      if successful > 0 do
-        schedule_intel_synthesis(product_id)
-      end
+        if successful > 0, do: schedule_intel_synthesis(product_id)
 
-      :ok
+        :ok
     end
   end
 
-  defp scrape_account(%CompetitorAccount{} = account) do
+  defp scrape_account(%CompetitorAccount{} = account, adapter) do
     Logger.info("Scraping #{account.platform} account: #{account.handle}")
 
-    case fetch_posts_from_apify(account) do
+    case adapter.fetch_posts(account) do
       {:ok, posts} ->
         avg_engagement = calculate_average_engagement(posts)
 
@@ -61,89 +84,26 @@ defmodule ContentForge.Jobs.CompetitorScraper do
     end
   end
 
-  defp fetch_posts_from_apify(account) do
-    case @apify_token do
-      nil -> {:ok, mock_posts(account)}
-      _token -> fetch_posts_real(account)
-    end
-  end
-
-  defp fetch_posts_real(%CompetitorAccount{platform: "twitter", handle: _handle}) do
-    # Use Apify Twitter scraper
-    # This would be a real Apify API call in production
-    # Return error to indicate not implemented yet
-    {:error, :not_implemented}
-  end
-
-  defp fetch_posts_real(%CompetitorAccount{platform: "linkedin", handle: _handle}) do
-    {:error, :not_implemented}
-  end
-
-  defp fetch_posts_real(%CompetitorAccount{platform: platform, handle: _handle}) do
-    Logger.info("Apify scraper not implemented for platform: #{platform}")
-    {:error, :not_implemented}
-  end
-
-  defp mock_posts(account) do
-    # Generate mock posts for testing
-    [
-      %{
-        post_id: "mock_1_#{account.id}",
-        content:
-          "Exciting news! Our latest product update brings revolutionary features that will transform how you work. Check it out and let us know what you think! #innovation #tech",
-        post_url: "https://#{account.platform}.com/#{account.handle}/status/1",
-        likes_count: Enum.random(50..500),
-        comments_count: Enum.random(5..50),
-        shares_count: Enum.random(10..100),
-        posted_at: DateTime.add(DateTime.utc_now(), -Enum.random(1..7), :day)
-      },
-      %{
-        post_id: "mock_2_#{account.id}",
-        content:
-          "Behind the scenes of our development process. We're working hard to bring you something amazing. Stay tuned! 🚀",
-        post_url: "https://#{account.platform}.com/#{account.handle}/status/2",
-        likes_count: Enum.random(100..1000),
-        comments_count: Enum.random(10..100),
-        shares_count: Enum.random(20..200),
-        posted_at: DateTime.add(DateTime.utc_now(), -Enum.random(8..14), :day)
-      },
-      %{
-        post_id: "mock_3_#{account.id}",
-        content:
-          "Customer spotlight: See how @acme_corp is using our solution to drive results. Great things happening!",
-        post_url: "https://#{account.platform}.com/#{account.handle}/status/3",
-        likes_count: Enum.random(30..300),
-        comments_count: Enum.random(3..30),
-        shares_count: Enum.random(5..50),
-        posted_at: DateTime.add(DateTime.utc_now(), -Enum.random(15..21), :day)
-      }
-    ]
-  end
+  defp calculate_average_engagement([]), do: 0
 
   defp calculate_average_engagement(posts) do
-    if posts == [] do
-      0
-    else
-      total =
-        Enum.reduce(posts, 0, fn post, acc ->
-          acc + (post.likes_count || 0) + (post.comments_count || 0) * 2 +
-            (post.shares_count || 0) * 3
-        end)
+    total =
+      Enum.reduce(posts, 0, fn post, acc ->
+        acc + (post.likes_count || 0) + (post.comments_count || 0) * 2 +
+          (post.shares_count || 0) * 3
+      end)
 
-      total / length(posts)
-    end
+    total / length(posts)
   end
 
-  defp calculate_relative_score(post, avg_engagement) do
+  defp calculate_relative_score(post, avg_engagement) when avg_engagement > 0 do
     post_engagement =
       (post.likes_count || 0) + (post.comments_count || 0) * 2 + (post.shares_count || 0) * 3
 
-    if avg_engagement > 0 do
-      post_engagement / avg_engagement
-    else
-      1.0
-    end
+    post_engagement / avg_engagement
   end
+
+  defp calculate_relative_score(_post, _avg_engagement), do: 1.0
 
   defp store_post(account, post, score) do
     Products.create_competitor_post(%{
@@ -161,11 +121,13 @@ defmodule ContentForge.Jobs.CompetitorScraper do
   end
 
   defp schedule_intel_synthesis(product_id) do
-    Oban.insert(%Oban.Job{
-      queue: :competitor,
-      worker: ContentForge.Jobs.CompetitorIntelSynthesizer,
-      args: %{"product_id" => product_id},
+    %{"product_id" => product_id}
+    |> ContentForge.Jobs.CompetitorIntelSynthesizer.new(
       scheduled_at: DateTime.add(DateTime.utc_now(), 5, :second)
-    })
+    )
+    |> Oban.insert()
   end
+
+  defp apify_token, do: Application.get_env(:content_forge, :apify_token)
+  defp scraper_adapter, do: Application.get_env(:content_forge, :scraper_adapter)
 end
