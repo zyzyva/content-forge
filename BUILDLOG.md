@@ -85,7 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 12.1: AI Summary Nugget validator
 
 Status: DONE
-Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `6ae73b3`. Gate: compile --warnings-as-errors clean, format clean, full test 651/0, credo baseline-diff empty, `mix test --cover` overall 56.67% above threshold 10.
+Merged: master @ `4b06054` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 651-0; coverage 56.67% above threshold 10. `validate/1` two-head with `maybe_add` reason accumulator; `create_draft` pipes through `maybe_validate_nugget/1` that pattern-matches on content_type='blog'. Critical wire-up: `OpenClawBulkGenerator` swapped from `insert_all` to per-angle `create_draft` so the hook fires on batch paths. E2E happy-path split into social='draft' vs blog='needs_review' locks the regression. 14 new tests.
 Note: First slice of Phase 12 (SEO Quality Pipeline). Introduces the AI Summary Nugget validator + post-generation hook so every blog draft either has a valid self-contained opening paragraph (stored in `ai_summary_nugget`) or is flagged `"needs_review"` with reasons on `draft.error`. Short-form social posts are exempt.
 
 **Schema + migration**:

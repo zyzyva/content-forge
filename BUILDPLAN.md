@@ -233,7 +233,7 @@ Phase exit criteria: no stubbed external calls remain in production paths; a das
 
 Per `CONTENT_FORGE_SPEC.md` Feature 10. Goal: produce content that is AI-retrievable (GEO-optimized) and meets a 28-point quality bar.
 
-- **12.1 AI Summary Nuggets**
+- **12.1 AI Summary Nuggets** ✅ Shipped `4b06054`.
   - First paragraph of every long-form piece is a self-contained summary optimized for AI citation. Structured, entity-dense, scannable.
   - Validation step in the generation pipeline that flags drafts missing the nugget.
   - Additional requirements surfaced during Phase 11/13 work:
@@ -250,6 +250,30 @@ Per `CONTENT_FORGE_SPEC.md` Feature 10. Goal: produce content that is AI-retriev
   - Codify each of the 28 points as a discrete check against a draft.
   - Run the checklist at draft time and surface failures in the review UI.
   - Store checklist results on the draft record for audit.
+  - **Slicing note:** Three sub-slices — infrastructure (12.2a), mechanical checks (12.2b), semantic checks that need LLM or external data (12.2c).
+
+- **12.2a SEO checklist infrastructure**
+  - New schema `ContentForge.ContentGeneration.SeoChecklist` at `lib/content_forge/content_generation/seo_checklist.ex` with fields: `draft_id` (fk, unique), `results` (map with 28 keys, each value an atom in `~w(pass fail not_applicable)a` plus an optional `note` string), `score` (integer 0-28 computed from pass count over non-applicable), `run_at` (utc_datetime_usec), plus timestamps. One checklist per draft; re-running replaces the row.
+  - Migration creates `seo_checklists` with binary_id PK, fk to `drafts` with `on_delete: :delete_all`, unique index on `draft_id`.
+  - New module `ContentForge.ContentGeneration.SeoChecklist.Runner` with public function `run/1` that takes a draft, dispatches to each of the 28 checks (the list of check modules is itself a `@checks` module attribute), and writes the aggregate result to the schema.
+  - Each check is its own small module under `lib/content_forge/content_generation/seo_checklist/checks/<name>.ex` with a `check/1` function returning `{:pass | :fail | :not_applicable, note_or_nil}`. This slice ships the infrastructure with 4 representative checks implemented (title length <60, meta description length <155, single H1, core answer in first 150 words). The other 24 checks are stub modules that return `:not_applicable` with a note `"check not implemented yet"`. Follow-up slices (12.2b/c) implement the rest.
+  - Post-generation hook on blog drafts (same pattern as 12.1's `NuggetValidator`) runs the checklist after nugget validation succeeds. Results land on the dedicated schema; the draft gains an `seo_score` field (nullable integer) mirroring the aggregate for quick queries.
+  - Drafts review LiveView adds an "SEO score" column on blog drafts when a checklist exists; clicking the score opens a small drawer listing each check's pass/fail/skip with the note text.
+  - Tests cover: the infrastructure dispatch (each check is invoked once per run); the 4 implemented checks each have their own pass + fail case; the stub modules return `:not_applicable`; the aggregate score reflects pass count correctly; re-running a checklist replaces the prior row without duplicating.
+
+- **12.2b SEO checklist mechanical checks (structural + meta)**
+  - Fill in the structural and meta checks that can be evaluated from content alone, without LLM or external data: H1 count, heading hierarchy no skips, title ≤ 60 chars, meta description 100-155 chars, core answer in first 150 words (already shipped in 12.2a), fast-scan summary in first 200 words (already shipped as the AI Summary Nugget from 12.1, link the two results), FAQ section present, JSON-LD schema block present, image alt text coverage, internal links present, external link count reasonable, keyword density in title, slug length ≤ 75 chars, table of contents for articles over 1500 words, reading time estimate present.
+  - Each check is its own module with a `check/1` function. All tests live alongside.
+  - Typically 12-14 checks land here; the remaining 10-12 semantic checks are 12.2c.
+
+- **12.2c SEO checklist semantic checks (LLM/data-driven)**
+  - Information-gain check: compare the draft against a summary of the top 10 SERP results for its primary keyword (requires search integration or Apify). If no SERP data is available, the check returns `:not_applicable` with a note.
+  - Entity-density check: count named entities, require at least a threshold density for the word count.
+  - PAA-question coverage: FAQ answers match People-Also-Asked questions from SERP data.
+  - E-E-A-T signals: check for author bio, publish date, update date, expertise markers.
+  - Citation presence: at least one citation to an authoritative source per major claim.
+  - "Not For You" block presence (from spec): honest section telling readers when the product is a bad fit.
+  - These checks either consume the Apify scraper for SERP data or call an LLM with the draft content. If neither is configured, the check returns `:not_applicable` with a clear note; no synthetic data.
 
 - **12.3 Original Research block**
   - Pipeline step that sources original data (survey, scrape, or competitor delta) and injects a research block into the draft.
