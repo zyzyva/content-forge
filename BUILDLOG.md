@@ -82,6 +82,36 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 16.3c: Light writes on existing schemas (create_asset_bundle + add_tag_to_asset)
+
+Status: DONE
+Note: First pair of real light-write tools. Both ride through `Authorization.require(..., :submitter)` and `ProductResolver`, so the plumbing is small: a validation step, a single context call, and a serialization step. Schemas reused verbatim (`AssetBundle` + `ProductAsset`); no migrations in this slice.
+
+**`create_asset_bundle`** (`lib/content_forge/open_claw_tools/create_asset_bundle.ex`):
+- `with {:ok, product} <- ProductResolver.resolve(...)`, then auth, then `fetch_name/1` (trim, refuse empty, refuse over 120 chars, map to `:invalid_name`), then `ProductAssets.create_bundle/1`. Changeset errors from outside the name path are re-wrapped as `{:error, {:invalid_params, traversed_errors}}` so a rare constraint violation still surfaces a structured reason.
+- Result shape: `%{bundle_id, product_id, product_name, name, status, created_at}` with `created_at` as ISO-8601.
+
+**`add_tag_to_asset`** (`lib/content_forge/open_claw_tools/add_tag_to_asset.ex`):
+- `fetch_tag/1` trims, lowercases, and validates 1..40 bytes - returns `:invalid_tag` for empty, missing, or oversized. Lowercasing is in-tool so `"Spring"` and `"spring"` do not split into two buckets.
+- `scoped_asset/2` rescues `Ecto.Query.CastError` for malformed UUIDs and verifies `product_id == resolved_product.id`; cross-product or unknown ids collapse to `:not_found` uniformly (no distinguishable reason for probing callers).
+- `persist_tag/2` delegates to `ProductAssets.add_tag/2`, which dedupes via `Enum.uniq/1` so a duplicate tag returns the existing set unchanged.
+- Result shape: `%{asset_id, tags}`.
+
+**Dispatch + plugin** (`lib/content_forge/open_claw_tools.ex` + `~/.openclaw/plugins/content-forge/index.js`):
+- `@tools` now carries seven entries (five from 16.1/16.2 plus `create_asset_bundle` and `add_tag_to_asset`).
+- Plugin gains two `registerTool` blocks with JSON-schema params marking `name` / `asset_id` + `tag` as required. Agent-facing descriptions explicitly call out the `:submitter` role requirement so the agent can explain refusals to the user rather than silently retrying.
+- Also swept a stray emdash out of the `competitor_intel_summary` description on the way through.
+
+**Tests** (19 new):
+- `test/content_forge/open_claw_tools/create_asset_bundle_test.exs` (6 tests): happy path (SMS submitter) + list persisted, whitespace trim, viewer :forbidden, empty / missing / over-120 names all map to :invalid_name, ambiguous product short-circuits before auth.
+- `test/content_forge/open_claw_tools/add_tag_to_asset_test.exs` (9 tests): happy path with merged tag set, trim + lowercase on the tag, duplicate = no-op on persisted set, unknown asset_id = :not_found, cross-product asset_id = :not_found, viewer = :forbidden and no mutation, empty / missing tag = :invalid_tag, over-40 tag = :invalid_tag, malformed UUID = :not_found.
+- `test/content_forge_web/controllers/open_claw_tool_controller_test.exs` (4 new, under a new `16.3c light-write tools` describe block): happy path through the full HTTP pipeline for both tools, forbidden end-to-end for `create_asset_bundle`, cross-product not_found for `add_tag_to_asset`.
+
+**What this slice explicitly does NOT do**:
+- 16.3d still owes `ProductMemory` + `record_memory`. It is the only remaining piece of the 16.3 wave.
+
+**Gate**: `mix compile --warnings-as-errors` clean, `mix format --check-formatted` clean, `mix test` 898/0 (19 new), `mix credo --strict` baseline-diff empty for slice-touched files. Zero emdashes in slice-touched files, the plugin index.js, or the runbook.
+
 ### Phase 16.3b: CreateUploadLink hardening (first consumer of the Authorization helper)
 
 Status: DONE

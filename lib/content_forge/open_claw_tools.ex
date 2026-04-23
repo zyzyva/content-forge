@@ -24,12 +24,15 @@ defmodule ContentForge.OpenClawTools do
   Phase 16.1 ships the first tool: `create_upload_link`. Phase
   16.2 adds four read-only tools (`list_recent_assets`,
   `draft_status`, `upcoming_schedule`,
-  `competitor_intel_summary`). The 16.3+ slices add light writes,
-  heavy writes with confirmation, escalation, and full audit
-  surfacing.
+  `competitor_intel_summary`). Phase 16.3c adds two light-write
+  tools (`create_asset_bundle`, `add_tag_to_asset`). The 16.3d+
+  slices add `record_memory`, heavy writes with confirmation,
+  escalation, and full audit surfacing.
   """
 
+  alias ContentForge.OpenClawTools.AddTagToAsset
   alias ContentForge.OpenClawTools.CompetitorIntelSummary
+  alias ContentForge.OpenClawTools.CreateAssetBundle
   alias ContentForge.OpenClawTools.CreateUploadLink
   alias ContentForge.OpenClawTools.DraftStatus
   alias ContentForge.OpenClawTools.ListRecentAssets
@@ -48,7 +51,9 @@ defmodule ContentForge.OpenClawTools do
     "list_recent_assets" => ListRecentAssets,
     "draft_status" => DraftStatus,
     "upcoming_schedule" => UpcomingSchedule,
-    "competitor_intel_summary" => CompetitorIntelSummary
+    "competitor_intel_summary" => CompetitorIntelSummary,
+    "create_asset_bundle" => CreateAssetBundle,
+    "add_tag_to_asset" => AddTagToAsset
   }
 
   @doc """
