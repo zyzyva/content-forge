@@ -12,6 +12,7 @@ defmodule ContentForgeWeb.Router do
 
   pipeline :api do
     plug :accepts, ["json"]
+    plug ContentForgeWeb.Plugs.QueryCountHeader
   end
 
   pipeline :api_auth do

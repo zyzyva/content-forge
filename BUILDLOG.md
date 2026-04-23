@@ -82,6 +82,56 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 15.4: Review API load smoke
+
+Status: DONE
+Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `5d8673f`. Gate: compile --warnings-as-errors clean, format clean, full test 621/0, credo baseline-diff empty.
+Note: Manual-run load smoke script at `test/load/review_api_smoke.exs` backed by `ContentForge.LoadSmoke.ReviewApi`. Not in CI. Script fires concurrent authenticated requests at the Review API + publishing endpoints via `Req` + `Task.async_stream/3`, collects latency + error + query-count telemetry, prints a summary.
+
+**New module** (`lib/content_forge/load_smoke/review_api.ex`):
+- `run/1` entry point. Options (via keyword list or env): `base_url` (`REVIEW_SMOKE_BASE_URL`, default `http://localhost:4000`), `concurrency` (`REVIEW_SMOKE_CONCURRENCY`, default 50), `total` (`REVIEW_SMOKE_TOTAL`, default 1000), `n1_threshold` (`REVIEW_SMOKE_N1_THRESHOLD`, default 20), `seed` (`REVIEW_SMOKE_SEED`, default "1"), `api_key` (`REVIEW_SMOKE_API_KEY`, auto-created otherwise), `seed_products` / `seed_drafts_per_product` (defaults 100 / 50).
+- Round-robins across five operations: GET `/api/v1/products`, GET `/api/v1/products/:id/drafts`, POST `/api/v1/drafts/:id/score`, POST `/api/v1/drafts/:id/approve`, POST `/api/v1/products/:id/schedule`. Request index modulo 5 picks the op; product_id / draft_id are random draws from the pre-loaded fixture pool.
+- Idempotent seed: products are upserted by name (`load-smoke-product-<n>`) via a new `Products.get_product_by_name/1`; drafts are topped up with `ContentGeneration.count_drafts_for_product/1` so re-running the script does not balloon the DB.
+- API key: if no `api_key` is passed and `REVIEW_SMOKE_API_KEY` is unset, creates a fresh `Accounts.ApiKey` with a `"load-smoke-"` prefixed key and timestamped label. Repeated runs leave old keys in place, which is fine since the plug only checks active-by-key.
+- Results normalization handles `Task.async_stream` exits (`on_timeout: :kill_task`) as `:timeout` errors so a hung request doesn't crash the summary.
+- Summary map: `total_requests`, `errors`, `errors_by_class` (`:5xx` / `:4xx` / `:timeout` / `:transport`), `duration_ms`, `rps`, `p50_ms` / `p95_ms` / `p99_ms`, `avg_queries_per_request`, `queries_over_threshold_count`, `queries_over_threshold` (top 10 offenders by query count with operation + status), `threshold`. Percentiles use the ceil-index method over a sorted latency list.
+
+**Server-side query-count instrumentation** (`lib/content_forge_web/plugs/query_count_header.ex`):
+- New plug wired into the `:api` pipeline. On each request: reset the process-dictionary counter `:cf_query_count` to 0, register a `register_before_send` callback that reads the final count and sets response header `x-cf-query-count`.
+- Plug pairs with a `:telemetry.attach/4` on `[:content_forge, :repo, :query]` that increments the counter. Handler attaches once in `ContentForge.Application.start/2`.
+- Correlation is per-process: Phoenix dispatches each request in its own process and Ecto telemetry fires in the same process that issued the query, so the counter is naturally request-local. Async tasks spawned from a controller are not counted (documented limitation).
+- Overhead: one `Process.put/2` per query + one integer format per response. Negligible, and the header is harmless to any consumer that doesn't look for it.
+
+**Script stub** (`test/load/review_api_smoke.exs`):
+- Three-line bootstrap. Calls `ContentForge.LoadSmoke.ReviewApi.run()`. `.exs` (not `_test.exs`) so mix test does not pick it up.
+- Invocation: `MIX_ENV=dev mix run test/load/review_api_smoke.exs`.
+
+**Context additions**:
+- `Products.get_product_by_name/1` - `Repo.get_by(Product, name: name)`. New because the idempotent seed needed upsert-by-name.
+- `ContentGeneration.count_drafts_for_product/1` - cheap `count(id)` query; fronts the seed's top-up logic.
+- `ContentGeneration.list_recent_draft_ids/1` - draft-id page sorted desc by `inserted_at`, limited; used to build the fixture pool for `/score` and `/approve` without loading full draft rows.
+
+**Meta-test** (`test/content_forge/load_smoke/review_api_test.exs`):
+- One ExUnit test that proves the script round-trips end-to-end with concurrency 2 + total 10.
+- Setup: `Sandbox.mode(Repo, {:shared, self()})` so the Bandit request processes borrow the test's connection + see seeded rows; creates 1 product + 1 draft + 1 API key; starts a fresh Bandit listener bound to `port: 0` (OS picks) using `ContentForgeWeb.Endpoint` as the plug; reads the ephemeral port back via `ThousandIsland.listener_info/1`; tears the listener down on exit.
+- Test asserts stats shape: `total_requests == 10`, `errors` integer, `duration_ms` integer, `rps` number, `errors_by_class` map, `p50/p95/p99` non-nil (at least the GET `/products` path always succeeds so latencies exist), `avg_queries_per_request` non-nil (proves the header / telemetry path is live), `queries_over_threshold_count` non-negative integer, `queries_over_threshold` a list.
+- The test deliberately does not assert zero errors - the load smoke catches real bugs and one already surfaced: `ContentForgeWeb.ScheduleController.schedule_for_platform/2` calls `Oban.insert(%{...}, scheduled_at: ...)` with a raw map (line 183), which raises `FunctionClauseError`. That bug pre-dates this slice and is not fixed here (out of scope). The script correctly classifies those failures as `:5xx` and surfaces them in the summary, exactly as load smoke is meant to.
+- `capture_io/1` swallows the summary print; `capture_log/1` wraps it to keep Phoenix's 500-error log spray out of test output.
+
+**Security / op-safety notes**:
+- The query-count header leaks the query count of each request to clients. This is low-risk telemetry (no data, no query content) and useful enough for ops that keeping it always-on is fine. If that stops being acceptable, gate the plug behind an `Application.get_env(:content_forge, :load_smoke_instrumentation)` flag.
+- Auto-created API keys from repeated runs accumulate. The seed does not delete them. Cleanup is trivial (`Accounts.list_api_keys() |> Enum.filter(&String.starts_with?(&1.key, "load-smoke-"))`) if needed; not automated here.
+- Manual runs against the Review API do write real `draft_scores` rows and mark drafts as `approved`. Seed data uses `"load-smoke-"` prefixed product names so it's easy to scrub afterward. Running against a prod database is on the operator, not the script.
+
+**What was explicitly NOT changed** (kept out of scope):
+- Did not fix `ScheduleController.schedule_for_platform/2`'s broken `Oban.insert(map)` call. That's a separate bug; this slice ships the instrument that exposes it.
+- No Grafana / Prometheus exporter for the x-cf-query-count header. A simple `IO.puts` summary is what the architect spec'd.
+- No per-endpoint breakdown in the summary. `queries_over_threshold` attributes hotspots to operations, which is enough for a first pass.
+- No automatic scaling of concurrency / total (e.g., ramp-up). One flat burst.
+- No CI wiring. Script is manual by design.
+
+**Gate**: compile --warnings-as-errors clean, format clean, full test 621/0, credo --strict baseline-diff empty. Rebased cleanly on master @ `5d8673f`.
+
 ### Phase 15.2d: WCAG AA audit on providers + SMS, and arrow-key tablist hook
 
 Status: DONE

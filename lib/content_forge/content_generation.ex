@@ -122,6 +122,21 @@ defmodule ContentForge.ContentGeneration do
     Repo.all(Draft)
   end
 
+  def count_drafts_for_product(product_id) do
+    Draft
+    |> where(product_id: ^product_id)
+    |> select([d], count(d.id))
+    |> Repo.one()
+  end
+
+  def list_recent_draft_ids(limit) when is_integer(limit) and limit > 0 do
+    Draft
+    |> order_by(desc: :inserted_at)
+    |> limit(^limit)
+    |> select([d], d.id)
+    |> Repo.all()
+  end
+
   def list_drafts_for_product(product_id) do
     Draft
     |> where(product_id: ^product_id)

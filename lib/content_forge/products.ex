@@ -22,6 +22,8 @@ defmodule ContentForge.Products do
 
   def get_product(id), do: Repo.get(Product, id)
 
+  def get_product_by_name(name), do: Repo.get_by(Product, name: name)
+
   def create_product(attrs \\ %{}) do
     %Product{}
     |> Product.changeset(attrs)

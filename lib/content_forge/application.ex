@@ -5,6 +5,8 @@ defmodule ContentForge.Application do
 
   use Application
 
+  alias ContentForgeWeb.Plugs.QueryCountHeader
+
   @impl true
   def start(_type, _args) do
     children = [
@@ -18,6 +20,8 @@ defmodule ContentForge.Application do
       # Start to serve requests, typically the last entry
       ContentForgeWeb.Endpoint
     ]
+
+    QueryCountHeader.attach_telemetry()
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
