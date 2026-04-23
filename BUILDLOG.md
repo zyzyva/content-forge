@@ -85,7 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 15.2c: WCAG AA audit on video + performance + clips
 
 Status: DONE
-Merged: coder branch; awaiting reviewer ACCEPT. Rebased on master @ `0a35e33`. Gate: compile --warnings-as-errors clean, format clean, full test 614/0, credo baseline-diff empty (nothing new introduced).
+Merged: master @ `d31e6f6` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 614-0; credo unchanged. `scope=col` on all data tables; `role=img` + aria-label on SVG charts; per-row aria-labels on clips. Bundled bug fix: `Metrics.maybe_filter_by_product/2` missing empty-string head caused binary_id cast crash when LiveView passed `""` — surfaced by new performance test, one-line fix. Arrow-key JS roving deferred to 15.2d.
 Note: WCAG AA audit + inline fixes on the three remaining Phase 9 dashboard pages per BUILDPLAN 15.2c. Same checklist as 15.2a/b. Latent bug in `Metrics.maybe_filter_by_product/2` surfaced by the first-ever LiveView test of `/dashboard/performance` — fix folded into this slice.
 
 **Pages touched**:

@@ -527,12 +527,13 @@ Pick up after the feature waves clear. Any of these can be inserted earlier if i
   - Schedule includes the week calendar from 15.1c — that page was already landed with `role=grid` + drawer dialog semantics, so this slice mostly audits the surrounding nav + the per-post rows.
   - Tests add landmark + single-h1 assertions to both pages, matching the pattern established in 15.2a.
 
-- **15.2c Video + performance + clips accessibility audit**
+- **15.2c Video + performance + clips accessibility audit** ✅ Shipped `d31e6f6`.
   - Same checklist applied to `/dashboard/video` (`Video.StatusLive`), `/dashboard/performance` (`Performance.DashboardLive`), and `/dashboard/clips` (`Clips.QueueLive`).
   - Video page's override/promote controls from 15.1b are specifically checked (button labels, confirm semantics). Performance metrics tables and charts need table headers and chart alt-text equivalents. Clips queue action buttons need aria-labels since they are per-row.
 
 - **15.2d Providers + SMS accessibility audit**
   - Final page pair: `/dashboard/providers` (`ProvidersLive` from 15.1a) and `/dashboard/sms` (`SmsLive.NeedsAttention` from 14.5). Both are table-heavy list views; same checklist with emphasis on table semantics (`<th scope="col">`) and row-action button labels.
+  - **Additionally: arrow-key roving tabindex JS hook across all tablist widgets.** 15.2b and 15.2c both documented this deferral explicitly — the static `tabindex` state is correct (keyboard Tab works), but Left/Right arrow navigation between tabs in a tablist requires a small JS hook. Ship a single reusable Phoenix LiveView JS hook (`Hooks.TabList` or similar) that listens for Left/Right/Home/End on any element under `role=tablist`, moves focus to the appropriate sibling, and fires the existing `phx-click` semantics on Enter/Space so selection remains in-sync with focus. Apply the hook across every `role=tablist` in the dashboard (drafts filter tabs, product detail tab bar, any newly-added ones). Include a test that simulates arrow-key navigation and asserts focus + selection updates.
 
 - **15.3 End-to-end integration tests**
   - At least one multi-step pipeline test per feature: product registered → brief generated → variants ranked → published → metrics collected → winner repurposed.
