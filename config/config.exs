@@ -77,6 +77,11 @@ config :content_forge, :llm,
     base_url: "https://api.anthropic.com",
     default_model: "claude-sonnet-4-6",
     max_tokens: 4096
+  ],
+  gemini: [
+    base_url: "https://generativelanguage.googleapis.com",
+    default_model: "gemini-2.5-flash",
+    max_tokens: 4096
   ]
 
 # Use Jason for JSON parsing in Phoenix
