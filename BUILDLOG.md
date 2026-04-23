@@ -82,6 +82,27 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 13.4d: Banner stickiness hardening
+
+Status: READY FOR REVIEW
+Branch: `swarmforge-coder` (awaits review). Gate: mix compile --warnings-as-errors clean, mix format --check-formatted clean (separate gates), mix test 426/0 (425 prior + 1 new). Credo by content unchanged vs post-13.5b: would-be new "Prefer using an implicit `try` rather than explicit `try`" finding fixed inline by hoisting the `after` block onto the function head (Elixir's implicit-try syntax); zero net-new findings; same nine baseline findings net-removed as post-13.5b.
+Note: Closed the one gap the 13.4c reviewer flagged. `AssetBundleDraftGenerator.generate_with_featured/4` happy-path head now uses an implicit `try/after` by attaching the `after` block directly to the function body:
+
+    defp generate_with_featured({:ok, asset}, bundle, platforms, n) do
+      run_generation(asset, bundle, platforms, n)
+    after
+      ProductAssets.broadcast_bundle_generation_finished(
+        bundle.product_id,
+        bundle.id
+      )
+    end
+
+Any exception from `run_generation/4` (a transport error that Req's `classify/1` does not catch, an Ecto constraint that escapes `create_draft/1`, or any other unexpected raise) still fires the `:bundle_generation_finished` PubSub broadcast before bubbling to Oban, so the LiveView banner never sticks. Retry semantics are preserved: the exception propagates normally to Oban, which records the attempt and re-schedules under `max_attempts: 3`. The `:empty` head is left untouched - it does no external work and can only fail via `Logger.warning` or the PubSub broadcast itself, both of which are safe.
+
+1 new regression test in `test/content_forge/jobs/asset_bundle_draft_generator_test.exs` under describe "banner stickiness hardening": subscribes the test process to `asset_bundles:<product_id>`, stubs the Req.Test plug to `raise "simulated transport crash"`, wraps `run_job/3` in try/rescue + try/catch so the test continues past the bubbled exception, then `assert_receive {:bundle_generation_finished, bundle_id}` within 500ms. The assertion fails red before the fix (banner never clears) and passes green after.
+
+Touched files: `lib/content_forge/jobs/asset_bundle_draft_generator.ex` (hoisted after-block onto `generate_with_featured/4` happy-path head), `test/content_forge/jobs/asset_bundle_draft_generator_test.exs` (new describe + test), `BUILDLOG.md`.
+
 ### Phase 13.5b: Publisher rendition swap
 
 Status: DONE

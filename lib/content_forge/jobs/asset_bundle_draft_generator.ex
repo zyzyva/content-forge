@@ -68,10 +68,14 @@ defmodule ContentForge.Jobs.AssetBundleDraftGenerator do
     {:cancel, "bundle has no assets"}
   end
 
+  # Implicit try via `after` block so the LiveView banner clears even if
+  # the LLM client raises (a transport error `classify/1` does not catch,
+  # or any other unexpected exception inside `run_generation/4`). The
+  # exception still bubbles up to Oban so retry semantics are preserved.
   defp generate_with_featured({:ok, asset}, bundle, platforms, n) do
-    result = run_generation(asset, bundle, platforms, n)
-    :ok = ProductAssets.broadcast_bundle_generation_finished(bundle.product_id, bundle.id)
-    result
+    run_generation(asset, bundle, platforms, n)
+  after
+    ProductAssets.broadcast_bundle_generation_finished(bundle.product_id, bundle.id)
   end
 
   defp run_generation(asset, bundle, platforms, n) do

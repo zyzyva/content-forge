@@ -289,4 +289,28 @@ defmodule ContentForge.Jobs.AssetBundleDraftGeneratorTest do
       assert [] = Repo.all(Draft)
     end
   end
+
+  describe "banner stickiness hardening" do
+    test "broadcasts :bundle_generation_finished even if the LLM client raises",
+         %{bundle: bundle} do
+      :ok = ProductAssets.subscribe_bundles(bundle.product_id)
+
+      Req.Test.stub(@stub_key, fn _conn ->
+        raise "simulated transport crash"
+      end)
+
+      capture_log(fn ->
+        try do
+          run_job(bundle, ["twitter"], 2)
+        rescue
+          _ -> :ok
+        catch
+          _kind, _reason -> :ok
+        end
+      end)
+
+      assert_receive {:bundle_generation_finished, bundle_id}, 500
+      assert bundle_id == bundle.id
+    end
+  end
 end
