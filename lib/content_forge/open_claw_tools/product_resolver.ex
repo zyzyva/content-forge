@@ -8,12 +8,12 @@ defmodule ContentForge.OpenClawTools.ProductResolver do
 
   Returns:
 
-    * `{:ok, %Product{}}` — resolved.
-    * `{:error, :product_not_found}` — the caller passed a
+    * `{:ok, %Product{}}` - resolved.
+    * `{:error, :product_not_found}` - the caller passed a
       `"product"` hint but no row matches.
-    * `{:error, :ambiguous_product}` — the caller passed a name that
+    * `{:error, :ambiguous_product}` - the caller passed a name that
       matches more than one active product.
-    * `{:error, :missing_product_context}` — the caller did not pass
+    * `{:error, :missing_product_context}` - the caller did not pass
       `"product"` and the channel context (SMS sender identity) did
       not yield a single active product either.
 

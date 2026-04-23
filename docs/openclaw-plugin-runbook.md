@@ -151,19 +151,19 @@ response go back to OpenClaw.
 The plugin ships these tools. Each corresponds to a module under
 `lib/content_forge/open_claw_tools/` in the Phoenix app.
 
-- **`create_upload_link`** — generate a presigned PUT URL for
+- **`create_upload_link`** - generate a presigned PUT URL for
   direct-to-storage asset upload (Phase 16.1).
-- **`list_recent_assets`** — list a product's recent non-deleted
+- **`list_recent_assets`** - list a product's recent non-deleted
   assets with media type + tag filters (Phase 16.2).
-- **`draft_status`** — report a single draft's status; accepts
+- **`draft_status`** - report a single draft's status; accepts
   either `draft_id` or a free-text `hint`. Returns
   `ambiguous_draft` when the hint matches more than one draft
   (Phase 16.2).
-- **`upcoming_schedule`** — list approved drafts queued for
+- **`upcoming_schedule`** - list approved drafts queued for
   publish. Content Forge does not hold per-draft schedule
   timestamps today, so the bot speaks in terms of "queued" rather
   than "scheduled for a day/time" (Phase 16.2).
-- **`competitor_intel_summary`** — return the most recent
+- **`competitor_intel_summary`** - return the most recent
   competitor intel synthesis (summary, trending topics, winning
   formats, effective hooks). Returns `not_found` when no intel
   row exists (Phase 16.2).
