@@ -734,6 +734,114 @@ defmodule ContentForgeWeb.OpenClawToolControllerTest do
     end
   end
 
+  describe "16.4d generate_drafts_from_bundle end-to-end" do
+    use Oban.Testing, repo: ContentForge.Repo
+
+    alias ContentForge.Jobs.AssetBundleDraftGenerator
+    alias ContentForge.Operators
+    alias ContentForge.ProductAssets
+
+    setup do
+      original = Application.get_env(:content_forge, :generation_budget)
+
+      Application.put_env(:content_forge, :generation_budget,
+        monthly_cents: 10_000,
+        cost_per_variant_cents: 5,
+        default_platforms: ["twitter", "linkedin"],
+        default_variants_per_platform: 3
+      )
+
+      on_exit(fn ->
+        if is_nil(original) do
+          Application.delete_env(:content_forge, :generation_budget)
+        else
+          Application.put_env(:content_forge, :generation_budget, original)
+        end
+      end)
+
+      {:ok, product} =
+        Products.create_product(%{name: "GenerationLand", voice_profile: "warm"})
+
+      {:ok, _} =
+        Operators.create_identity(%{
+          product_id: product.id,
+          identity: "cli:gen-owner",
+          role: "owner"
+        })
+
+      {:ok, bundle} =
+        ProductAssets.create_bundle(%{product_id: product.id, name: "Campaign"})
+
+      {:ok, asset} =
+        ProductAssets.create_asset(%{
+          product_id: product.id,
+          storage_key: "products/#{product.id}/assets/hero",
+          media_type: "image",
+          filename: "hero.jpg",
+          mime_type: "image/jpeg",
+          byte_size: 4096,
+          uploaded_at: DateTime.utc_now()
+        })
+
+      {:ok, _} =
+        ProductAssets.add_asset_to_bundle(bundle, asset, position: 1)
+
+      %{product: product, bundle: bundle}
+    end
+
+    test "two-turn HTTP cycle: first surfaces budget preview, second enqueues",
+         %{conn: conn, product: product, bundle: bundle} do
+      request_body = %{
+        "session_id" => "http-gen",
+        "channel" => "cli",
+        "sender_identity" => "cli:gen-owner",
+        "params" => %{"product" => product.id, "bundle_id" => bundle.id}
+      }
+
+      first_conn =
+        conn
+        |> put_req_header("x-openclaw-tool-secret", @secret)
+        |> post(~p"/api/v1/openclaw/tools/generate_drafts_from_bundle", request_body)
+
+      assert %{
+               "status" => "confirmation_required",
+               "echo_phrase" => echo,
+               "preview" => %{
+                 "asset_count" => 1,
+                 "estimated_cost_cents" => 30,
+                 "remaining_budget_cents" => 10_000,
+                 "would_exceed_budget" => false,
+                 "bundle_id" => preview_bundle_id
+               }
+             } = json_response(first_conn, 200)
+
+      assert preview_bundle_id == bundle.id
+
+      confirm_body = put_in(request_body, ["params", "confirm"], echo)
+
+      second_conn =
+        conn
+        |> put_req_header("x-openclaw-tool-secret", @secret)
+        |> post(~p"/api/v1/openclaw/tools/generate_drafts_from_bundle", confirm_body)
+
+      assert %{
+               "status" => "ok",
+               "result" => %{
+                 "enqueued" => true,
+                 "bundle_id" => result_bundle_id,
+                 "estimated_cost_cents" => 30
+               }
+             } = json_response(second_conn, 200)
+
+      assert result_bundle_id == bundle.id
+
+      assert_enqueued(
+        worker: AssetBundleDraftGenerator,
+        args: %{"bundle_id" => bundle.id}
+      )
+    end
+  end
+
   describe "16.4a confirmation_required response" do
     defmodule ConfirmationRequiredStub do
       @moduledoc false
