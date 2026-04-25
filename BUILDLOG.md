@@ -85,6 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 17.0: Local environment up (launchd plist + dev DB)
 
 Status: DONE
+Merged: master @ `d198c32` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 983-0 (unchanged, no Elixir code touched), credo 26 vs 44 baseline (unchanged). Zero emdashes in plist or runbook. Environment verified post-merge: `content_forge_dev` Postgres database present alongside `_test`; `~/Library/LaunchAgents/com.zyzyva.content-forge.plist` installed; `launchctl list` shows `com.zyzyva.content-forge` loaded and running. Plist mirrors the lead_intelligence pattern (KeepAlive + RunAtLoad, asdf shim PATH, dev MIX_ENV, log to `~/Library/Logs/content-forge.log`). Runbook covers install / verify / SIGTERM-restart / uninstall / update flows.
 Note: Foundation slice for Phase 17. Stands Content Forge up as a long-running local daemon on m4 so the corrective-loop cron (17.6) and the MCP server (17.3) have a process to attach to. Independent of Phase 16; ran in parallel with the 16.4 tail.
 
 **Database**:
