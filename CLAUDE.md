@@ -28,3 +28,12 @@ When a slice looks like it needs raw image EXIF handling, video transcoding, or 
 - Missing credentials downgrade a feature to "unavailable" in the UI; they never crash a request.
 - Mobile-first LiveView markup, WCAG AA accessibility.
 - No emdashes in commit messages or code.
+
+## Adapter wiring across Mix envs
+
+Phase 17.2 opened the dev/prod config gate. The `:scraper_adapter` (`ContentForge.CompetitorScraper.ApifyAdapter`) and `:intel_model` (`ContentForge.CompetitorIntelSynthesizer.LLMAdapter`) Application config keys are wired in every Mix env in `config/runtime.exs`, not just `:prod`. Gating happens at the adapter layer based on env-variable presence:
+
+- Missing `APIFY_TOKEN`: `ApifyAdapter.fetch_posts/1` returns `{:error, :not_configured}` immediately with zero HTTP I/O. The scraper job propagates the failure clearly rather than silently discarding.
+- Missing `ANTHROPIC_API_KEY`: `ContentForge.LLM.Anthropic.complete/2` returns `{:error, :not_configured}`. The synthesizer propagates that out; Phase 17.4 routes it to the `pending_manual` MCP-driven completion path.
+
+Tests override either key explicitly when they need fully-stubbed adapters. `test/content_forge/runtime_config_test.exs` pins the wiring so a future cleanup cannot quietly re-add the `if config_env() == :prod` block.
