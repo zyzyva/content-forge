@@ -692,14 +692,14 @@ Phase exit criteria: a marketer can text a photo in, get it tagged into a produc
   - Register in the Elixir dispatch map and the Node plugin with a description emphasizing the two-turn flow (agent should always read the preview to the user verbatim before asking for the phrase). Reuse the existing 12.4 approval context functions rather than re-implementing; this slice only wires the tool-side guardrails.
   - Tests: submitter role = `:forbidden`; owner + gate-pass + no confirm = confirmation envelope with preview.publish_gate == `:passes`; owner + gate-block + no reason + no confirm = envelope carries `publish_gate: :blocks, required_override: true, override_reason_present: false`; owner + gate-block + reason + no confirm = envelope shows override ready; owner + gate-pass + correct confirm = draft transitions to approved, DraftApproval audit row present; owner + gate-block + reason + correct confirm = override path writes `approved_via_override: true` + reason echoed on the audit record; owner + mismatched params between request and confirm turns = `:confirmation_mismatch`; cross-product draft_id = `:not_found`; unknown draft_id = `:not_found`. One controller end-to-end exercising the full two-turn HTTP cycle.
 
-- **16.4c schedule_reminder_change** *(DONE - see `BUILDLOG.md` Phase 16.4c)*
+- **16.4c schedule_reminder_change** ✅ Shipped `3d382d8`.
   - Blocks: none. Blocked by: 16.4a. Independent of 16.4b and 16.4d.
   - Ship `ContentForge.OpenClawTools.ScheduleReminderChange` at `lib/content_forge/open_claw_tools/schedule_reminder_change.ex`. Params: `"product"` (optional, resolver), `"cadence_days"` (required integer in 1..30; absent from existing `ReminderConfig` means reminders are off, and the tool is the way to turn them back on), `"enabled"` (optional boolean, default true; setting false disables reminders independently of cadence), `"confirm"` (optional echo phrase).
   - Flow: resolve product, `Authorization.require(ctx, :owner)`. On first call, fetch the current `ReminderConfig` (create one if absent) and compute a diff against the requested change. If nothing would change (same cadence + same enabled flag), return `{:ok, %{changed: false, product_id, cadence_days, enabled}}` without ever entering the confirmation loop (short-circuit avoids forcing the user to confirm a no-op). Otherwise call `Confirmation.request/4` with `preview: %{summary, product_id, before: %{cadence_days, enabled}, after: %{cadence_days, enabled}}`. On `confirm` present call `Confirmation.confirm/4`; on `:ok` apply the update via `ContentForge.Sms.update_reminder_config/2` (new context function or existing equivalent) and return `%{changed: true, product_id, cadence_days, enabled, updated_at}`.
   - Bounds + validation: `cadence_days` must be an integer 1..30. Values outside that range return `:invalid_cadence`. `enabled` must be boolean; other types return `:invalid_enabled`.
   - Tests: submitter role = `:forbidden`; owner + change + no confirm = envelope with before/after diff; owner + change + correct confirm = ReminderConfig updated; owner + no-op request short-circuits with `changed: false` and no pending confirmation row; invalid cadence = `:invalid_cadence`; invalid enabled = `:invalid_enabled`; ambiguous product = `:ambiguous_product`. One controller end-to-end.
 
-- **16.4d generate_drafts_from_bundle**
+- **16.4d generate_drafts_from_bundle** *(DONE - see `BUILDLOG.md` Phase 16.4d)*
   - Blocks: none. Blocked by: 16.4a. Independent of 16.4b and 16.4c.
   - Ship `ContentForge.OpenClawTools.GenerateDraftsFromBundle` at `lib/content_forge/open_claw_tools/generate_drafts_from_bundle.ex`. Params: `"bundle_id"` (required UUID), `"product"` (optional, resolver), `"confirm"` (optional echo phrase).
   - Flow: resolve product, resolve bundle scoped to product (`:not_found` on miss or cross-product), `Authorization.require(ctx, :owner)`. Fetch the bundle's asset count and compute an estimated cost via the existing cost model (`ContentForge.Metrics.estimate_generation_cost/1` or the closest equivalent; if no such function exists today, this slice introduces a thin estimator reading from the same provider pricing tables the dashboard already surfaces). Check remaining product budget against `ContentForge.Metrics.remaining_generation_budget(product_id)` (same caveat applies).
@@ -721,6 +721,101 @@ Phase exit criteria: a marketer can text a photo in, get it tagged into a produc
   - Tests: agent-originated escalation creates the event; dashboard shows the escalation regardless of channel; subsequent tool calls on an escalated session return `:escalated` and the agent composes a holding reply.
 
 Phase exit criteria: (1) running `openclaw agent --message "give me an upload link for Acme"` from the CLI produces a real link through the tool path; (2) texting the same request via SMS lands the same link via Twilio; (3) an owner can text "approve the winter promo blog post" and the bot walks the confirmation flow, runs the publish gate, and reports the outcome; (4) every tool invocation appears in the audit dashboard; (5) a viewer attempting a write gets a clear refusal. None of these require new channels beyond SMS + CLI to demonstrate.
+
+## Phase 17 - Competitor Research Loop
+
+**Source-of-record:** `RESEARCH_LOOP_PLAN.md` carries the full design narrative, the architectural principles, the open questions with v1 defaults, and the rationale for each phase. This BUILDPLAN section is the swarm-readable slicing of that plan; when the two disagree, this section is authoritative for swarm execution and the source plan should be updated to match. Each slice below cross-references the relevant section in the source doc; coders read both before starting.
+
+**Why this phase:** Lead Intelligence has been doing competitor scraping ad hoc; its Twitter actor went bad; it produces a parallel corpus to Content Forge's `competitor_intel` table; and there is no feedback loop closing the gap between predicted and actual engagement. Content Forge already has the schemas and Oban jobs for all of this. They are just not booted on this machine and not all wired in dev. This phase turns CF into the corpus of record for competitor research, makes synthesis comment-aware, and stands up the corrective loop that lets external competitor wins drive a real signal back into our brief generation.
+
+**Architectural principles (carry over from `RESEARCH_LOOP_PLAN.md`):**
+- Content Forge is the corpus of record for competitor posts, comments, and synthesized intel; lead_intelligence does not duplicate this state.
+- Synthesis works with or without an Anthropic key. With a key the existing `LLMAdapter` does headless synthesis through the Oban job; without, an MCP tool surface lets a Claude session read top posts, including their comment threads, and write back structured intel manually. Both paths produce the same `competitor_intel` row shape.
+- Apify integration is per-platform configurable. When an actor goes bad, swap it in config without code changes.
+- The feedback loop is a first-class deliverable, not v2. MetricsPoller is on a cron by phase end.
+- The corrective signal is external. Our drop alone does not pivot the brief; our drop AND competitor wins in the same window does. Drop without competitor wins is treated as noise.
+- Comments are first-class research data on viral posts. Synthesis without comments is surface pattern-matching; synthesis with comments reasons about resonance.
+- No new "competitor analysis" features land in lead_intelligence. Anything new for research goes here.
+
+**Sequence and parallelism:** 17.0 is independent of every other Phase 17 slice and may ship in parallel with the Phase 16 tail. After 17.0 the critical path is 17.1 -> 17.2 -> 17.3 -> 17.4 -> 17.5 -> 17.6. 17.7 is independent of 17.3-17.6 and may run in parallel with them. 17.8 and 17.9 require human input and are flagged.
+
+- **17.0 Local environment up (launchd plist + dev DB confirm)**
+  - Blocks: 17.6 (the corrective-loop cron needs a long-running Phoenix). Blocked by: none.
+  - Create the `content_forge_dev` Postgres database (currently absent on m4; only `content_forge_test` exists). Run `mix deps.get` and `mix ecto.migrate` against dev. Confirm `mix phx.server` boots clean against dev and the dashboard renders with no 500s.
+  - Install `~/Library/LaunchAgents/com.zyzyva.content-forge.plist` mirroring the lead_intelligence pattern: `KeepAlive` true, `RunAtLoad` true, `WorkingDirectory` set to the repo, `StandardOutPath` and `StandardErrorPath` to `~/Library/Logs/content-forge.log`. The plist runs `mix phx.server` against the dev env; do not bind to a port the test suite uses (test runs on the Phoenix test pipeline, not 4000, so the dev default port is fine but document it explicitly).
+  - Confirm the Oban queue supervisor starts on boot even before any jobs are due; restarting the launchd job picks up where it left off without manual intervention.
+  - Acceptance: `launchctl list | grep com.zyzyva.content-forge` shows the job loaded; the dashboard answers on the configured dev port; killing the Phoenix process triggers a restart within seconds; no Postgres connection storms in the log on restart.
+  - See `RESEARCH_LOOP_PLAN.md` Phase 0 for full detail.
+
+- **17.1 Twitter Apify adapter fix + comment harvesting infra**
+  - Blocks: 17.4 (synthesis is comment-aware), 17.5 (importer mirrors the schema), 17.6 (corrective loop reads comment-derived intel). Blocked by: 17.0.
+  - Two work streams in one slice (sized this way because the schema migration plus the actor-config change is one TDD loop and they are tightly coupled):
+    - Post harvesting: route the Twitter platform to the kaitoeasyapi actor identifier in the per-platform `actors` config; extend the input shape so handle-driven scrapes pass a `from` field in addition to the existing `handle/username/screenName/searchTerms` keys (other actors ignore unknown keys, so this is safe); add a defensive filter that drops items carrying a `noResults` marker before normalisation; add a fixture-based unit test exercising the kaitoeasyapi response shape.
+    - Comment harvesting: new `competitor_post_comments` schema and migration with the column set documented in `RESEARCH_LOOP_PLAN.md` Phase 1, including the FK to `competitor_posts` with cascade delete, the unique index on `(competitor_post_id, platform_comment_id)`, and the `raw_payload` jsonb column; viral threshold sourced from `:content_forge, :competitor_research, :viral_threshold` (default `5x rolling avg OR 100k absolute views`); new `ContentForge.Jobs.CompetitorCommentHarvester` Oban worker that takes a `competitor_post_id`, fetches up to `:max_comments_per_viral_post` (default 50) by like count via the configured Apify actor, normalises each, upserts into `competitor_post_comments`. Triggered on (a) initial post ingest crossing the threshold and (b) the 17.6 weekly refresher.
+  - Apify free-plan note: the live integration test (`@tag :live` on the "non-empty list of posts" criterion) cannot run against Twitter until the m4 credit cycle resets 2026-05-05. Code against captured fixtures from `~/projects/lead_intelligence/priv/twitter_scrapes.db` and the recorded kaitoeasyapi response shape; re-verify the live criterion when credit returns.
+  - Tests: post-path normalization fixture; viral-threshold predicate function with three combinations (below, at, above); comment-harvester happy path with stubbed actor + idempotent re-run inserts zero new rows; viral-post detection on initial scrape enqueues the harvester; nested-reply parent linkage via `in_reply_to_id`.
+  - See `RESEARCH_LOOP_PLAN.md` Phase 1 for full detail.
+
+- **17.2 Open the dev/prod config gate**
+  - Blocks: 17.3 (MCP tool calls into the synthesizer), 17.6 (cron needs the synthesizer wired). Blocked by: 17.1.
+  - Move `:scraper_adapter` and `:intel_model` bindings out of the `if config_env() == :prod` block in `runtime.exs`. Replace the env gate with presence checks on `APIFY_TOKEN` and `ANTHROPIC_API_KEY` so dev runs of the Oban jobs use the real adapters when keys are present and report a clear `:not_configured` error when not. Document the new behaviour in `CLAUDE.md` and the relevant `CONTENT_FORGE_SPEC.md` integration sections so the prod gate is not re-added.
+  - Acceptance: dev boot with both env vars present runs both jobs end-to-end; dev boot with `APIFY_TOKEN` missing returns a clear `:not_configured` error rather than silently discarding; dev boot with `ANTHROPIC_API_KEY` missing leaves the synthesis in a `pending_manual` state for the 17.4 MCP-driven completion path.
+  - See `RESEARCH_LOOP_PLAN.md` Phase 2 for full detail.
+
+- **17.3 Content Forge MCP server**
+  - Blocks: 17.4 (the manual synthesis path uses the MCP tools), 17.5 (the importer is exposed as an MCP tool). Blocked by: 17.0, 17.2.
+  - Add the `SimpleMCP` dependency from the same git source `lead_intelligence` uses. Build a `ContentForgeMCP` server module that exposes the tool set listed in `RESEARCH_LOOP_PLAN.md` Phase 3, with the exact param + return shapes documented there: `cf_create_product`, `cf_list_products`, `cf_add_competitor`, `cf_list_competitors`, `cf_scrape_competitor`, `cf_top_posts_for_synthesis`, `cf_store_intel`, `cf_get_intel`, `cf_import_twitter_sqlite`. All tools return structured `%{...}` or `{:error, %{code, message, details}}` and route through the existing context modules (`Products`, `Metrics`, `ContentGeneration`); no Phoenix or Bandit reach-through.
+  - Stdio transport wrapper following the lead_intelligence pattern. Register the new MCP server in the Claude Code config so sessions can connect to it.
+  - Tests: per-tool happy-path with stubbed context returns; missing-dependency paths (no `APIFY_TOKEN`, unknown product, etc.) return the structured error envelope rather than crashing the stdio process; tool-name dispatch test asserting every documented tool is registered.
+  - See `RESEARCH_LOOP_PLAN.md` Phase 3 for full detail.
+
+- **17.4 With-or-without-key synthesis + comment-aware prompts + audience_signals column**
+  - Blocks: 17.5 (importer feeds into the comment-aware shape), 17.6 (corrective loop's week-windowed synthesis uses this path). Blocked by: 17.1, 17.3.
+  - Schema additions: add `audience_signals` (`{:array, :string}`, default `[]`, not null) and `window` (`:string`, nullable, indexed, allowed values `"all" | "week" | "month"`) columns to `competitor_intel`; cast both in the changeset; update every selector that reads from `competitor_intel` to include the new columns.
+  - With-key path: keep the existing `LLMAdapter` contract; update its prompt builder so each top post passed in carries its top-50-by-likes comment thread; populate `audience_signals` (free-form short strings capturing recurring objections, questions, emotional reactions, consensus tropes) and `window` on the resulting row.
+  - Without-key path: when no `ANTHROPIC_API_KEY` is configured, the synthesizer marks the attempt as `pending_manual` against the product, with references to the top posts and their comments. The pending queue is exposed through the Phase 17.3 MCP tools so a Claude session can list pending syntheses, read the bundle, and call `cf_store_intel` with the same row shape the with-key path produces.
+  - Both paths receive the same input bundle shape so behaviour is consistent.
+  - Tests (Req.Test stubs for the LLM client): with-key path produces a `competitor_intel` row autonomously and `audience_signals` is populated when at least one source post has comments; without-key path leaves the synthesis pending and an MCP-driven completion produces an indistinguishable row; comment data makes it into the prompt; `window` round-trips correctly.
+  - See `RESEARCH_LOOP_PLAN.md` Phase 4 for full detail.
+
+- **17.5 Sqlite backfill importer (posts + comments) via MCP**
+  - Blocks: 17.8 (HollerClean bootstrap leans on the existing cleanwithmike sqlite). Blocked by: 17.1, 17.3, 17.4.
+  - The importer is the `cf_import_twitter_sqlite` MCP tool from 17.3; this slice ships its real implementation. Inputs: `sqlite_path`, `product_id`, `competitor_id`, optional `since` / `until`. Reads the standalone scraper's sqlite (`tweets` + `comments` tables), upserts each into `competitor_posts` and `competitor_post_comments` respectively, recomputes the competitor account's rolling engagement average so per-post scores reflect the broader corpus.
+  - Idempotent. Re-running over the same source produces zero new rows for both tables.
+  - Tests: happy-path import against a small fixture sqlite asserting the row counts + the comment foreign-key linkage; idempotent re-run; date-range filtering; missing sqlite returns `not_found` through the MCP error envelope.
+  - See `RESEARCH_LOOP_PLAN.md` Phase 5 for full detail.
+
+- **17.6 MetricsPoller cron + competitor refresher cron + corrective-loop replacement**
+  - Blocks: 17.8 (HollerClean bootstrap needs the loop closing). Blocked by: 17.0, 17.1, 17.4. 17.7 helps but is not blocking.
+  - Three coordinated changes:
+    - Oban cron entry for `MetricsPoller` covering every active product on a 6-hour cadence (v1 default per the plan's open-questions section); "active product" means at least one published post in the last 90 days.
+    - Oban cron entry for a competitor scrape refresher running weekly, fetching only posts newer than what is already in the DB; re-evaluating the viral threshold per scrape and queuing comment harvesting for posts that crossed since the previous run.
+    - Replace `MetricsPoller`'s existing "5 poor performers detected -> force_rewrite" trigger with the two-condition external corrective loop: a brief regeneration enqueues only when (a) our own published content underperformed in the period AND (b) at least one tracked competitor had posts that beat their own rolling average in the same window. The synthesis enqueued by the trigger is week-windowed (passes `window: "week"` per 17.4) so it summarises the corrective signal, not all-time intel. Every other combination is a no-op.
+  - Operator surface (small): a LiveView page or an MCP tool surfacing recent scoreboard outcomes per product so we can verify the loop is closing without trawling the DB.
+  - Tests: each combination of internal-drop x competitor-wins fires or no-ops as documented (four cases); the cron schedule survives a launchd-managed Phoenix restart; refresher cron only enqueues comment harvesting for posts that crossed the threshold since the last run.
+  - See `RESEARCH_LOOP_PLAN.md` Phase 6 for full detail.
+
+- **17.7 Per-platform metrics fetcher audit + Twitter implementation**
+  - Blocks: nothing strictly (17.6 ships even with stub fetchers, but the loop is only honest once 17.7 runs). Blocked by: 17.0. Independent of 17.3-17.6.
+  - For each publishing platform module (twitter, linkedin, facebook, reddit, youtube), classify the metrics fetcher as fully implemented, partial stub, or placeholder. For partials and placeholders, document what is missing in `CAPABILITIES.md`. Implement the Twitter fetcher at minimum, routing through Apify (kaitoeasyapi) per the plan's v1 default to keep one credential and one failure mode for the system. Other platforms can remain stubs as long as their stub state is loud (raises or returns explicit `:not_implemented`), not silent (no zero-filled rows).
+  - Tests: each implemented fetcher gets a recorded-fixture test; stub fetchers have a regression test asserting they fail loudly when called.
+  - See `RESEARCH_LOOP_PLAN.md` Phase 7 for full detail.
+
+- **17.8 Bootstrap HollerClean as the first product** `requires_human`
+  - Blocks: 17.9. Blocked by: 17.1 through 17.6 (all). 17.7 helpful but not blocking.
+  - Use everything above to do a full pass for HollerClean end to end: create the product with voice profile and any publishing-target credentials; add `@cleanwithmike` plus 2-3 other cleaning-business operator accounts as competitors; run the importer against the existing cleanwithmike sqlite; trigger fresh scrapes for the others; run the synthesizer (headless if key present, MCP-driven if not); verify the resulting `competitor_intel` carries hooks/formats/topics that match the patterns we already documented manually; take whatever drafts CF produces and run them through the multi-model ranker for a baseline prediction.
+  - Acceptance: HollerClean visible in the product list with three or more competitors carrying real posts; one `competitor_intel` row populated for HollerClean; at least one draft generated by the brief generator using that intel and ranked by the multi-model ranker; nothing in the workflow required leaving the MCP surface plus the CF dashboard.
+  - Requires human input: voice profile content, competitor handle list, publishing credentials (if any). Architect or coder pauses for human confirmation before the first synthesis run if the voice profile is empty.
+  - See `RESEARCH_LOOP_PLAN.md` Phase 8 for full detail.
+
+- **17.9 Lead Intelligence cleanup follow-up** `requires_human`
+  - Blocks: nothing. Blocked by: 17.8.
+  - Once CF is doing the work, decide whether to deprecate `analyze_video` and `analyze_channel_videos` in lead_intelligence's MCP (redirect to CF) or keep them as a dev-time scratch pad with a clear note. If deprecating, extend the redirect helper, mirror the description prefix, update lead_intelligence's `CLAUDE.md`. Audit the lead_intelligence Content context for code with no production caller anymore. Decide whether the standalone scraper script `lead_intelligence/priv/scripts/scrape_twitter.exs` belongs in CF instead.
+  - Acceptance: the two repos have a clear documented division of labour (research and content production in CF; lead and outreach state in lead_intelligence); no MCP tool in either claims to do something it cannot; both `CLAUDE.md` files reflect the post-cleanup state.
+  - Requires human input: keep-vs-delete decisions on lead_intelligence code with no production caller.
+  - See `RESEARCH_LOOP_PLAN.md` Phase 9 for full detail.
+
+Phase exit criteria: (1) HollerClean has competitor_intel populated from the corpus-of-record path; (2) MetricsPoller is on a cron and the corrective loop fires only on the our-drop + competitor-wins combination; (3) the MCP server lets a Claude session walk a full research loop without leaving stdio; (4) the kaitoeasyapi adapter survives the next time an upstream actor goes bad without a code change; (5) lead_intelligence and CF have a documented, non-overlapping division of labour.
 
 ## Phase 15 — Polish
 

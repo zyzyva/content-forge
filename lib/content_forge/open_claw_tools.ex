@@ -38,6 +38,7 @@ defmodule ContentForge.OpenClawTools do
   alias ContentForge.OpenClawTools.CreateAssetBundle
   alias ContentForge.OpenClawTools.CreateUploadLink
   alias ContentForge.OpenClawTools.DraftStatus
+  alias ContentForge.OpenClawTools.GenerateDraftsFromBundle
   alias ContentForge.OpenClawTools.ListRecentAssets
   alias ContentForge.OpenClawTools.RecordMemory
   alias ContentForge.OpenClawTools.ScheduleReminderChange
@@ -64,7 +65,8 @@ defmodule ContentForge.OpenClawTools do
     "add_tag_to_asset" => AddTagToAsset,
     "record_memory" => RecordMemory,
     "approve_draft" => ApproveDraft,
-    "schedule_reminder_change" => ScheduleReminderChange
+    "schedule_reminder_change" => ScheduleReminderChange,
+    "generate_drafts_from_bundle" => GenerateDraftsFromBundle
   }
 
   @doc """

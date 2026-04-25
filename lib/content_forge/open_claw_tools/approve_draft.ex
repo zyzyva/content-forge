@@ -61,7 +61,8 @@ defmodule ContentForge.OpenClawTools.ApproveDraft do
   @tool_name "approve_draft"
   @snippet_length 200
 
-  @spec call(map(), map()) :: {:ok, map()} | {:ok, :confirmation_required, map()} | {:error, term()}
+  @spec call(map(), map()) ::
+          {:ok, map()} | {:ok, :confirmation_required, map()} | {:error, term()}
   def call(ctx, params) when is_map(params) do
     with {:ok, product} <- ProductResolver.resolve(ctx, params),
          {:ok, draft} <- fetch_draft(product, params),
@@ -81,6 +82,7 @@ defmodule ContentForge.OpenClawTools.ApproveDraft do
 
   defp request_turn(ctx, params, product, draft) do
     preview = build_preview(params, product, draft)
+
     Confirmation.request(@tool_name, ctx, params, preview)
     |> case do
       {:ok, envelope} -> {:ok, :confirmation_required, envelope}
