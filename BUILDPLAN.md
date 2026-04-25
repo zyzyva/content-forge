@@ -778,7 +778,7 @@ Phase exit criteria: (1) running `openclaw agent --message "give me an upload li
   - Tests (Req.Test stubs for the LLM client): with-key path produces a `competitor_intel` row autonomously and `audience_signals` is populated when at least one source post has comments; without-key path leaves the synthesis pending and an MCP-driven completion produces an indistinguishable row; comment data makes it into the prompt; `window` round-trips correctly.
   - See `RESEARCH_LOOP_PLAN.md` Phase 4 for full detail.
 
-- **17.5 Sqlite backfill importer (posts + comments) via MCP**
+- **17.5 Sqlite backfill importer (posts + comments) via MCP** *(DONE - see `BUILDLOG.md` Phase 17.5)*
   - Blocks: 17.8 (HollerClean bootstrap leans on the existing cleanwithmike sqlite). Blocked by: 17.1, 17.3, 17.4.
   - The importer is the `cf_import_twitter_sqlite` MCP tool from 17.3; this slice ships its real implementation. Inputs: `sqlite_path`, `product_id`, `competitor_id`, optional `since` / `until`. Reads the standalone scraper's sqlite (`tweets` + `comments` tables), upserts each into `competitor_posts` and `competitor_post_comments` respectively, recomputes the competitor account's rolling engagement average so per-post scores reflect the broader corpus.
   - Idempotent. Re-running over the same source produces zero new rows for both tables.

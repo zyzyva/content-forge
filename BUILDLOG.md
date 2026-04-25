@@ -82,6 +82,49 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 17.5: Sqlite backfill importer (posts + comments) via MCP
+
+Status: DONE
+Note: Critical-path Phase 17 slice. Replaces 17.3's `cf_import_twitter_sqlite` placeholder with a real importer that backfills from the standalone scraper's sqlite (`tweets` + `comments` tables; canonical shape lives at `~/projects/lead_intelligence/priv/twitter_scrapes.db`). Idempotent re-runs report zero new rows; `since` / `until` ISO dates bound the import; rolling-average engagement gets recomputed against the broader corpus after a successful backfill. Unblocks 17.8 (HollerClean bootstrap leans on the existing cleanwithmike sqlite).
+
+**New dep** (`mix.exs` + `mix.lock`): `{:exqlite, "~> 0.27"}` locked at `0.36.0` — pure NIF for the sqlite read path, no Ecto adapter integration needed for one-shot reads.
+
+**Migration** (`priv/repo/migrations/20260513120000_unique_index_on_competitor_posts.exs`):
+- `unique_index(:competitor_posts, [:competitor_account_id, :post_id])` named `competitor_posts_account_post_id_index`. The pre-existing scraper job did its own in-memory dedupe before insert, so this index lands without a backfill conflict; the importer leans on it for the natural-key check via `existing_post/2`.
+
+**Context helpers** (`lib/content_forge/products.ex`):
+- `Products.upsert_competitor_post/1` — pre-checks `(competitor_account_id, post_id)`. Returns `{:ok, %{row, status: :inserted | :skipped}}` so callers can count fresh imports vs already-known rows. The status distinction is what makes the importer's response shape (`posts_imported` / `posts_skipped`) honest.
+- `Products.recompute_engagement_scores_for_account/1` — loads every post for the account, computes the corpus average via `likes + comments * 2 + shares * 3`, and updates each post's `engagement_score` to the relative ratio. Returns `{updated_count, average_engagement}`. The importer calls this after the post + comment passes so the scores reflect the full backfilled set rather than the pre-import slice.
+
+**Importer module** (`lib/content_forge/competitor_scraper/sqlite_importer.ex`):
+- Public entry point `import_twitter_sqlite/1` takes `%{sqlite_path, competitor, since: optional, until: optional}`. Returns `{:ok, %{posts_imported, posts_skipped, comments_imported, comments_skipped, rolling_avg_engagement}}` or a classified error.
+- File-existence pre-check returns `{:error, :sqlite_not_found}` so the MCP layer can render `not_found` cleanly without an Exqlite open attempt.
+- Streams tweets via `Exqlite.Sqlite3.prepare/bind/step` wrapped in a `Stream.resource` so memory stays bounded for the 6,800-row cleanwithmike file. Same pattern for comments.
+- ISO-8601 text comparison on `posted_at` (lexicographic == chronological for ISO dates) handles the `since` / `until` filter without any unix-timestamp drift between the source's `posted_unix` column and the input ISO date.
+- Comments without a parent tweet in the corpus (the source sqlite can carry orphan replies) are silently `:ignored` during the comment pass; only comments whose parent landed in `competitor_posts` get inserted.
+- Each pass tallies `:inserted` vs `:skipped` so the response counts are explicit. Existing comments are detected via `existing_comment?/2` against the `(competitor_post_id, platform_comment_id)` partial unique from 17.1; existing posts via `existing_post/2` against the new 17.5 unique index.
+- After the row passes complete, calls `Products.recompute_engagement_scores_for_account/1` and surfaces the new `rolling_avg_engagement` in the response so callers can see the corpus shift in one round trip.
+
+**MCP wiring** (`lib/content_forge_mcp/server.ex`):
+- `cf_import_twitter_sqlite` placeholder body replaced with the real importer call. Validates `sqlite_path` and `competitor_id` as required binaries; threads optional `since` / `until` ISO dates through. Resolves the competitor through `fetch_competitor/1` (existing helper) so an unknown id returns `not_found` via the standard envelope before the importer ever opens the file.
+- Importer error classification:
+  - `:sqlite_not_found` -> `not_found` envelope with `details.sqlite_path` so the agent can ask the user for the right path.
+  - `{:sqlite_open_failed, reason}` -> `dependency_error` envelope.
+  - Anything else -> `dependency_error` envelope with `inspect/1`'d reason.
+
+**Tests** (12 new):
+- `test/content_forge/competitor_scraper/sqlite_importer_test.exs` (9): builds a fixture sqlite in `System.tmp_dir!()` per test using `Exqlite.Sqlite3` directly with the standalone scraper's exact column shape. Three tweets across Jan/Feb/Mar 2026 + two real comments + one orphan comment whose parent never lands. Asserts: happy import populates rows + counts match; comments link to the right parent; engagement_score recomputed against corpus average; idempotent re-run = zero new rows; `since=2026-02-01` excludes Jan; `until=2026-03-01` excludes Mar; both bounds together yield only Feb; non-existent sqlite returns `:sqlite_not_found`; orphan comments are silently dropped.
+- `test/content_forge_mcp/server_test.exs` (3 new): missing sqlite returns `not_found` via the MCP envelope; unknown competitor returns `not_found`; happy path walks the full HTTP-style call into the importer with a tiny inline fixture sqlite and asserts `posts_imported: 1` end-to-end.
+
+**Spec deviations**:
+- The spec said "Reads the standalone scraper's sqlite (tweets + comments tables), upserts each into competitor_posts and competitor_post_comments". Shipped as **insert-when-missing** rather than literal upsert: re-running over the same source preserves any metric refinement the live scraper has done since the original import, which matches the spec's idempotency criterion (zero new rows on re-run). Updating already-known rows would require explicit re-import after delete; documented in the importer moduledoc.
+- The since/until filter compares against `posted_at` text rather than `posted_unix` integer because ISO-8601 strings sort lexicographically the same way they sort chronologically. This avoids carrying date-to-unix conversion logic for both the input and the source data.
+
+**What this slice explicitly does NOT do** (only 17.6 remains on the critical path):
+- 17.6 adds the cron entries (`MetricsPoller` + competitor refresher) and replaces the existing trigger with the two-condition external corrective loop.
+
+**Gate**: `mix compile --warnings-as-errors` clean, `mix format --check-formatted` clean, `mix test` 1082/0 (12 new), `mix credo --strict` baseline-diff empty for slice-touched files. Zero emdashes in slice-touched files. Migration applied to both `MIX_ENV=test` and `MIX_ENV=dev`.
+
 ### Phase 17.4: With-or-without-key synthesis + comment-aware prompts + pending_manual route
 
 Status: DONE
