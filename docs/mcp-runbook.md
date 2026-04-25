@@ -31,7 +31,7 @@ touching the LiveView dashboard.
 | `cf_store_intel` | persist a manual synthesis (without-key path) |
 | `cf_get_intel` | latest competitor intel or last five |
 | `cf_list_pending_syntheses` | without-key route's pending queue (17.4) |
-| `cf_import_twitter_sqlite` | registered; full implementation lands in 17.5 |
+| `cf_import_twitter_sqlite` | sqlite backfill (posts + comments) via the standalone scraper's `tweets` + `comments` tables (17.5) |
 
 Every tool returns either a structured success map or a
 `%{code, message, details}` error envelope. Standard codes:
