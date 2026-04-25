@@ -85,6 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 17.2: Open the dev/prod config gate
 
 Status: DONE
+Merged: master @ `0408035` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 1027-0, credo 25 vs 44 baseline (zero new in slice-touched files). Zero emdashes in 17.2 additions across CLAUDE.md, SPEC, BUILDLOG, BUILDPLAN, runtime.exs, and the new pinning test. Adapter-layer gating is sound: missing `APIFY_TOKEN` returns `:not_configured` with zero HTTP, same for missing `ANTHROPIC_API_KEY` at the LLM layer. `runtime_config_test.exs` pins the wiring across envs so a future refactor cannot silently re-add the prod-only gate.
 Note: Smallest critical-path slice in Phase 17. Moves the `:scraper_adapter` and `:intel_model` Application config out of `if config_env() == :prod` in `runtime.exs` so dev runs of the Oban jobs exercise the real adapters. The adapters themselves remain the source of truth for "credentials present?" - they return `{:error, :not_configured}` when the relevant env var is absent, with zero HTTP I/O. Unblocks 17.3 (the MCP server's tool surface lands against the dev wiring) and 17.6 (cron entries need the adapters wired in dev too).
 
 **Config change** (`config/runtime.exs`):
