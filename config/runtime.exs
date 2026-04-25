@@ -59,14 +59,28 @@ config :content_forge, :apify,
   poll_interval_ms: String.to_integer(System.get_env("APIFY_POLL_INTERVAL_MS", "3000")),
   poll_max_attempts: String.to_integer(System.get_env("APIFY_POLL_MAX_ATTEMPTS", "60"))
 
-# Top-level scraper wiring: only in :prod. Test environment leaves both
-# unset so the CompetitorScraper's "discard" path stays observable.
-if config_env() == :prod do
-  config :content_forge,
-    apify_token: System.get_env("APIFY_TOKEN"),
-    scraper_adapter: ContentForge.CompetitorScraper.ApifyAdapter,
-    intel_model: ContentForge.CompetitorIntelSynthesizer.LLMAdapter
-end
+# Top-level scraper + intel-model wiring (Phase 17.2: dev/prod
+# config gate opened). The adapters are now wired in every
+# environment so the dev loop exercises the real code paths;
+# runtime gating happens at the adapter layer based on
+# environment-variable presence.
+#
+# - Missing APIFY_TOKEN: ApifyAdapter.fetch_posts/1 returns
+#   {:error, :not_configured} without any HTTP I/O. The scraper
+#   job propagates this clearly rather than silently discarding.
+# - Missing ANTHROPIC_API_KEY: ContentForge.LLM.Anthropic.complete/2
+#   returns {:error, :not_configured} immediately; the synthesizer
+#   surfaces the failure and Phase 17.4 will route it to a
+#   pending_manual MCP-driven completion path.
+#
+# Tests override either key explicitly when they need
+# fully-stubbed adapters; the test environment gets the real
+# adapters wired by default but APIFY_TOKEN / ANTHROPIC_API_KEY
+# stay unset so no live HTTP fires.
+config :content_forge,
+  apify_token: System.get_env("APIFY_TOKEN"),
+  scraper_adapter: ContentForge.CompetitorScraper.ApifyAdapter,
+  intel_model: ContentForge.CompetitorIntelSynthesizer.LLMAdapter
 
 config :content_forge, :llm,
   anthropic: [

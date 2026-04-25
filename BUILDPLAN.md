@@ -756,7 +756,7 @@ Phase exit criteria: (1) running `openclaw agent --message "give me an upload li
   - Tests: post-path normalization fixture; viral-threshold predicate function with three combinations (below, at, above); comment-harvester happy path with stubbed actor + idempotent re-run inserts zero new rows; viral-post detection on initial scrape enqueues the harvester; nested-reply parent linkage via `in_reply_to_id`.
   - See `RESEARCH_LOOP_PLAN.md` Phase 1 for full detail.
 
-- **17.2 Open the dev/prod config gate**
+- **17.2 Open the dev/prod config gate** *(DONE - see `BUILDLOG.md` Phase 17.2)*
   - Blocks: 17.3 (MCP tool calls into the synthesizer), 17.6 (cron needs the synthesizer wired). Blocked by: 17.1.
   - Move `:scraper_adapter` and `:intel_model` bindings out of the `if config_env() == :prod` block in `runtime.exs`. Replace the env gate with presence checks on `APIFY_TOKEN` and `ANTHROPIC_API_KEY` so dev runs of the Oban jobs use the real adapters when keys are present and report a clear `:not_configured` error when not. Document the new behaviour in `CLAUDE.md` and the relevant `CONTENT_FORGE_SPEC.md` integration sections so the prod gate is not re-added.
   - Acceptance: dev boot with both env vars present runs both jobs end-to-end; dev boot with `APIFY_TOKEN` missing returns a clear `:not_configured` error rather than silently discarding; dev boot with `ANTHROPIC_API_KEY` missing leaves the synthesis in a `pending_manual` state for the 17.4 MCP-driven completion path.

@@ -97,6 +97,8 @@ Acceptance criteria:
 - [ ] Dashboard shows competitor content trends alongside your own performance
 - [ ] Competitor accounts and intel are manageable via REST API
 
+**Adapter wiring (Phase 17.2):** the `:scraper_adapter` and `:intel_model` Application config keys are wired in every Mix env (not gated on `config_env() == :prod`). The adapters report `{:error, :not_configured}` when their respective env vars (`APIFY_TOKEN` / `ANTHROPIC_API_KEY`) are absent, so the dev loop exercises the same code path production does. Re-introducing a `:prod`-only gate is a regression; `test/content_forge/runtime_config_test.exs` pins this.
+
 ---
 
 ### Feature 4: Short-form Post Publishing
