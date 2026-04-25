@@ -467,4 +467,185 @@ defmodule ContentForge.CompetitorScraper.ApifyAdapterTest do
       assert log =~ "parse" or log =~ "skipped"
     end
   end
+
+  describe "Phase 17.1 kaitoeasyapi twitter response shape" do
+    # Captured shape per RESEARCH_LOOP_PLAN.md Phase 1: kaitoeasyapi
+    # responses include `viewCount` and `conversationId` we did not
+    # surface previously, plus a `noResults` placeholder when the
+    # actor finds nothing for the given handle.
+    setup do
+      put_cfg(
+        Keyword.put(
+          cfg(),
+          :actors,
+          Map.put(
+            cfg()[:actors],
+            "twitter",
+            "kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest"
+          )
+        )
+      )
+
+      :ok
+    end
+
+    test "post normalisation surfaces views_count, conversation_id, and raw_data" do
+      items = [
+        %{
+          "id" => "1888888",
+          "text" => "viral take",
+          "url" => "https://x.com/acme/status/1888888",
+          "likeCount" => 4_200,
+          "replyCount" => 311,
+          "retweetCount" => 950,
+          "viewCount" => 250_000,
+          "conversationId" => "conv-1888888",
+          "createdAt" => "2026-04-20T12:34:56.000Z",
+          "author" => %{"userName" => "acme"}
+        }
+      ]
+
+      stage_success(items, "kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest")
+
+      assert {:ok, [post]} = ApifyAdapter.fetch_posts(account(%{platform: "twitter"}))
+      assert post.post_id == "1888888"
+      assert post.likes_count == 4_200
+      assert post.comments_count == 311
+      assert post.shares_count == 950
+      assert post.views_count == 250_000
+      assert post.conversation_id == "conv-1888888"
+      assert post.raw_data["conversationId"] == "conv-1888888"
+    end
+
+    test "noResults marker items are dropped before normalisation" do
+      items = [
+        %{"noResults" => true, "id" => "noise-1"},
+        %{
+          "id" => "1999000",
+          "text" => "real tweet",
+          "url" => "https://x.com/acme/status/1999000",
+          "likeCount" => 5,
+          "replyCount" => 0,
+          "retweetCount" => 0,
+          "viewCount" => 100,
+          "conversationId" => "conv-1999000",
+          "createdAt" => "2026-04-20T13:00:00.000Z"
+        }
+      ]
+
+      stage_success(items, "kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest")
+
+      assert {:ok, [post]} = ApifyAdapter.fetch_posts(account(%{platform: "twitter"}))
+      assert post.post_id == "1999000"
+    end
+
+    test "an all-noResults dataset returns an empty list cleanly (no parse_failure)" do
+      items = [
+        %{"noResults" => true, "id" => "noise-a"},
+        %{"noResults" => true, "id" => "noise-b"}
+      ]
+
+      stage_success(items, "kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest")
+
+      assert {:ok, []} = ApifyAdapter.fetch_posts(account(%{platform: "twitter"}))
+    end
+
+    test "fetch_comments/2 normalises kaitoeasyapi reply items, top-N by likes" do
+      post = %ContentForge.Products.CompetitorPost{
+        id: "00000000-0000-0000-0000-0000000000aa",
+        post_url: "https://x.com/acme/status/1888888",
+        conversation_id: "conv-1888888"
+      }
+
+      items = [
+        %{
+          "id" => "rep-1",
+          "text" => "low resonance",
+          "createdAt" => "2026-04-21T10:00:00.000Z",
+          "likeCount" => 1,
+          "author" => %{"userName" => "lurker"}
+        },
+        %{
+          "id" => "rep-2",
+          "text" => "high resonance",
+          "createdAt" => "2026-04-21T11:00:00.000Z",
+          "likeCount" => 75,
+          "replyCount" => 4,
+          "author" => %{"userName" => "fan42"}
+        },
+        %{"noResults" => true},
+        %{
+          "id" => "rep-3",
+          "text" => "mid",
+          "createdAt" => "2026-04-21T12:00:00.000Z",
+          "likeCount" => 10
+        }
+      ]
+
+      stage_success(items, "kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest")
+
+      assert {:ok, comments} =
+               ApifyAdapter.fetch_comments(post, limit: 2, platform: "twitter")
+
+      assert length(comments) == 2
+      assert [first, second] = comments
+      assert first[:platform_comment_id] == "rep-2"
+      assert first[:likes_count] == 75
+      assert first[:author_handle] == "fan42"
+      assert first[:competitor_post_id] == post.id
+      assert first[:conversation_id] == "conv-1888888"
+      assert first[:raw_payload]["author"]["userName"] == "fan42"
+      assert second[:platform_comment_id] == "rep-3"
+    end
+
+    test "fetch_comments/2 returns :missing_conversation_id when post has none" do
+      post = %ContentForge.Products.CompetitorPost{
+        id: "00000000-0000-0000-0000-0000000000bb",
+        conversation_id: nil,
+        post_url: "https://x.com/acme/status/x"
+      }
+
+      assert {:error, :missing_conversation_id} =
+               ApifyAdapter.fetch_comments(post, platform: "twitter")
+    end
+
+    test "the run input includes a `from` key alongside the existing handle keys" do
+      ref = make_ref()
+      test_pid = self()
+
+      Req.Test.stub(@stub_key, fn conn ->
+        cond do
+          conn.method == "POST" and String.starts_with?(conn.request_path, "/v2/acts/") ->
+            {:ok, body, conn} = Plug.Conn.read_body(conn)
+            send(test_pid, {ref, :run_input, body})
+
+            Req.Test.json(conn, %{
+              "data" => %{"id" => "run", "status" => "READY", "defaultDatasetId" => "ds"}
+            })
+
+          conn.request_path == "/v2/actor-runs/run" ->
+            Req.Test.json(conn, %{
+              "data" => %{"id" => "run", "status" => "SUCCEEDED", "defaultDatasetId" => "ds"}
+            })
+
+          conn.request_path == "/v2/datasets/ds/items" ->
+            Req.Test.json(conn, [])
+
+          true ->
+            flunk("unexpected #{conn.method} #{conn.request_path}")
+        end
+      end)
+
+      _ = ApifyAdapter.fetch_posts(account(%{platform: "twitter", handle: "acme"}))
+
+      assert_receive {^ref, :run_input, body}
+      decoded = Jason.decode!(body)
+      assert decoded["from"] == "acme"
+      # Existing keys must still be present - other actors ignore unknown
+      # keys, so this addition is safe.
+      assert decoded["handle"] == "acme"
+      assert decoded["username"] == "acme"
+      assert decoded["screenName"] == "acme"
+    end
+  end
 end

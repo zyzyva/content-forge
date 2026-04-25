@@ -200,4 +200,88 @@ defmodule ContentForge.Jobs.CompetitorScraperTest do
       assert Products.list_competitor_posts_for_account(account.id) == []
     end
   end
+
+  describe "Phase 17.1 viral comment-harvest trigger" do
+    defmodule ViralAdapter do
+      @moduledoc false
+      def fetch_posts(_account) do
+        {:ok,
+         [
+           %{
+             post_id: "viral-1",
+             content: "viral",
+             post_url: "https://x.com/acme/status/viral-1",
+             likes_count: 4_200,
+             comments_count: 311,
+             shares_count: 950,
+             views_count: 250_000,
+             conversation_id: "conv-viral-1",
+             posted_at: DateTime.utc_now() |> DateTime.truncate(:second),
+             raw_data: %{"id" => "viral-1"}
+           },
+           %{
+             post_id: "quiet-1",
+             content: "quiet",
+             post_url: "https://x.com/acme/status/quiet-1",
+             likes_count: 5,
+             comments_count: 1,
+             shares_count: 0,
+             views_count: 100,
+             conversation_id: "conv-quiet-1",
+             posted_at: DateTime.utc_now() |> DateTime.truncate(:second),
+             raw_data: %{"id" => "quiet-1"}
+           }
+         ]}
+      end
+    end
+
+    setup do
+      Application.put_env(:content_forge, :apify_token, "test-token")
+      Application.put_env(:content_forge, :scraper_adapter, ViralAdapter)
+
+      original = Application.get_env(:content_forge, :competitor_research)
+
+      Application.put_env(:content_forge, :competitor_research,
+        viral_views_multiplier: 5,
+        viral_views_floor: 100_000
+      )
+
+      on_exit(fn ->
+        if is_nil(original) do
+          Application.delete_env(:content_forge, :competitor_research)
+        else
+          Application.put_env(:content_forge, :competitor_research, original)
+        end
+      end)
+
+      :ok
+    end
+
+    test "enqueues CompetitorCommentHarvester only for posts that cross the viral threshold",
+         %{product: product} do
+      {:ok, _account} =
+        Products.create_competitor_account(%{
+          product_id: product.id,
+          platform: "twitter",
+          handle: "acme",
+          url: "https://x.com/acme",
+          active: true
+        })
+
+      assert :ok = perform_job(CompetitorScraper, %{"product_id" => product.id})
+
+      jobs = all_enqueued(worker: ContentForge.Jobs.CompetitorCommentHarvester)
+      assert length(jobs) == 1
+
+      [%Oban.Job{args: %{"competitor_post_id" => harvester_post_id}}] = jobs
+
+      viral_post =
+        product.id
+        |> Products.list_active_competitor_accounts_for_product()
+        |> Enum.flat_map(&Products.list_competitor_posts_for_account(&1.id))
+        |> Enum.find(&(&1.post_id == "viral-1"))
+
+      assert harvester_post_id == viral_post.id
+    end
+  end
 end

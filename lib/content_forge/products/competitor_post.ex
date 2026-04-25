@@ -11,11 +11,17 @@ defmodule ContentForge.Products.CompetitorPost do
     field :likes_count, :integer
     field :comments_count, :integer
     field :shares_count, :integer
+    field :views_count, :integer, default: 0
+    field :conversation_id, :string
     field :engagement_score, :float
     field :posted_at, :utc_datetime
     field :raw_data, :map
 
     belongs_to :competitor_account, ContentForge.Products.CompetitorAccount
+
+    has_many :comments, ContentForge.Products.CompetitorPostComment,
+      foreign_key: :competitor_post_id,
+      on_delete: :delete_all
 
     timestamps type: :utc_datetime
   end
@@ -30,6 +36,8 @@ defmodule ContentForge.Products.CompetitorPost do
       :likes_count,
       :comments_count,
       :shares_count,
+      :views_count,
+      :conversation_id,
       :engagement_score,
       :posted_at,
       :raw_data
