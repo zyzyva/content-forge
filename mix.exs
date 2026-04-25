@@ -97,6 +97,7 @@ defmodule ContentForge.MixProject do
       {:ex_aws, "~> 2.5"},
       {:ex_aws_s3, "~> 2.4"},
       {:floki, "~> 0.37"},
+      {:simple_mcp, github: "zyzyva/simple_mcp"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
   end
