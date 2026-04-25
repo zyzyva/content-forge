@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.zyzyva.content-forge</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-l</string>
+        <string>-c</string>
+        <string>mix phx.server</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/sales_king/projects/contentforge_ecosystem/content-forge</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/sales_king/.asdf/shims:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/sales_king</string>
+        <key>MIX_ENV</key>
+        <string>dev</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/sales_king/Library/Logs/content-forge.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sales_king/Library/Logs/content-forge.log</string>
+</dict>
+</plist>

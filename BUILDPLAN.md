@@ -739,7 +739,7 @@ Phase exit criteria: (1) running `openclaw agent --message "give me an upload li
 
 **Sequence and parallelism:** 17.0 is independent of every other Phase 17 slice and may ship in parallel with the Phase 16 tail. After 17.0 the critical path is 17.1 -> 17.2 -> 17.3 -> 17.4 -> 17.5 -> 17.6. 17.7 is independent of 17.3-17.6 and may run in parallel with them. 17.8 and 17.9 require human input and are flagged.
 
-- **17.0 Local environment up (launchd plist + dev DB confirm)**
+- **17.0 Local environment up (launchd plist + dev DB confirm)** *(DONE - see `BUILDLOG.md` Phase 17.0)*
   - Blocks: 17.6 (the corrective-loop cron needs a long-running Phoenix). Blocked by: none.
   - Create the `content_forge_dev` Postgres database (currently absent on m4; only `content_forge_test` exists). Run `mix deps.get` and `mix ecto.migrate` against dev. Confirm `mix phx.server` boots clean against dev and the dashboard renders with no 500s.
   - Install `~/Library/LaunchAgents/com.zyzyva.content-forge.plist` mirroring the lead_intelligence pattern: `KeepAlive` true, `RunAtLoad` true, `WorkingDirectory` set to the repo, `StandardOutPath` and `StandardErrorPath` to `~/Library/Logs/content-forge.log`. The plist runs `mix phx.server` against the dev env; do not bind to a port the test suite uses (test runs on the Phoenix test pipeline, not 4000, so the dev default port is fine but document it explicitly).
