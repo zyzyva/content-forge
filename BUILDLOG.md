@@ -85,6 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 16.4d: generate_drafts_from_bundle (closes the 16.4 wave)
 
 Status: DONE
+Merged: master @ `7df57c6` (fast-forward; coder rebased master `c06cfd3` into the worktree as merge `2635755`). Reviewer ACCEPT. Gate: compile/format/test 983-0, credo 26 vs 44 baseline (zero new in slice-touched files). Coverage GenerateDraftsFromBundle 92%, GenerationBudget 100%. Zero emdashes in code/tests/runbook. Phase 16.4 wave complete: all four heavy-write tools ship through the confirmation envelope; over-budget is warning-only as spec'd, not a block. Reviewer flagged the 32 emdashes carried in `RESEARCH_LOOP_PLAN.md` (user-authored doc imported this session) as inconsistent with the recent emdash-clean discipline; swept in the same handoff cycle.
 Note: Last heavy-write slice. Third consumer of the 16.4a confirmation envelope. Introduces a thin `ContentForge.Metrics.GenerationBudget` helper so the tool's preview can carry concrete `estimated_cost_cents` + `remaining_budget_cents` numbers; the dashboard had no first-class cost model to reuse. Budget is transparency-only per spec: an over-budget request still enqueues on confirm, the preview just adds a `warning` string for the agent to read verbatim.
 
 **Budget helper** (`lib/content_forge/metrics/generation_budget.ex`):
