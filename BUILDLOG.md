@@ -82,6 +82,73 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 17.3: Content Forge MCP server
+
+Status: DONE
+Note: Critical-path Phase 17 slice. Ships the full nine-tool MCP server + stdio transport + the schema pre-emption that lets `cf_store_intel` persist every documented param honestly. Unblocks 17.4 (the without-key MCP completion path lands against this surface) and 17.5 (the sqlite importer is exposed as `cf_import_twitter_sqlite` and wired here as a placeholder pending the 17.5 implementation).
+
+**Dependency** (`mix.exs`): `{:simple_mcp, github: "zyzyva/simple_mcp"}` - same git source `lead_intelligence` uses so the two MCP servers share their dispatch shape and the SimpleMCP behaviour stays one-place-to-update across the ecosystem. Locked to `aa2017efba38c6be97bacec0840ae643858997fc` in `mix.lock`.
+
+**Schema pre-emption** (`priv/repo/migrations/20260511120000_*` + `lib/content_forge/products/competitor_intel.ex`):
+- `alter table(:competitor_intel)` adds `audience_signals` (`{:array, :string}`, `null: false, default: []`) and `window` (`:string`, nullable, indexed, allowed values `"all" | "week" | "month"`).
+- These columns originally belonged to Phase 17.4; pre-empting them in 17.3 means `cf_store_intel` can persist every documented param without silently dropping caller data on the floor. The 17.4 synthesizer will populate them autonomously when comment-aware syntheses ship.
+- `CompetitorIntel.changeset/2` casts both new fields and validates `window` against the allowed list (with `allow_nil: true` since the field is optional).
+
+**MCP server** (`lib/content_forge_mcp/server.ex`):
+- `use SimpleMCP`. `server_info/0` returns `{"Content Forge", "1.0.0"}`. `tools/0` lists exactly nine tool definitions matching the 17.3 spec verbatim; the `registers exactly the nine documented tools` test catches drift.
+- `handle_tool_call/2` is a per-tool pattern-matched dispatcher (no big case statement; one head per tool name plus a `not_found` catch-all). Each clause delegates to a private `cf_*` function so the body of each tool is small and readable.
+- Every tool returns either `{:ok, success_map}` or `{:error, %{code, message, details}}` via the `ok/1` and `error/2,3` envelope helpers. Standard codes: `not_found`, `unauthorized` (reserved for later), `not_configured`, `validation_failed`, `dependency_error`, `not_implemented`.
+- All routes go through `ContentForge.Products` and `ContentForge.Jobs.*` context modules; no Phoenix or Bandit reach-through. The MCP surface and the LiveView dashboard share the same data source.
+- Per-tool notes:
+  - `cf_create_product`: name required + voice_profile defaulted to `"professional"` when omitted (the schema requires it, the spec marks the param optional). `publishing_targets` accepts a JSON-encoded object string and decodes via `JSON.decode/1`.
+  - `cf_list_products`: aggregates competitor_count via `Repo.aggregate` + reads `latest_intel_at` from `Products.get_latest_competitor_intel_for_product/1`.
+  - `cf_add_competitor`: validates platform against `~w(twitter linkedin reddit facebook instagram youtube)`.
+  - `cf_list_competitors`: per-account `(count, max(inserted_at))` via a single grouped query so the post_count + last_scraped_at come from one round trip.
+  - `cf_scrape_competitor`: looks up the competitor's product_id, enqueues the existing `CompetitorScraper` Oban job (which scrapes ALL competitors for that product). Returns `%{job_id, status: "enqueued"}`. Per-account scrape jobs are out of scope; the existing batch job is the existing infrastructure.
+  - `cf_top_posts_for_synthesis`: respects `n` (default 10, capped at 50) and `window` (`all`/`week`/`month`). Window filter computes a cutoff at call time (`now - 7d` / `now - 30d`); preloads `:comments` so the agent reads top-by-likes replies inline.
+  - `cf_store_intel`: routes through `Products.create_competitor_intel/1` with all eight params including the new `audience_signals` + `window`. Array params accept either a list or a JSON-encoded list string for ergonomic CLI use.
+  - `cf_get_intel`: `latest: true` (default) returns the newest single row; `latest: false` returns up to five.
+  - `cf_import_twitter_sqlite`: registered with the documented param schema but dispatches to a placeholder that returns `{:error, %{code: "not_implemented", details: %{phase: "17.5"}}}`. Phase 17.5 swaps in the real importer without touching the dispatch table.
+
+**Stdio transport** (`lib/content_forge_mcp/stdio_server.ex`):
+- Mirrors the lead_intelligence pattern: disables the Phoenix endpoint at start so a launchd-managed Phoenix on the same box does not collide; reads JSON-RPC requests on stdin, writes responses on stdout, stderr carries the boot message.
+- One material divergence from lead_intelligence: tool errors render as JSON envelopes in the text content slot (no `Error: ` prefix). Claude sessions parse the content text directly into the documented `%{code, message, details}` shape.
+- Standard JSON-RPC handlers: `initialize`, `notifications/initialized`, `tools/list`, `tools/call`. Unknown methods return `-32601 Method not found`. Malformed JSON returns `-32700 Parse error`.
+
+**Tests** (30 new, all in `test/content_forge_mcp/server_test.exs`):
+- `server_info/0` + `tools/0` registry: nine tools match the documented set exactly; unknown tool returns the structured `not_found` envelope.
+- `cf_create_product` (4): happy path, missing-name validation_failed, malformed publishing_targets validation_failed, full happy path with voice_profile + JSON publishing_targets persisted.
+- `cf_list_products` (1): aggregates competitor_count + latest_intel_at across multiple products.
+- `cf_add_competitor` (4): happy, unknown platform validation_failed, unknown product not_found, malformed UUID not_found.
+- `cf_list_competitors` (3): happy with post_count + last_scraped_at, empty list, unknown product not_found.
+- `cf_scrape_competitor` (3): happy with `assert_enqueued`, unknown competitor not_found, malformed UUID not_found.
+- `cf_top_posts_for_synthesis` (4): happy with comments preloaded + ordering, unknown window validation_failed, non-positive n validation_failed, week-window filter excludes 365-day-old posts.
+- `cf_store_intel` (4): happy with audience_signals + window persisted, JSON-encoded list params, non-list trending_topics validation_failed, unknown window validation_failed.
+- `cf_get_intel` (3): latest=true returns newest (with back-dated older row to defeat second-precision ties), latest=false returns up to five, no intel returns not_found.
+- `cf_import_twitter_sqlite` (1): registered + returns the documented not_implemented envelope pointing at 17.5.
+
+**Runbook** (`docs/mcp-runbook.md`):
+- Tool catalogue table.
+- Hand-driven stdio invocation snippet.
+- `claude_desktop_config.json` registration snippet (mirrors the asdf-shim PATH the launchd plist uses).
+- Round-trip verification walk-through.
+- Why-a-separate-stdio-server explanation (Phoenix endpoint disabled at start so the launchd Phoenix on `:4000` does not collide).
+- Why the without-key fallback path matters (17.4 marks attempts as `pending_manual`; the MCP server is how a Claude session completes them by hand).
+- Maintenance guidance for adding a tenth tool.
+
+**Spec deviations + small additions outside the literal spec**:
+- `cf_create_product` defaults `voice_profile: "professional"` when omitted because the underlying schema requires it. The spec marked the param optional; this default keeps the spec contract intact without scope-creeping a schema change.
+- `cf_scrape_competitor` enqueues the existing batch `CompetitorScraper` job (scrapes all accounts for the product), not a per-account job that does not exist today. The spec's `%{job_id, status: "enqueued"}` shape is honored.
+- Added `audience_signals` + `window` columns in 17.3 rather than 17.4 so `cf_store_intel` is honest about its persistence promise. 17.4's synthesizer changes still own the autonomous-population work.
+- Stdio error rendering omits the `Error: ` prefix lead_intelligence uses; the spec calls for a structured envelope and a JSON-only text slot is the cleanest way to deliver it.
+
+**What this slice explicitly does NOT do** (next 17.x slices):
+- 17.4 makes the synthesizer comment-aware (LLMAdapter prompt change to include comments) and adds the `pending_manual` route for the without-key case. The MCP server's `cf_top_posts_for_synthesis` and `cf_store_intel` are the surfaces 17.4 leans on.
+- 17.5 ships the real `cf_import_twitter_sqlite` implementation against a captured fixture sqlite. The dispatch table does not change; only the placeholder body swaps.
+- 17.6 adds the cron entries + the corrective loop. The MCP server is unaffected.
+
+**Gate**: `mix compile --warnings-as-errors` clean, `mix format --check-formatted` clean, `mix test` 1057/0 (30 new), `mix credo --strict` baseline-diff empty for slice-touched files. Zero emdashes in slice-touched files (server, stdio, schema, migration, runbook, mix.exs, test).
+
 ### Phase 17.2: Open the dev/prod config gate
 
 Status: DONE

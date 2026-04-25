@@ -762,7 +762,7 @@ Phase exit criteria: (1) running `openclaw agent --message "give me an upload li
   - Acceptance: dev boot with both env vars present runs both jobs end-to-end; dev boot with `APIFY_TOKEN` missing returns a clear `:not_configured` error rather than silently discarding; dev boot with `ANTHROPIC_API_KEY` missing leaves the synthesis in a `pending_manual` state for the 17.4 MCP-driven completion path.
   - See `RESEARCH_LOOP_PLAN.md` Phase 2 for full detail.
 
-- **17.3 Content Forge MCP server**
+- **17.3 Content Forge MCP server** *(DONE - see `BUILDLOG.md` Phase 17.3)*
   - Blocks: 17.4 (the manual synthesis path uses the MCP tools), 17.5 (the importer is exposed as an MCP tool). Blocked by: 17.0, 17.2.
   - Add the `SimpleMCP` dependency from the same git source `lead_intelligence` uses. Build a `ContentForgeMCP` server module that exposes the tool set listed in `RESEARCH_LOOP_PLAN.md` Phase 3, with the exact param + return shapes documented there: `cf_create_product`, `cf_list_products`, `cf_add_competitor`, `cf_list_competitors`, `cf_scrape_competitor`, `cf_top_posts_for_synthesis`, `cf_store_intel`, `cf_get_intel`, `cf_import_twitter_sqlite`. All tools return structured `%{...}` or `{:error, %{code, message, details}}` and route through the existing context modules (`Products`, `Metrics`, `ContentGeneration`); no Phoenix or Bandit reach-through.
   - Stdio transport wrapper following the lead_intelligence pattern. Register the new MCP server in the Claude Code config so sessions can connect to it.
