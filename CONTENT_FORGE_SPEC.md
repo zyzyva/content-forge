@@ -393,6 +393,92 @@ Acceptance criteria:
 
 ---
 
+### Feature 14: Competitor Research Corpus and Comment Harvesting
+
+**Purpose:** Make Content Forge the corpus of record for everything we know about competitor accounts: their posts, the comment threads on the posts that resonate, and the synthesized intel rows we derive from both. Lead Intelligence and any future research surface read from and write to this corpus rather than maintaining parallel state.
+
+**Why this matters:** A research loop that does not have one canonical store fragments the data, lets the same competitor get scraped twice with different fidelity, and makes it impossible to trust any prediction or pattern. Comments are first-class research data on viral posts: synthesis without comments is surface pattern-matching on hooks and topics; synthesis with comments reasons about what the audience actually valued, what they pushed back on, what they asked for. Every competitive insight the system surfaces back through the dashboard or back into a brief is only as good as the underlying corpus, so the corpus is treated as the foundation, not an afterthought.
+
+**Scope clarifier:** Feature 14 documents the data model, the harvesting model, and the synthesis input model. It does not own the synthesis prompts themselves (those live with the LLM clients, Integrations 3 + 4) or the corrective trigger that consumes the intel (that is Feature 15). Phase 17 in `BUILDPLAN.md` slices the implementation work; `RESEARCH_LOOP_PLAN.md` carries the full design narrative.
+
+**Schemas (extension of existing competitor pipeline):**
+- [ ] `competitor_posts` is the existing source-of-truth row for a single competitor post. The Phase 17 wave does not change its column set; it only ensures every ingest path (live Apify scrape, sqlite backfill importer, MCP-driven manual entry) writes through the same context module so post identity and dedup live in one place.
+- [ ] New `competitor_post_comments` table holds individual comment rows on viral posts. Columns: `id` binary_id PK, `competitor_post_id` binary_id FK to `competitor_posts` with cascade delete, `platform_comment_id` string (the actor's reply id, unique within a parent), `author_handle` string, `text` text, `posted_at` utc_datetime, `likes_count` integer default 0, `replies_count` integer default 0, `retweets_count` integer default 0, `views_count` integer default 0, `in_reply_to_id` string nullable for nested replies, `conversation_id` string, `raw_payload` jsonb preserving the actor response verbatim, plus inserted_at + updated_at. Indexes: one on `competitor_post_id` for join queries, one unique on `(competitor_post_id, platform_comment_id)` for dedup.
+- [ ] Two columns added to `competitor_intel`: `audience_signals` (`{:array, :string}`, default `[]`, not null) carrying short free-form strings that capture comment-derived patterns (recurring objections, questions, emotional reactions, consensus tropes); `window` (string, nullable, indexed, allowed values `"all" | "week" | "month"`) so a row can be tagged as all-time intel or as a corrective-loop week-windowed snapshot.
+
+**Viral threshold and comment harvesting:**
+- [ ] A post is considered viral and worth harvesting comments for when its view count meets `views >= max(N * account_rolling_avg_views, absolute_floor)`. Default thresholds: `N = 5`, `absolute_floor = 100_000`. Both are configured under `:content_forge, :competitor_research, :viral_threshold` so they are tunable per deployment without code changes.
+- [ ] Comment harvesting is a separate Oban worker (`ContentForge.Jobs.CompetitorCommentHarvester`) so that a slow comment fetch never blocks the next post scrape. Limit per viral post is `:max_comments_per_viral_post` (default 50, top by like count); enough to capture the highest-resonance replies without dragging in long-tail noise.
+- [ ] The harvester is enqueued on (a) initial post ingest when the post crosses the threshold and (b) the competitor scrape refresher cron defined in Feature 15 so we re-pull comments on posts that gained views since first ingest.
+- [ ] Re-running the harvester over the same parent post inserts zero new rows (idempotency via the unique index).
+
+**Apify per-platform actor configuration:**
+- [ ] The platform-to-actor map is config-driven: `:content_forge, :apify, :actors` keys each platform name to an actor identifier. Swapping an actor when one goes bad is a config change, not a code change. The Twitter default is the kaitoeasyapi pay-per-result actor (the existing `apify~twitter-scraper` default has proven brittle).
+- [ ] The adapter accepts a conservative superset input shape (handle + start urls + search terms + maxItems + platform + the kaitoeasyapi-specific `from` field for handle scrapes). Actors ignore unknown keys; this superset is intentionally tolerant so a future actor swap does not require an adapter rewrite.
+- [ ] A defensive filter drops items the actor returns carrying a `noResults` marker before normalisation. This protects against future regressions of the same shape we just hit on the apidojo Twitter actor.
+
+**Synthesis input contract:**
+- [ ] When the synthesizer selects the top N posts for a product, it also pulls the related rows from `competitor_post_comments` and packages them as one input bundle per post. Both synthesis paths (Integration 3 LLM-driven, Integration 6 MCP-driven) receive the same bundle shape so they cannot diverge.
+- [ ] When no comments exist for a source post, `audience_signals` on the resulting intel is `[]`, never null. The bot treats an empty `audience_signals` as "I have surface patterns but no audience-resonance signal," not as "no signal at all."
+
+**With-or-without-key synthesis paths:**
+- [ ] When `ANTHROPIC_API_KEY` is configured, the existing LLM client adapter (Integration 3) does headless synthesis through the existing Oban job and produces a `competitor_intel` row autonomously.
+- [ ] When the key is absent, the synthesizer marks the attempt as `pending_manual` against the product with references to the top posts and their comments. The MCP server (Integration 6) exposes the pending queue so a Claude session can read the bundle and call back through `cf_store_intel` to write a row of identical shape. Both paths populate `audience_signals` and `window`.
+
+**Acceptance criteria (phase-level, refined per slice in `BUILDPLAN.md`):**
+- [ ] Running the existing CompetitorScraper Oban job by hand against a Twitter competitor account produces a non-empty list of posts in `competitor_posts` (live integration, gated behind `@tag :live` while Apify free-plan credit is exhausted).
+- [ ] For any competitor whose recent posts include at least one viral post by the threshold rule, the comment harvester populates `competitor_post_comments` for that post.
+- [ ] A second run of the harvester over the same parent inserts zero new rows.
+- [ ] With `ANTHROPIC_API_KEY` set, scheduling a synthesis for a product produces a `competitor_intel` row autonomously and `audience_signals` is populated when at least one source post had comments.
+- [ ] Without the key, the same scheduling produces a pending entry visible to the MCP server, and a manual completion through MCP yields an indistinguishable row.
+- [ ] After the cleanwithmike sqlite backfill (covered by the importer), `competitor_posts` and `competitor_post_comments` together hold the same data as the source minus duplicates.
+
+**Out of scope (for this feature):**
+- [ ] Cross-product or cross-tenant comment analysis; intel is product-scoped end to end.
+- [ ] Sentiment classification or PII redaction on comment text. The text is stored verbatim; downstream consumers (the synthesis prompt, the dashboard) handle presentation.
+- [ ] Any change to lead_intelligence's local sqlite scraper. The importer reads its current shape; the scraper itself is upstream.
+
+---
+
+### Feature 15: Corrective Loop
+
+**Purpose:** Close the prediction-versus-actual gap on our own published content with an external corrective signal. When our own posts underperform AND tracked competitors have posts winning in the same window, the system regenerates the brief against fresh, week-windowed competitor intel rather than against internal data alone. When the same internal drop is not matched by external wins, the system treats the dip as noise and does nothing.
+
+**Why this matters:** An internal-only auto-rewrite trigger is the wrong shape: a single bad week can be an algorithm change, a holiday, a news cycle, or the wrong post angle for a single moment. Without an external check, the system would rewrite the brief on the basis of weather. The two-condition external corrective loop is what turns scoreboard data into a real signal: our drop plus competitor wins in market means the angle that worked is no longer the angle that works, pivot toward what is winning right now; our drop without competitor wins means the market is quiet, conserve the brief.
+
+**Scope clarifier:** Feature 15 owns the trigger logic, the cron schedules that drive it, and the operator surface that lets us verify the loop is closing. The synthesis the trigger enqueues lives in Feature 14 (it just gets called with a `window: "week"` argument). The brief regeneration that consumes the intel lives in Feature 3.
+
+**Trigger logic:**
+- [ ] MetricsPoller's existing internal-only "5 poor performers detected -> force_rewrite" trigger is replaced by a two-condition predicate. A brief regeneration enqueues only when both are true:
+  1. Our own published content for the product underperformed in the period (the existing scoreboard "negative delta on at least 5 recent posts" condition stays).
+  2. At least one tracked competitor for that product had at least one post that beat its own rolling average in the same window.
+- [ ] The synthesis enqueued by the trigger is week-windowed: it passes `window: "week"` to the synthesizer so the resulting `competitor_intel` row reflects what is winning right now, not all-time top posts. The brief regeneration consumes this row.
+- [ ] All other combinations of (our drop, competitor wins) are no-ops:
+  - Our drop without competitor wins: noise, do nothing.
+  - Competitor wins without our drop: we are landing, no pivot warranted (but the competitor wins still get harvested and synthesized as part of normal corpus refresh).
+  - Neither condition: do nothing.
+
+**Cron schedules:**
+- [ ] An Oban cron entry calls MetricsPoller for every active product on a 6-hour cadence (v1 default per `RESEARCH_LOOP_PLAN.md` open questions). "Active product" means the product has at least one published post in the last 90 days.
+- [ ] A second Oban cron entry runs a competitor scrape refresher on a weekly cadence per active competitor account. It fetches only posts newer than what is already in the database (incremental) and re-evaluates the viral threshold per post; posts that crossed since the last run get queued for comment harvesting.
+- [ ] Both cron entries survive a launchd-managed Phoenix restart without manual intervention.
+
+**Operator surface:**
+- [ ] A small surface (LiveView page or MCP tool, coder picks the smaller one) exposes recent scoreboard outcomes per product so a human can verify the loop is closing without trawling the DB. At minimum it shows the most recent poll cycle per product with winners + losers and whether the corrective trigger fired.
+
+**Acceptance criteria (phase-level, refined per slice in `BUILDPLAN.md`):**
+- [ ] Within 24 hours of publishing, every published post has a scoreboard entry with `actual_engagement_score` populated; within 7 days, the same posts have a 7-day-interval entry.
+- [ ] The competitor scrape refresher cron picks up new posts on a weekly cadence and queues comment harvesting for posts that cross the threshold since the last run.
+- [ ] The corrective-loop trigger fires only on the our-drop + competitor-wins combination. A test simulates each of the four combinations and asserts the trigger fires only for the correct one.
+- [ ] The operator surface shows winners and losers for the most recent poll cycle per product.
+- [ ] Restarting the launchd-managed Phoenix process does not break either cron schedule.
+
+**Out of scope (for this feature):**
+- [ ] Adaptive cron cadence (denser early, sparser later for newer products). Fixed 6-hour cron is the v1 default; revisit when we see polling lag or wasted work.
+- [ ] Scoring competitor wins against an absolute benchmark instead of their own rolling average. Per-account rolling average keeps the signal noise-resistant and is the v1 baseline.
+
+---
+
 ### Integration 1: Media Forge HTTP Client
 
 **Purpose:** Provide a single named client module that every Content Forge caller uses to talk to the Media Forge service. The module centralizes the base URL, the shared secret header, retry semantics, and transient-versus-permanent error classification so individual features (image generation, final video encoding, image processing, platform renditions) do not each reinvent them. Every future Media Forge call in the codebase goes through this module; nothing else touches the underlying HTTP layer for Media Forge URLs.
@@ -596,5 +682,42 @@ Acceptance criteria:
 - [ ] Streaming responses or incremental delivery; the slice ships a single request-per-batch surface.
 - [ ] Feeding performance scoreboard data into generation prompts; that wiring lives in 11.4.
 
+---
 
+### Integration 6: Content Forge MCP Server
 
+**Purpose:** Expose Content Forge's research-loop operations as a stdio MCP server that a Claude Code session can drive directly. The MCP surface is how a Claude session walks the corpus-of-record loop without leaving its tool calls: create a product, add competitors, scrape, read top posts plus their comments, write back synthesized intel, retrieve prior intel, import legacy sqlite data. It is also the without-key fallback path for synthesis described in Feature 14: when no `ANTHROPIC_API_KEY` is set, pending syntheses appear here for a session to complete by hand.
+
+**Why this matters:** Content Forge already has the schemas, the Oban jobs, and the LiveView dashboard. The dashboard is the right surface for an operator clicking through; the MCP server is the right surface for a Claude session reasoning through. Without the MCP server, the without-key synthesis path stalls indefinitely and any tool that lead_intelligence has redirected to "use content-forge" has nowhere to land. This integration makes the redirect real and keeps Content Forge as the single corpus-of-record without forcing the dashboard into the loop.
+
+**Module location and shape:**
+- [ ] The public server module is `ContentForgeMCP` and lives at `lib/content_forge_mcp/server.ex` (sibling to `lib/content_forge_web/`). Stdio transport wrapper lives alongside it. The `SimpleMCP` dependency is sourced from the same git repo lead_intelligence uses so the two MCP servers share their dispatch shape.
+- [ ] All tools route through the existing context modules (`Products`, `ContentGeneration`, `Metrics`, etc.). The MCP server does not reach into Phoenix or Bandit, does not import LiveView modules, and does not own its own DB queries; behavior must stay consistent with the LiveView dashboard so the two surfaces never diverge on the same data.
+
+**Tool surface (every tool returns a structured `%{...}` on success or `{:error, %{code, message, details}}` on failure):**
+- [ ] `cf_create_product` -> `%{product_id, name}`. Params: `name` required string, `voice_profile` optional string, `publishing_targets` optional map.
+- [ ] `cf_list_products` -> list of `%{product_id, name, competitor_count, latest_intel_at}`. No params.
+- [ ] `cf_add_competitor` -> `%{competitor_id, product_id, platform, handle}`. Params: `product_id` string, `platform` one of the supported set, `handle` string.
+- [ ] `cf_list_competitors` -> list of `%{competitor_id, platform, handle, post_count, last_scraped_at}`. Params: `product_id`.
+- [ ] `cf_scrape_competitor` -> `%{job_id, status: "enqueued"}`. Async; results land in `competitor_posts` asynchronously. Params: `competitor_id`.
+- [ ] `cf_top_posts_for_synthesis` -> `%{posts: [%{competitor_post_id, platform_post_id, content, post_url, posted_at, engagement_score, likes, comments_count, shares, comments: [...]}, ...]}`. Comments are scoped per Feature 14's harvesting rules. Params: `product_id`, optional `n` default 10, optional `window` one of `"all" | "week" | "month"` default `"all"`.
+- [ ] `cf_store_intel` -> `%{intel_id, product_id, created_at}`. Params mirror the `competitor_intel` shape: `product_id`, `summary`, `trending_topics`, `winning_formats`, `effective_hooks`, `audience_signals` (empty list when no comments fed the synthesis), `source_count`, optional `window`.
+- [ ] `cf_get_intel` -> latest `competitor_intel` row as `%{intel_id, summary, trending_topics, winning_formats, effective_hooks, audience_signals, source_count, window, created_at}` when `latest: true` (default), or a list of the last five when `latest: false`. Params: `product_id`, optional `latest`.
+- [ ] `cf_import_twitter_sqlite` -> `%{posts_imported, posts_skipped, comments_imported, comments_skipped}`. Reads the standalone scraper's sqlite (`tweets` + `comments` tables) and upserts into `competitor_posts` and `competitor_post_comments`. Idempotent. Params: `sqlite_path`, `competitor_id`, optional `since` and `until` ISO dates.
+
+**Error envelope (uniform across every tool):**
+- [ ] Standard error codes: `not_found`, `unauthorized` (when product scoping fails), `not_configured` (missing env), `validation_failed` (bad params), `dependency_error` (Oban / DB / Apify failure).
+- [ ] No tool ever crashes the stdio process. Every error path returns the structured envelope so a Claude session can reason about what failed and react.
+
+**Authentication:**
+- [ ] None at the transport layer; stdio MCP is local to the machine running the Claude Code session. Authorization at the application layer is the same product-scoping the LiveView dashboard already enforces; no MCP tool can touch a product the caller has not opened.
+- [ ] No shared-secret header (unlike Feature 13's OpenClaw tool surface, which crosses an HTTP boundary and needs `X-OpenClaw-Tool-Secret`). The MCP server runs as a subprocess of Claude Code; the trust boundary is the OS process boundary, not the network.
+
+**Test stance:**
+- [ ] Per-tool happy-path tests with stubbed context returns; missing-dependency paths (no `APIFY_TOKEN`, unknown product, etc.) return the structured error envelope; one tool-name dispatch test asserts every documented tool is registered and reachable.
+- [ ] Live integration smoke (a Claude Code session walking create-product -> add-competitor -> scrape -> read-top-posts -> store-intel -> get-intel) is run by hand once per release, not in the unit suite.
+
+**Out of scope for this integration:**
+- [ ] Tool surface for non-research operations. Publishing, draft approval, asset uploads remain on the LiveView dashboard and the OpenClaw tool surface (Feature 13). The MCP server is research-loop scoped to keep its surface focused.
+- [ ] Multi-product or cross-product queries. Tools are product-scoped end to end.
+- [ ] Streaming or async progress reporting. Long-running tools (`cf_scrape_competitor`, `cf_import_twitter_sqlite`) return enqueue acknowledgements; the session checks back through `cf_list_competitors` or `cf_get_intel` to see results.

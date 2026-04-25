@@ -5,9 +5,19 @@ of record for competitor research, the synthesis brain that turns raw
 posts into structured intel, and the feedback loop that closes the
 prediction-vs-actual gap on our own published content.
 
+**Integrated 2026-04-25 as Phase 17 in `BUILDPLAN.md`.** This document
+remains the source-of-record narrative for the wave; `BUILDPLAN.md`
+Phase 17 is the swarm-readable slicing the coder + reviewer flow runs
+against. When the two disagree, BUILDPLAN is authoritative for slice
+execution and this doc should be updated to match. New cross-cutting
+spec content lives in `CONTENT_FORGE_SPEC.md` Feature 14 (research
+corpus), Feature 15 (corrective loop), and Integration 6 (MCP server).
+
 **Status:** Greenfield. No phases of this plan are running yet.
 content-forge has the schemas and Oban jobs but is not booted on this
-machine.
+machine. Phase 17 in BUILDPLAN starts after the current Phase 16 wave
+clears; 17.0 (launchd + dev DB) is independent of Phase 16 and may run
+in parallel.
 
 ## Why this exists
 
