@@ -192,6 +192,15 @@ The plugin ships these tools. Each corresponds to a module under
   `changed: false` and skip the confirmation envelope
   entirely; actual changes run the full two-turn flow with a
   before/after diff preview.
+- **`generate_drafts_from_bundle`** - kick off bundle-driven
+  draft generation via Oban (Phase 16.4d). Requires `:owner`.
+  First turn returns a preview with `asset_count`,
+  `estimated_cost_cents`, `remaining_budget_cents`, and a
+  `would_exceed_budget` flag. Second turn enqueues
+  `AssetBundleDraftGenerator` with the resolved bundle +
+  platforms + variants_per_platform. Budget surfacing is
+  transparency-only: over-budget requests still enqueue with a
+  `warning` the agent is expected to read verbatim.
 
 ## Future tools (ship pattern)
 
