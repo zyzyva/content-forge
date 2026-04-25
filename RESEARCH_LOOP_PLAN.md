@@ -59,6 +59,36 @@ have somewhere to go once this plan is at least partially executed.
 7. **No new "competitor analysis" features inside lead_intelligence.**
    Anything new for research goes into content-forge.
 
+## How swarmforge should run this
+
+Phases 0 through 7 are agent-runnable end to end given the env vars
+listed in each phase. Phase 8 requires human input (HollerClean voice
+profile, competitor handles, publishing credentials) and Phase 9
+requires human judgement on what to keep in lead_intelligence; both
+are flagged below with `requires_human`.
+
+Open questions all have defaults documented in the section at the
+bottom of this doc. Treat those defaults as authoritative for v1 so
+none of the open questions are blockers; if a phase's work surfaces
+a reason to deviate, leave a note in BUILDLOG and ask before
+deviating.
+
+Apify is hard-rate-limited on the free plan and the cycle for this
+machine resets 2026-05-05. Until then, Phase 1's live integration
+test (the "non-empty list of posts" criterion) cannot run. Code the
+phase against captured fixtures from
+`~/projects/lead_intelligence/priv/twitter_scrapes.db` and from the
+recorded kaitoeasyapi response shape documented inline in that file's
+`raw_json` column. Mark live integration tests as `@tag :live` so
+they run only when explicitly enabled, and re-verify the criterion
+when credit returns.
+
+Tests follow content-forge's standing conventions documented in
+CLAUDE.md: every external service call is stubbed via Req.Test in
+unit/integration tests; noisy IO is captured via ExUnit.CaptureLog
+or CaptureIO; pattern-match-first style for new modules; placeholder
+tests are unacceptable on merge.
+
 ---
 
 ## Phase 0 — Local environment up
@@ -118,11 +148,18 @@ patterns.
   produces the expected likes/retweets/replies/views fields.
 
 *Comment harvesting.*
-- Add a new `competitor_post_comments` table linked to
-  `competitor_posts` by parent post id. Columns mirror what the
-  actor returns for replies — text, author handle, posted_at,
-  engagement counts, conversation id, in-reply-to id, and the raw
-  payload preserved verbatim.
+- Add a new `competitor_post_comments` table with the following
+  columns: `id` (binary_id PK), `competitor_post_id` (binary_id FK
+  to competitor_posts, on_delete cascade), `platform_comment_id`
+  (string, the actor's reply id, unique per parent), `author_handle`
+  (string), `text` (text), `posted_at` (utc_datetime), `likes_count`
+  (integer, default 0), `replies_count` (integer, default 0),
+  `retweets_count` (integer, default 0), `views_count` (integer,
+  default 0), `in_reply_to_id` (string, nullable — for nested
+  replies), `conversation_id` (string), `raw_payload` (jsonb,
+  preserves the actor response verbatim), `inserted_at` and
+  `updated_at` timestamps. Add an index on `competitor_post_id` and
+  a unique index on `(competitor_post_id, platform_comment_id)`.
 - Define what counts as a viral post worth fetching comments for.
   Default heuristic: a post that views above five times the account's
   rolling average OR clears an absolute floor of 100k views. These
@@ -198,18 +235,70 @@ actually use. Build a focused one.
 - Add the SimpleMCP dependency from the same git source lead_intelligence
   uses.
 - Build a content-forge MCP server module that exposes a small,
-  task-shaped tool set:
-    - one to create a product and list products,
-    - one to add a competitor account and list competitors per product,
-    - one to enqueue a competitor scrape,
-    - one to fetch the top N posts for a product, scored against the
-      account average, ready for synthesis,
-    - one to store a synthesized intel record (the with-or-without-key
-      back half of Phase 4),
-    - one to get the latest synthesized intel for a product,
-    - one to import posts from a sqlite file produced by
-      lead_intelligence's standalone scraper, so we never re-pay
-      Apify for handles we have already pulled.
+  task-shaped tool set. Each tool's input parameters and return shape
+  are listed below; field names use snake_case to match the rest of
+  the MCP surface.
+
+  **`cf_create_product`** — params: `name` (required string),
+  `voice_profile` (optional string), `publishing_targets` (optional
+  map). Returns: `%{product_id, name}`.
+
+  **`cf_list_products`** — params: none. Returns: list of
+  `%{product_id, name, competitor_count, latest_intel_at}`.
+
+  **`cf_add_competitor`** — params: `product_id` (required string),
+  `platform` (required string, one of: twitter, linkedin, reddit,
+  facebook, instagram, youtube), `handle` (required string).
+  Returns: `%{competitor_id, product_id, platform, handle}`.
+
+  **`cf_list_competitors`** — params: `product_id` (required string).
+  Returns: list of `%{competitor_id, platform, handle, post_count,
+  last_scraped_at}`.
+
+  **`cf_scrape_competitor`** — params: `competitor_id` (required
+  string). Enqueues an Oban CompetitorScraper job. Returns:
+  `%{job_id, status: "enqueued"}`. Async; results land in
+  competitor_posts asynchronously.
+
+  **`cf_top_posts_for_synthesis`** — params: `product_id` (required
+  string), `n` (optional integer, default 10), `window` (optional
+  string, one of "all", "week", "month", default "all"). Returns
+  posts scored against their account average within the window:
+  `%{posts: [%{competitor_post_id, platform_post_id, content,
+  post_url, posted_at, engagement_score, likes, comments_count,
+  shares, comments: [%{platform_comment_id, author_handle, text,
+  likes_count, posted_at}, ...]}, ...]}`.
+
+  **`cf_store_intel`** — params: `product_id` (required string),
+  `summary` (required string), `trending_topics` (required list of
+  strings), `winning_formats` (required list of strings),
+  `effective_hooks` (required list of strings), `audience_signals`
+  (required list of strings; pass empty list when no comments fed
+  the synthesis), `source_count` (required integer), `window`
+  (optional string, mirrors the window from
+  cf_top_posts_for_synthesis). Returns: `%{intel_id, product_id,
+  created_at}`.
+
+  **`cf_get_intel`** — params: `product_id` (required string),
+  `latest` (optional boolean, default true). Returns the latest
+  competitor_intel record as `%{intel_id, summary, trending_topics,
+  winning_formats, effective_hooks, audience_signals, source_count,
+  window, created_at}`. When `latest` is false, returns a list of
+  the last five.
+
+  **`cf_import_twitter_sqlite`** — params: `sqlite_path` (required
+  string), `competitor_id` (required string), `since` (optional ISO
+  date), `until` (optional ISO date). Reads the standalone scraper's
+  sqlite (tweets + comments tables) and upserts into competitor_posts
+  and competitor_post_comments. Idempotent. Returns:
+  `%{posts_imported, posts_skipped, comments_imported,
+  comments_skipped}`.
+
+  Every tool returns `{:error, %{code, message, details}}` on
+  failure rather than crashing. Standard error codes: `not_found`,
+  `unauthorized` (when product scoping fails), `not_configured`
+  (missing env), `validation_failed` (bad params), `dependency_error`
+  (Oban/DB/Apify failure).
 - Build a stdio transport wrapper following the lead_intelligence
   pattern.
 - Register the new MCP server in the Claude Code config so sessions
@@ -267,15 +356,21 @@ output reflects audience resonance, not just post pattern matching.
   consistent across with-key and without-key synthesis.
 
 *Schema additions.*
-- Extend the `competitor_intel` schema with a new field describing
-  audience signals. The field's name should make it clear this is
-  derived from comments, not post bodies — `audience_signals` works.
-  It carries a list of free-form strings the same way
-  `effective_hooks` does, capturing patterns like recurring
-  objections, recurring questions, common emotional reactions, and
-  any consensus tropes.
-- Both paths populate this new field. Synthesis without comments
-  available falls back to an empty list, never null.
+- Add an `audience_signals` column to the `competitor_intel` table:
+  `{:array, :string}`, default `[]`, not null. The field holds short
+  free-form strings the same way `effective_hooks` does, each one
+  capturing a pattern observed in the comment threads — recurring
+  objections, recurring questions, emotional reactions, consensus
+  tropes. Add a corresponding cast in the changeset and update
+  every place that selects from competitor_intel to include the
+  new column.
+- Add a `window` column to the `competitor_intel` table:
+  `:string`, nullable, indexed. Allowed values: `"all"`, `"week"`,
+  `"month"`. Used by Phase 6's corrective loop to distinguish
+  all-time intel from week-windowed corrective syntheses.
+- Both synthesis paths (with-key and MCP) populate
+  `audience_signals` and `window`. With no comments available the
+  field is `[]`, never null.
 
 **Acceptance criteria.**
 - With ANTHROPIC_API_KEY set, scheduling a synthesis for a product
@@ -437,7 +532,7 @@ fetchers are.
 
 ---
 
-## Phase 8 — Bootstrap HollerClean as the first product
+## Phase 8 — Bootstrap HollerClean as the first product `requires_human`
 
 **Scope.** Use everything above to do a full pass for HollerClean,
 end to end, so the loop is not just running but producing useful
@@ -477,7 +572,7 @@ real signal until they aren't.
 
 ---
 
-## Phase 9 — Lead Intelligence cleanup follow-up
+## Phase 9 — Lead Intelligence cleanup follow-up `requires_human`
 
 **Scope.** Once content-forge is doing the work, lead_intelligence's
 remaining content/video pipeline becomes redundant. Decide whether
@@ -513,28 +608,37 @@ until CF has the equivalent or has explicitly chosen not to.)
 
 ---
 
-## Open questions
+## Open questions and v1 defaults
 
-1. Should the metrics poller cadence be fixed (every 6h) or
-   adaptive (denser early, sparser later)? Lean fixed-and-simple
-   for v1.
-2. Should the import-from-sqlite tool live in content-forge or stay
-   in lead_intelligence and push into content-forge over HTTP? The
-   former is simpler; the latter respects the cross-repo boundary
-   more cleanly.
-3. Is the X API direct path acceptable for Twitter metrics fetching,
-   or do we want everything through Apify for consistency? Direct is
-   cheaper but adds a per-tier rate-limit failure mode the rest of
-   the system doesn't have.
-4. Viral threshold tuning. Default is "5x rolling account average OR
-   100k absolute views". Need to revisit per product after a few
-   weeks of data — for low-follower-count competitors the absolute
-   floor is too high; for huge accounts the relative floor is too
-   loose.
-5. Comment volume per viral post. Default is top 50 by likes. May
-   need to scale up for posts with thousands of comments where the
-   long tail is informative, or down for posts where the top 10
-   already dominate the signal.
+Each open question has a default that is authoritative for v1.
+Swarmforge agents should not block on any of these; they should
+proceed with the default and surface any deviation in BUILDLOG for
+human review. The questions remain on the list because they will
+need re-litigation once we have a few weeks of real data.
+
+1. **MetricsPoller cadence.** Default for v1: fixed cron every 6
+   hours, all products. Revisit if we see polling lag or wasted
+   work. Adaptive cadence (denser early, sparser later) is the
+   future direction but not v1.
+2. **Importer location.** Default for v1: lives inside content-forge,
+   exposed as the `cf_import_twitter_sqlite` MCP tool described in
+   Phase 3. Cross-repo HTTP push is cleaner but adds infrastructure
+   we don't yet need.
+3. **Twitter metrics fetching path.** Default for v1: route through
+   Apify (kaitoeasyapi) to keep one credential and one failure mode
+   for the system. Direct X API is cheaper but adds a rate-limit
+   regime we'd have to manage separately. Revisit if Apify costs
+   start dominating the metrics pipeline.
+4. **Viral threshold.** Default for v1: a post is viral if
+   `views >= max(5 * account_rolling_avg_views, 100000)`. The
+   threshold is configured as `:viral_threshold` under the
+   `:content_forge, :competitor_research` config key. Revisit
+   per-product after the first month — small-follower competitors
+   may need a lower absolute floor.
+5. **Comment volume per viral post.** Default for v1: top 50 by
+   like count. Configured as `:max_comments_per_viral_post` under
+   the same config key. Revisit if a high-engagement post's signal
+   is dominated by either the top 10 or the long tail.
 
 ## Out of scope for this plan
 
