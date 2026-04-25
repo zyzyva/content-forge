@@ -87,14 +87,14 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 Status: DONE
 Note: Critical-path Phase 17 slice. Replaces 17.3's `cf_import_twitter_sqlite` placeholder with a real importer that backfills from the standalone scraper's sqlite (`tweets` + `comments` tables; canonical shape lives at `~/projects/lead_intelligence/priv/twitter_scrapes.db`). Idempotent re-runs report zero new rows; `since` / `until` ISO dates bound the import; rolling-average engagement gets recomputed against the broader corpus after a successful backfill. Unblocks 17.8 (HollerClean bootstrap leans on the existing cleanwithmike sqlite).
 
-**New dep** (`mix.exs` + `mix.lock`): `{:exqlite, "~> 0.27"}` locked at `0.36.0` — pure NIF for the sqlite read path, no Ecto adapter integration needed for one-shot reads.
+**New dep** (`mix.exs` + `mix.lock`): `{:exqlite, "~> 0.27"}` locked at `0.36.0` - pure NIF for the sqlite read path, no Ecto adapter integration needed for one-shot reads.
 
 **Migration** (`priv/repo/migrations/20260513120000_unique_index_on_competitor_posts.exs`):
 - `unique_index(:competitor_posts, [:competitor_account_id, :post_id])` named `competitor_posts_account_post_id_index`. The pre-existing scraper job did its own in-memory dedupe before insert, so this index lands without a backfill conflict; the importer leans on it for the natural-key check via `existing_post/2`.
 
 **Context helpers** (`lib/content_forge/products.ex`):
-- `Products.upsert_competitor_post/1` — pre-checks `(competitor_account_id, post_id)`. Returns `{:ok, %{row, status: :inserted | :skipped}}` so callers can count fresh imports vs already-known rows. The status distinction is what makes the importer's response shape (`posts_imported` / `posts_skipped`) honest.
-- `Products.recompute_engagement_scores_for_account/1` — loads every post for the account, computes the corpus average via `likes + comments * 2 + shares * 3`, and updates each post's `engagement_score` to the relative ratio. Returns `{updated_count, average_engagement}`. The importer calls this after the post + comment passes so the scores reflect the full backfilled set rather than the pre-import slice.
+- `Products.upsert_competitor_post/1` - pre-checks `(competitor_account_id, post_id)`. Returns `{:ok, %{row, status: :inserted | :skipped}}` so callers can count fresh imports vs already-known rows. The status distinction is what makes the importer's response shape (`posts_imported` / `posts_skipped`) honest.
+- `Products.recompute_engagement_scores_for_account/1` - loads every post for the account, computes the corpus average via `likes + comments * 2 + shares * 3`, and updates each post's `engagement_score` to the relative ratio. Returns `{updated_count, average_engagement}`. The importer calls this after the post + comment passes so the scores reflect the full backfilled set rather than the pre-import slice.
 
 **Importer module** (`lib/content_forge/competitor_scraper/sqlite_importer.ex`):
 - Public entry point `import_twitter_sqlite/1` takes `%{sqlite_path, competitor, since: optional, until: optional}`. Returns `{:ok, %{posts_imported, posts_skipped, comments_imported, comments_skipped, rolling_avg_engagement}}` or a classified error.
