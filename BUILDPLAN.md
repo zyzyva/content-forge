@@ -762,16 +762,16 @@ Phase exit criteria: (1) running `openclaw agent --message "give me an upload li
   - Acceptance: dev boot with both env vars present runs both jobs end-to-end; dev boot with `APIFY_TOKEN` missing returns a clear `:not_configured` error rather than silently discarding; dev boot with `ANTHROPIC_API_KEY` missing leaves the synthesis in a `pending_manual` state for the 17.4 MCP-driven completion path.
   - See `RESEARCH_LOOP_PLAN.md` Phase 2 for full detail.
 
-- **17.3 Content Forge MCP server** *(DONE - see `BUILDLOG.md` Phase 17.3)*
+- **17.3 Content Forge MCP server** ✅ Shipped `bfdcba2`.
   - Blocks: 17.4 (the manual synthesis path uses the MCP tools), 17.5 (the importer is exposed as an MCP tool). Blocked by: 17.0, 17.2.
   - Add the `SimpleMCP` dependency from the same git source `lead_intelligence` uses. Build a `ContentForgeMCP` server module that exposes the tool set listed in `RESEARCH_LOOP_PLAN.md` Phase 3, with the exact param + return shapes documented there: `cf_create_product`, `cf_list_products`, `cf_add_competitor`, `cf_list_competitors`, `cf_scrape_competitor`, `cf_top_posts_for_synthesis`, `cf_store_intel`, `cf_get_intel`, `cf_import_twitter_sqlite`. All tools return structured `%{...}` or `{:error, %{code, message, details}}` and route through the existing context modules (`Products`, `Metrics`, `ContentGeneration`); no Phoenix or Bandit reach-through.
   - Stdio transport wrapper following the lead_intelligence pattern. Register the new MCP server in the Claude Code config so sessions can connect to it.
   - Tests: per-tool happy-path with stubbed context returns; missing-dependency paths (no `APIFY_TOKEN`, unknown product, etc.) return the structured error envelope rather than crashing the stdio process; tool-name dispatch test asserting every documented tool is registered.
   - See `RESEARCH_LOOP_PLAN.md` Phase 3 for full detail.
 
-- **17.4 With-or-without-key synthesis + comment-aware prompts + audience_signals column**
+- **17.4 With-or-without-key synthesis + comment-aware prompts**
   - Blocks: 17.5 (importer feeds into the comment-aware shape), 17.6 (corrective loop's week-windowed synthesis uses this path). Blocked by: 17.1, 17.3.
-  - Schema additions: add `audience_signals` (`{:array, :string}`, default `[]`, not null) and `window` (`:string`, nullable, indexed, allowed values `"all" | "week" | "month"`) columns to `competitor_intel`; cast both in the changeset; update every selector that reads from `competitor_intel` to include the new columns.
+  - **Scope narrowed at 17.3 acceptance:** the `audience_signals` and `window` columns originally scoped here were pre-empted into 17.3's migration so `cf_store_intel` could persist them honestly today. This slice is now prompt-builder + with/without-key wiring only, not a schema slice.
   - With-key path: keep the existing `LLMAdapter` contract; update its prompt builder so each top post passed in carries its top-50-by-likes comment thread; populate `audience_signals` (free-form short strings capturing recurring objections, questions, emotional reactions, consensus tropes) and `window` on the resulting row.
   - Without-key path: when no `ANTHROPIC_API_KEY` is configured, the synthesizer marks the attempt as `pending_manual` against the product, with references to the top posts and their comments. The pending queue is exposed through the Phase 17.3 MCP tools so a Claude session can list pending syntheses, read the bundle, and call `cf_store_intel` with the same row shape the with-key path produces.
   - Both paths receive the same input bundle shape so behaviour is consistent.
