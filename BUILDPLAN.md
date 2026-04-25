@@ -769,7 +769,7 @@ Phase exit criteria: (1) running `openclaw agent --message "give me an upload li
   - Tests: per-tool happy-path with stubbed context returns; missing-dependency paths (no `APIFY_TOKEN`, unknown product, etc.) return the structured error envelope rather than crashing the stdio process; tool-name dispatch test asserting every documented tool is registered.
   - See `RESEARCH_LOOP_PLAN.md` Phase 3 for full detail.
 
-- **17.4 With-or-without-key synthesis + comment-aware prompts**
+- **17.4 With-or-without-key synthesis + comment-aware prompts** *(DONE - see `BUILDLOG.md` Phase 17.4)*
   - Blocks: 17.5 (importer feeds into the comment-aware shape), 17.6 (corrective loop's week-windowed synthesis uses this path). Blocked by: 17.1, 17.3.
   - **Scope narrowed at 17.3 acceptance:** the `audience_signals` and `window` columns originally scoped here were pre-empted into 17.3's migration so `cf_store_intel` could persist them honestly today. This slice is now prompt-builder + with/without-key wiring only, not a schema slice.
   - With-key path: keep the existing `LLMAdapter` contract; update its prompt builder so each top post passed in carries its top-50-by-likes comment thread; populate `audience_signals` (free-form short strings capturing recurring objections, questions, emotional reactions, consensus tropes) and `window` on the resulting row.

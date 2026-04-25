@@ -12,6 +12,7 @@ defmodule ContentForge.Products do
   alias ContentForge.Products.CompetitorPost
   alias ContentForge.Products.CompetitorPostComment
   alias ContentForge.Products.CompetitorIntel
+  alias ContentForge.Products.PendingIntelSynthesis
   alias ContentForge.Products.ProductMemory
 
   # Product CRUD
@@ -242,6 +243,51 @@ defmodule ContentForge.Products do
     |> CompetitorIntel.changeset(attrs)
     |> Repo.insert()
   end
+
+  # PendingIntelSynthesis CRUD (17.4)
+
+  @doc """
+  Creates a pending-synthesis row marking a without-key
+  attempt that a Claude Code session must finish by hand.
+  Returns `{:ok, row}` or `{:error, changeset}`.
+  """
+  @spec create_pending_intel_synthesis(map()) ::
+          {:ok, PendingIntelSynthesis.t()} | {:error, Ecto.Changeset.t()}
+  def create_pending_intel_synthesis(attrs) when is_map(attrs) do
+    %PendingIntelSynthesis{}
+    |> PendingIntelSynthesis.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc "Lists pending syntheses for a product, oldest-first so the queue drains FIFO."
+  @spec list_pending_intel_syntheses_for_product(Ecto.UUID.t()) :: [PendingIntelSynthesis.t()]
+  def list_pending_intel_syntheses_for_product(product_id) when is_binary(product_id) do
+    Repo.all(
+      from(p in PendingIntelSynthesis,
+        where: p.product_id == ^product_id,
+        order_by: [asc: p.inserted_at]
+      )
+    )
+  end
+
+  @doc """
+  Deletes pending rows that match a freshly-stored intel
+  (same `product_id` + same `window` value, including nil).
+  Returns the count deleted. Used by `cf_store_intel` to
+  resolve the queue when a manual synthesis lands.
+  """
+  @spec resolve_pending_intel_syntheses(Ecto.UUID.t(), String.t() | nil) :: non_neg_integer()
+  def resolve_pending_intel_syntheses(product_id, window) when is_binary(product_id) do
+    {count, _} =
+      from(p in PendingIntelSynthesis, where: p.product_id == ^product_id)
+      |> filter_pending_window(window)
+      |> Repo.delete_all()
+
+    count
+  end
+
+  defp filter_pending_window(query, nil), do: where(query, [p], is_nil(p.window))
+  defp filter_pending_window(query, window), do: where(query, [p], p.window == ^window)
 
   # ProductMemory CRUD (16.3d)
 

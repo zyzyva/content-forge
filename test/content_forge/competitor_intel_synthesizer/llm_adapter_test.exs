@@ -251,4 +251,124 @@ defmodule ContentForge.CompetitorIntelSynthesizer.LLMAdapterTest do
       assert {:error, {:http_error, 400, _}} = LLMAdapter.summarize(sample_posts())
     end
   end
+
+  describe "Phase 17.4 comment-aware prompt + audience_signals" do
+    alias ContentForge.Products.CompetitorPostComment
+
+    defp intel_json_with_signals do
+      JSON.encode!(%{
+        "summary" => "rivals are leaning on case studies",
+        "trending_topics" => ["case studies"],
+        "winning_formats" => ["carousels"],
+        "effective_hooks" => ["before / after"],
+        "audience_signals" => ["asks for pricing", "skeptical of guarantees"]
+      })
+    end
+
+    defp post_with_comments do
+      %CompetitorPost{
+        post_id: "p-comm",
+        content: "case study reveal",
+        post_url: "https://example.com/case",
+        likes_count: 4_200,
+        comments_count: 311,
+        shares_count: 950,
+        engagement_score: 5.0,
+        posted_at: ~U[2026-04-21 12:00:00Z],
+        comments: [
+          %CompetitorPostComment{
+            platform_comment_id: "c1",
+            author_handle: "fan42",
+            text: "love this, but how much does it cost?",
+            likes_count: 75
+          },
+          %CompetitorPostComment{
+            platform_comment_id: "c2",
+            author_handle: "skeptic",
+            text: "the guarantee section is suspicious",
+            likes_count: 30
+          },
+          %CompetitorPostComment{
+            platform_comment_id: "c3",
+            author_handle: "noise",
+            text: "ok",
+            likes_count: 1
+          }
+        ]
+      }
+    end
+
+    test "comment threads are included in the user prompt" do
+      ref = make_ref()
+      test_pid = self()
+
+      Req.Test.stub(@anthropic_stub, fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        {:ok, decoded} = JSON.decode(body)
+        [%{"content" => user_prompt}] = decoded["messages"]
+        send(test_pid, {ref, :user_prompt, user_prompt})
+        Req.Test.json(conn, anthropic_response(intel_json_with_signals()))
+      end)
+
+      assert {:ok, _intel} = LLMAdapter.summarize([post_with_comments()])
+
+      assert_receive {^ref, :user_prompt, prompt}
+      assert prompt =~ "Top comments (by likes):"
+      assert prompt =~ "@fan42 (75 likes): love this"
+      assert prompt =~ "@skeptic (30 likes): the guarantee section"
+    end
+
+    test "system prompt asks the LLM for audience_signals" do
+      ref = make_ref()
+      test_pid = self()
+
+      Req.Test.stub(@anthropic_stub, fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        {:ok, decoded} = JSON.decode(body)
+        send(test_pid, {ref, :system_prompt, decoded["system"]})
+        Req.Test.json(conn, anthropic_response(intel_json_with_signals()))
+      end)
+
+      assert {:ok, _intel} = LLMAdapter.summarize([post_with_comments()])
+
+      assert_receive {^ref, :system_prompt, system_prompt}
+      assert system_prompt =~ "audience_signals"
+    end
+
+    test "audience_signals from the LLM reply make it into the parsed intel" do
+      Req.Test.stub(@anthropic_stub, fn conn ->
+        Req.Test.json(conn, anthropic_response(intel_json_with_signals()))
+      end)
+
+      assert {:ok, intel} = LLMAdapter.summarize([post_with_comments()])
+      assert intel.audience_signals == ["asks for pricing", "skeptical of guarantees"]
+    end
+
+    test "audience_signals defaults to [] when LLM omits the key" do
+      Req.Test.stub(@anthropic_stub, fn conn ->
+        Req.Test.json(conn, anthropic_response(intel_json()))
+      end)
+
+      assert {:ok, intel} = LLMAdapter.summarize(sample_posts())
+      assert intel.audience_signals == []
+    end
+
+    test "post without comments produces a prompt without a Top comments block" do
+      ref = make_ref()
+      test_pid = self()
+
+      Req.Test.stub(@anthropic_stub, fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        {:ok, decoded} = JSON.decode(body)
+        [%{"content" => user_prompt}] = decoded["messages"]
+        send(test_pid, {ref, :user_prompt, user_prompt})
+        Req.Test.json(conn, anthropic_response(intel_json()))
+      end)
+
+      assert {:ok, _intel} = LLMAdapter.summarize(sample_posts())
+
+      assert_receive {^ref, :user_prompt, prompt}
+      refute prompt =~ "Top comments (by likes):"
+    end
+  end
 end
