@@ -699,7 +699,7 @@ Phase exit criteria: a marketer can text a photo in, get it tagged into a produc
   - Bounds + validation: `cadence_days` must be an integer 1..30. Values outside that range return `:invalid_cadence`. `enabled` must be boolean; other types return `:invalid_enabled`.
   - Tests: submitter role = `:forbidden`; owner + change + no confirm = envelope with before/after diff; owner + change + correct confirm = ReminderConfig updated; owner + no-op request short-circuits with `changed: false` and no pending confirmation row; invalid cadence = `:invalid_cadence`; invalid enabled = `:invalid_enabled`; ambiguous product = `:ambiguous_product`. One controller end-to-end.
 
-- **16.4d generate_drafts_from_bundle** *(DONE - see `BUILDLOG.md` Phase 16.4d)*
+- **16.4d generate_drafts_from_bundle** ✅ Shipped `7df57c6`.
   - Blocks: none. Blocked by: 16.4a. Independent of 16.4b and 16.4c.
   - Ship `ContentForge.OpenClawTools.GenerateDraftsFromBundle` at `lib/content_forge/open_claw_tools/generate_drafts_from_bundle.ex`. Params: `"bundle_id"` (required UUID), `"product"` (optional, resolver), `"confirm"` (optional echo phrase).
   - Flow: resolve product, resolve bundle scoped to product (`:not_found` on miss or cross-product), `Authorization.require(ctx, :owner)`. Fetch the bundle's asset count and compute an estimated cost via the existing cost model (`ContentForge.Metrics.estimate_generation_cost/1` or the closest equivalent; if no such function exists today, this slice introduces a thin estimator reading from the same provider pricing tables the dashboard already surfaces). Check remaining product budget against `ContentForge.Metrics.remaining_generation_budget(product_id)` (same caveat applies).
@@ -739,7 +739,7 @@ Phase exit criteria: (1) running `openclaw agent --message "give me an upload li
 
 **Sequence and parallelism:** 17.0 is independent of every other Phase 17 slice and may ship in parallel with the Phase 16 tail. After 17.0 the critical path is 17.1 -> 17.2 -> 17.3 -> 17.4 -> 17.5 -> 17.6. 17.7 is independent of 17.3-17.6 and may run in parallel with them. 17.8 and 17.9 require human input and are flagged.
 
-- **17.0 Local environment up (launchd plist + dev DB confirm)**
+- **17.0 Local environment up (launchd plist + dev DB confirm)** *(DONE - see `BUILDLOG.md` Phase 17.0)*
   - Blocks: 17.6 (the corrective-loop cron needs a long-running Phoenix). Blocked by: none.
   - Create the `content_forge_dev` Postgres database (currently absent on m4; only `content_forge_test` exists). Run `mix deps.get` and `mix ecto.migrate` against dev. Confirm `mix phx.server` boots clean against dev and the dashboard renders with no 500s.
   - Install `~/Library/LaunchAgents/com.zyzyva.content-forge.plist` mirroring the lead_intelligence pattern: `KeepAlive` true, `RunAtLoad` true, `WorkingDirectory` set to the repo, `StandardOutPath` and `StandardErrorPath` to `~/Library/Logs/content-forge.log`. The plist runs `mix phx.server` against the dev env; do not bind to a port the test suite uses (test runs on the Phoenix test pipeline, not 4000, so the dev default port is fine but document it explicitly).

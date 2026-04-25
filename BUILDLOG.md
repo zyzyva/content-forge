@@ -82,9 +82,49 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 17.0: Local environment up (launchd plist + dev DB)
+
+Status: DONE
+Note: Foundation slice for Phase 17. Stands Content Forge up as a long-running local daemon on m4 so the corrective-loop cron (17.6) and the MCP server (17.3) have a process to attach to. Independent of Phase 16; ran in parallel with the 16.4 tail.
+
+**Database**:
+- Created `content_forge_dev` Postgres database via `MIX_ENV=dev mix ecto.create`. Previously only `content_forge_test` existed on m4.
+- Ran `MIX_ENV=dev mix ecto.migrate`; all migrations through `20260509120000_create_pending_confirmations` applied cleanly. `mix ecto.migrations` shows the full migration ladder including the operator + product memory + pending confirmation set we shipped during 16.3 + 16.4.
+
+**Launchd artifact** (`priv/launchd/com.zyzyva.content-forge.plist`):
+- Mirrors the `lead_intelligence` pattern verbatim: label `com.zyzyva.content-forge`, `KeepAlive: true`, `RunAtLoad: true`, `WorkingDirectory: /Users/sales_king/projects/contentforge_ecosystem/content-forge` (the canonical master checkout, not the worktree), `MIX_ENV=dev`, logs to `/Users/sales_king/Library/Logs/content-forge.log`. PATH points at `~/.asdf/shims` so the shim resolves `mix` against the project's `.tool-versions`.
+- Repo carries the authoritative copy so a fresh checkout can re-install via `cp` + `launchctl bootstrap`. Updates land via PR + merge; the runbook documents the bootout/cp/bootstrap dance launchd needs to pick up edits.
+
+**Runbook** (`docs/launchd-runbook.md`):
+- Step-by-step: prerequisites, one-time DB setup, install, verify, restart-behaviour exercise, uninstall, update flow. Includes the curl probe (`curl -s -o /dev/null -w 'status=%{http_code}\n' http://127.0.0.1:4000/dashboard`) operators run to confirm the dashboard is alive.
+- "Why a stable port" section calls out the OpenClaw plugin's hardcoded `localhost:4000` baseUrl so future port changes do not silently break the agent tool surface.
+
+**Live install + verification on m4** (persists across reboots):
+- Plist copied to `~/Library/LaunchAgents/com.zyzyva.content-forge.plist`.
+- `launchctl bootstrap gui/$(id -u) ...` started Phoenix (PID 45538). Dashboard returned 200 in 1s of boot at `http://127.0.0.1:4000/dashboard`.
+- KeepAlive verified: `kill -TERM 45538` triggered an automatic restart to PID 45657 within 5s. The reborn Phoenix served the dashboard at 200 immediately.
+- Log at `~/Library/Logs/content-forge.log` shows clean boot sequence; no Postgres connection storm (the Repo's pool reconnects gracefully under launchd's restart cadence). The pre-existing `lead_intelligence` daemon on port 4010 was unaffected.
+
+**Port allocation note**: Content Forge owns `127.0.0.1:4000` (Phoenix dev default). lead_intelligence runs on 4010; no other zyzyva daemon currently uses 4000. If a future ecosystem service needs 4000 the OpenClaw plugin's `baseUrl` config plus this runbook plus `docs/openclaw-plugin-runbook.md` all need synchronized updates.
+
+**Acceptance criteria from BUILDPLAN 17.0 (all green)**:
+- `mix phx.server` boots clean against `content_forge_dev` (smoke-tested both via standalone foreground run and via launchd).
+- Dashboard answers at `http://127.0.0.1:4000/dashboard` with status 200.
+- `launchctl list | grep com.zyzyva.content-forge` shows the job loaded.
+- Killing the Phoenix process triggers a restart within seconds (verified with PID delta 45538 -> 45657).
+- No Postgres connection storms in the launchd log on restart.
+
+**What this slice explicitly does NOT do** (Phase 17 sub-slices ahead):
+- 17.1 Twitter Apify adapter fix + comment harvesting (the next critical-path slice).
+- 17.2-17.6 + 17.7 carry the rest of the corrective loop and the MCP server.
+- 17.8 / 17.9 are flagged `requires_human` in the plan.
+
+**Gate**: `mix compile --warnings-as-errors` clean, `mix format --check-formatted` clean, `mix test` 983/0 (no new tests in this slice; environment work is verified by manual acceptance criteria above), `mix credo --strict` baseline-diff empty for slice-touched files (no Elixir source files touched). Zero emdashes in the runbook or the plist.
+
 ### Phase 16.4d: generate_drafts_from_bundle (closes the 16.4 wave)
 
 Status: DONE
+Merged: master @ `7df57c6` (fast-forward; coder rebased master `c06cfd3` into the worktree as merge `2635755`). Reviewer ACCEPT. Gate: compile/format/test 983-0, credo 26 vs 44 baseline (zero new in slice-touched files). Coverage GenerateDraftsFromBundle 92%, GenerationBudget 100%. Zero emdashes in code/tests/runbook. Phase 16.4 wave complete: all four heavy-write tools ship through the confirmation envelope; over-budget is warning-only as spec'd, not a block. Reviewer flagged the 32 emdashes carried in `RESEARCH_LOOP_PLAN.md` (user-authored doc imported this session) as inconsistent with the recent emdash-clean discipline; swept in the same handoff cycle.
 Note: Last heavy-write slice. Third consumer of the 16.4a confirmation envelope. Introduces a thin `ContentForge.Metrics.GenerationBudget` helper so the tool's preview can carry concrete `estimated_cost_cents` + `remaining_budget_cents` numbers; the dashboard had no first-class cost model to reuse. Budget is transparency-only per spec: an over-budget request still enqueues on confirm, the preview just adds a `warning` string for the agent to read verbatim.
 
 **Budget helper** (`lib/content_forge/metrics/generation_budget.ex`):
