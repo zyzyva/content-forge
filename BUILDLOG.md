@@ -85,6 +85,7 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 ### Phase 17.1: Twitter Apify adapter fix + comment harvesting infra
 
 Status: DONE
+Merged: master @ `14defef` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 1024-0, credo 25 vs 44 baseline (one finding RESOLVED in slice-touched files; zero new). Coverage CompetitorResearch 95%, CompetitorCommentHarvester 90%, CompetitorPostComment 100%, ApifyAdapter 75%. Zero emdashes anywhere. Implementation notes: `viral?/2` predicate is config-driven (5x rolling avg OR 100k absolute floor), tunable per deployment under `:content_forge, :competitor_research, :viral_threshold`. Harvester upserts via partial unique on `(competitor_post_id, platform_comment_id)` so re-runs are genuinely idempotent. Scraper enqueue is a no-op for non-viral posts to keep the pricing footprint bounded. Twitter actor unpinned to `kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest` with `APIFY_ACTOR_TWITTER` env override available for future swaps. Live integration tests (`@tag :live`) deferred to the 2026-05-05 Apify credit reset on m4; stub coverage carries the slice in the meantime.
 Note: Two coupled work streams shipped in one slice (post-path fix + comment corpus) per BUILDPLAN's explicit sizing. Unblocks 17.4 (synthesis is comment-aware), 17.5 (importer mirrors the schema), and 17.6 (corrective loop reads comment-derived intel).
 
 **Schema + migration** (`priv/repo/migrations/20260510120000_create_competitor_post_comments_and_columns.exs`):

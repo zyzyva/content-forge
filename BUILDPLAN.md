@@ -747,7 +747,7 @@ Phase exit criteria: (1) running `openclaw agent --message "give me an upload li
   - Acceptance: `launchctl list | grep com.zyzyva.content-forge` shows the job loaded; the dashboard answers on the configured dev port; killing the Phoenix process triggers a restart within seconds; no Postgres connection storms in the log on restart.
   - See `RESEARCH_LOOP_PLAN.md` Phase 0 for full detail.
 
-- **17.1 Twitter Apify adapter fix + comment harvesting infra** *(DONE - see `BUILDLOG.md` Phase 17.1)*
+- **17.1 Twitter Apify adapter fix + comment harvesting infra** ✅ Shipped `14defef`.
   - Blocks: 17.4 (synthesis is comment-aware), 17.5 (importer mirrors the schema), 17.6 (corrective loop reads comment-derived intel). Blocked by: 17.0.
   - Two work streams in one slice (sized this way because the schema migration plus the actor-config change is one TDD loop and they are tightly coupled):
     - Post harvesting: route the Twitter platform to the kaitoeasyapi actor identifier in the per-platform `actors` config; extend the input shape so handle-driven scrapes pass a `from` field in addition to the existing `handle/username/screenName/searchTerms` keys (other actors ignore unknown keys, so this is safe); add a defensive filter that drops items carrying a `noResults` marker before normalisation; add a fixture-based unit test exercising the kaitoeasyapi response shape.
