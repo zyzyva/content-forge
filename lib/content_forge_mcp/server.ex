@@ -52,6 +52,7 @@ defmodule ContentForgeMCP.Server do
   alias ContentForge.Products.CompetitorAccount
   alias ContentForge.Products.CompetitorIntel
   alias ContentForge.Products.CompetitorPost
+  alias ContentForge.Products.PendingIntelSynthesis
   alias ContentForge.Products.Product
   alias ContentForge.Repo
 
@@ -160,6 +161,13 @@ defmodule ContentForgeMCP.Server do
         }
       ),
       SimpleMCP.Tool.new(
+        "cf_list_pending_syntheses",
+        "List pending competitor-intel syntheses for a product. Each row carries the source post ids the without-key route captured so a Claude session can pull the bundle via cf_top_posts_for_synthesis and complete via cf_store_intel.",
+        %{
+          product_id: {:required, :string, description: "Product UUID."}
+        }
+      ),
+      SimpleMCP.Tool.new(
         "cf_import_twitter_sqlite",
         "Import posts + comments from the standalone scraper's sqlite file. Registered in 17.3; full implementation lands in 17.5.",
         %{
@@ -184,6 +192,7 @@ defmodule ContentForgeMCP.Server do
   def handle_tool_call("cf_top_posts_for_synthesis", args), do: cf_top_posts_for_synthesis(args)
   def handle_tool_call("cf_store_intel", args), do: cf_store_intel(args)
   def handle_tool_call("cf_get_intel", args), do: cf_get_intel(args)
+  def handle_tool_call("cf_list_pending_syntheses", args), do: cf_list_pending_syntheses(args)
   def handle_tool_call("cf_import_twitter_sqlite", args), do: cf_import_twitter_sqlite(args)
 
   def handle_tool_call(name, _args),
@@ -464,6 +473,10 @@ defmodule ContentForgeMCP.Server do
              source_count: source_count,
              window: window
            }) do
+      # Resolve any pending-synthesis rows for the same
+      # (product, window) so the MCP queue stays bounded.
+      _resolved = Products.resolve_pending_intel_syntheses(product_id, window)
+
       ok(%{
         intel_id: intel.id,
         product_id: intel.product_id,
@@ -527,6 +540,31 @@ defmodule ContentForgeMCP.Server do
       source_count: intel.source_count,
       window: intel.window,
       created_at: iso8601(intel.inserted_at)
+    }
+  end
+
+  # --- cf_list_pending_syntheses --------------------------------------------
+
+  defp cf_list_pending_syntheses(args) do
+    with {:ok, product_id} <- require_binary(args, "product_id"),
+         {:ok, _product} <- fetch_product(product_id) do
+      rows =
+        product_id
+        |> Products.list_pending_intel_syntheses_for_product()
+        |> Enum.map(&serialize_pending/1)
+
+      ok(rows)
+    end
+  end
+
+  defp serialize_pending(%PendingIntelSynthesis{} = row) do
+    %{
+      pending_id: row.id,
+      product_id: row.product_id,
+      window: row.window,
+      source_post_ids: row.source_post_ids || [],
+      note: row.note,
+      created_at: iso8601(row.inserted_at)
     }
   end
 
