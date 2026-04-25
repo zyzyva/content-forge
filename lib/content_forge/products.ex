@@ -188,6 +188,97 @@ defmodule ContentForge.Products do
     |> Repo.delete_all()
   end
 
+  @doc """
+  Inserts a competitor post when no row exists for the
+  `(competitor_account_id, post_id)` pair; returns the existing
+  row untouched on conflict. Used by the Phase 17.5 sqlite
+  importer to keep re-runs idempotent without overwriting
+  metrics that may have been refined by the live scraper since
+  the original import.
+
+  Returns `{:ok, %{row: post, status: :inserted | :skipped}}` so
+  callers can count fresh imports vs already-known rows.
+  """
+  @spec upsert_competitor_post(map()) ::
+          {:ok, %{row: CompetitorPost.t(), status: :inserted | :skipped}}
+          | {:error, Ecto.Changeset.t()}
+  def upsert_competitor_post(attrs) when is_map(attrs) do
+    account_id = attrs[:competitor_account_id] || attrs["competitor_account_id"]
+    post_id = attrs[:post_id] || attrs["post_id"]
+
+    case existing_post(account_id, post_id) do
+      %CompetitorPost{} = existing ->
+        {:ok, %{row: existing, status: :skipped}}
+
+      nil ->
+        with {:ok, row} <-
+               %CompetitorPost{}
+               |> CompetitorPost.changeset(attrs)
+               |> Repo.insert() do
+          {:ok, %{row: row, status: :inserted}}
+        end
+    end
+  end
+
+  defp existing_post(nil, _), do: nil
+  defp existing_post(_, nil), do: nil
+
+  defp existing_post(account_id, post_id) do
+    Repo.one(
+      from(p in CompetitorPost,
+        where: p.competitor_account_id == ^account_id and p.post_id == ^post_id,
+        limit: 1
+      )
+    )
+  end
+
+  @doc """
+  Recomputes `engagement_score` for every post belonging to the
+  given competitor account against the post-corpus rolling
+  average (likes + comments * 2 + shares * 3). Called by the
+  17.5 importer after a backfill so per-post scores reflect the
+  broader corpus rather than the slice originally scraped.
+
+  Returns `{updated_count, average_engagement}`.
+  """
+  @spec recompute_engagement_scores_for_account(Ecto.UUID.t()) ::
+          {non_neg_integer(), float()}
+  def recompute_engagement_scores_for_account(account_id) when is_binary(account_id) do
+    posts = list_competitor_posts_for_account(account_id)
+    average = average_engagement(posts)
+
+    updated =
+      Enum.reduce(posts, 0, fn post, acc ->
+        score = relative_score(post, average)
+
+        case post |> CompetitorPost.changeset(%{engagement_score: score}) |> Repo.update() do
+          {:ok, _} -> acc + 1
+          {:error, _} -> acc
+        end
+      end)
+
+    {updated, average}
+  end
+
+  defp average_engagement([]), do: 0.0
+
+  defp average_engagement(posts) do
+    total =
+      Enum.reduce(posts, 0, fn post, acc ->
+        acc + post_engagement(post)
+      end)
+
+    total / length(posts)
+  end
+
+  defp post_engagement(%CompetitorPost{} = post) do
+    (post.likes_count || 0) + (post.comments_count || 0) * 2 + (post.shares_count || 0) * 3
+  end
+
+  defp relative_score(_post, average) when average <= 0, do: 1.0
+
+  defp relative_score(post, average), do: post_engagement(post) / average
+
   # CompetitorPostComment CRUD (17.1)
 
   @doc """

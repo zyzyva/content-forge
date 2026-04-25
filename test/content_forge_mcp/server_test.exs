@@ -544,12 +544,122 @@ defmodule ContentForgeMCP.ServerTest do
   end
 
   describe "cf_import_twitter_sqlite" do
-    test "registered but returns not_implemented until Phase 17.5 ships" do
-      assert {:error, %{code: "not_implemented", details: %{phase: "17.5"}}} =
+    test "missing sqlite returns the structured not_found envelope" do
+      product = seed_product()
+      account = seed_competitor(product)
+
+      assert {:error, %{code: "not_found", details: %{sqlite_path: path}}} =
                call("cf_import_twitter_sqlite", %{
-                 "sqlite_path" => "/tmp/scraper.db",
+                 "sqlite_path" => "/tmp/cf_definitely_not_here_#{System.unique_integer()}.db",
+                 "competitor_id" => account.id
+               })
+
+      assert is_binary(path)
+    end
+
+    test "unknown competitor returns not_found via the MCP envelope" do
+      assert {:error, %{code: "not_found"}} =
+               call("cf_import_twitter_sqlite", %{
+                 "sqlite_path" => "/tmp/whatever.db",
                  "competitor_id" => Ecto.UUID.generate()
                })
     end
+
+    test "happy path imports tweets via the real importer end-to-end" do
+      product = seed_product()
+      account = seed_competitor(product, %{handle: "smoke"})
+
+      sqlite_path = Path.join(System.tmp_dir!(), "cf_mcp_smoke_#{System.unique_integer([:positive])}.db")
+
+      try do
+        seed_tiny_sqlite!(sqlite_path, "smoke")
+
+        assert {:ok, %{posts_imported: 1, posts_skipped: 0}} =
+                 call("cf_import_twitter_sqlite", %{
+                   "sqlite_path" => sqlite_path,
+                   "competitor_id" => account.id
+                 })
+      after
+        File.rm(sqlite_path)
+      end
+    end
+  end
+
+  defp seed_tiny_sqlite!(path, handle) do
+    {:ok, conn} = Exqlite.Sqlite3.open(path)
+
+    :ok =
+      Exqlite.Sqlite3.execute(conn, """
+      CREATE TABLE tweets (
+        platform_id TEXT PRIMARY KEY,
+        handle TEXT NOT NULL,
+        text TEXT,
+        posted_at TEXT,
+        posted_unix INTEGER,
+        likes INTEGER DEFAULT 0,
+        retweets INTEGER DEFAULT 0,
+        replies INTEGER DEFAULT 0,
+        quotes INTEGER DEFAULT 0,
+        views INTEGER DEFAULT 0,
+        bookmarks INTEGER DEFAULT 0,
+        is_reply INTEGER DEFAULT 0,
+        in_reply_to_username TEXT,
+        conversation_id TEXT,
+        is_pinned INTEGER DEFAULT 0,
+        url TEXT,
+        raw_json TEXT,
+        scraped_at TEXT
+      );
+      """)
+
+    :ok =
+      Exqlite.Sqlite3.execute(conn, """
+      CREATE TABLE comments (
+        platform_id TEXT PRIMARY KEY,
+        parent_tweet_id TEXT NOT NULL,
+        parent_handle TEXT NOT NULL,
+        author_handle TEXT,
+        text TEXT,
+        posted_at TEXT,
+        posted_unix INTEGER,
+        likes INTEGER DEFAULT 0,
+        retweets INTEGER DEFAULT 0,
+        replies INTEGER DEFAULT 0,
+        views INTEGER DEFAULT 0,
+        bookmarks INTEGER DEFAULT 0,
+        in_reply_to_id TEXT,
+        in_reply_to_username TEXT,
+        conversation_id TEXT,
+        url TEXT,
+        raw_json TEXT,
+        scraped_at TEXT
+      );
+      """)
+
+    {:ok, stmt} =
+      Exqlite.Sqlite3.prepare(
+        conn,
+        ~s|INSERT INTO tweets (platform_id, handle, text, posted_at, posted_unix, likes, retweets, replies, views, conversation_id, url, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)|
+      )
+
+    :ok =
+      Exqlite.Sqlite3.bind(stmt, [
+        "smoke-1",
+        handle,
+        "smoke body",
+        "2026-04-20T10:00:00Z",
+        1_745_148_000,
+        100,
+        10,
+        5,
+        1_000,
+        "conv-smoke",
+        "https://x.com/#{handle}/status/smoke-1",
+        ~s({"id":"smoke-1"})
+      ])
+
+    :done = Exqlite.Sqlite3.step(conn, stmt)
+    Exqlite.Sqlite3.release(conn, stmt)
+    Exqlite.Sqlite3.close(conn)
   end
 end

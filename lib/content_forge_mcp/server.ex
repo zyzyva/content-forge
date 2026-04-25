@@ -47,6 +47,7 @@ defmodule ContentForgeMCP.Server do
 
   import Ecto.Query, only: [from: 2]
 
+  alias ContentForge.CompetitorScraper.SqliteImporter
   alias ContentForge.Jobs.CompetitorScraper
   alias ContentForge.Products
   alias ContentForge.Products.CompetitorAccount
@@ -570,12 +571,35 @@ defmodule ContentForgeMCP.Server do
 
   # --- cf_import_twitter_sqlite ---------------------------------------------
 
-  defp cf_import_twitter_sqlite(_args) do
-    error(
-      "not_implemented",
-      "cf_import_twitter_sqlite is registered in 17.3 but the implementation lands in 17.5",
-      %{phase: "17.5"}
-    )
+  defp cf_import_twitter_sqlite(args) do
+    with {:ok, sqlite_path} <- require_binary(args, "sqlite_path"),
+         {:ok, competitor_id} <- require_binary(args, "competitor_id"),
+         {:ok, competitor} <- fetch_competitor(competitor_id),
+         since <- binary_param(args, "since"),
+         until_value <- binary_param(args, "until") do
+      do_import_twitter_sqlite(sqlite_path, competitor, since, until_value)
+    end
+  end
+
+  defp do_import_twitter_sqlite(sqlite_path, competitor, since, until_value) do
+    case SqliteImporter.import_twitter_sqlite(%{
+           sqlite_path: sqlite_path,
+           competitor: competitor,
+           since: since,
+           until: until_value
+         }) do
+      {:ok, result} ->
+        ok(result)
+
+      {:error, :sqlite_not_found} ->
+        error("not_found", "Source sqlite file not found", %{sqlite_path: sqlite_path})
+
+      {:error, {:sqlite_open_failed, reason}} ->
+        error("dependency_error", "Failed to open source sqlite", %{reason: inspect(reason)})
+
+      {:error, reason} ->
+        error("dependency_error", "Importer failed", %{reason: inspect(reason)})
+    end
   end
 
   # --- product / competitor lookups -----------------------------------------
