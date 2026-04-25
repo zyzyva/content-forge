@@ -65,7 +65,7 @@ defmodule ContentForgeMCP.ServerTest do
       assert {"Content Forge", "1.0.0"} = Server.server_info()
     end
 
-    test "registers exactly the nine documented tools" do
+    test "registers exactly the ten documented tools (nine from 17.3 + cf_list_pending_syntheses from 17.4)" do
       names = Server.tools() |> Enum.map(& &1.name) |> MapSet.new()
 
       expected =
@@ -78,6 +78,7 @@ defmodule ContentForgeMCP.ServerTest do
           cf_top_posts_for_synthesis
           cf_store_intel
           cf_get_intel
+          cf_list_pending_syntheses
           cf_import_twitter_sqlite
         ))
 
@@ -461,6 +462,84 @@ defmodule ContentForgeMCP.ServerTest do
 
       assert {:error, %{code: "not_found"}} =
                call("cf_get_intel", %{"product_id" => product.id})
+    end
+  end
+
+  describe "cf_list_pending_syntheses" do
+    test "lists pending rows oldest-first" do
+      product = seed_product()
+
+      {:ok, _first} =
+        Products.create_pending_intel_synthesis(%{
+          product_id: product.id,
+          window: "all",
+          source_post_ids: ["00000000-0000-0000-0000-000000000aaa"],
+          note: "first"
+        })
+
+      {:ok, _second} =
+        Products.create_pending_intel_synthesis(%{
+          product_id: product.id,
+          window: "week",
+          source_post_ids: [],
+          note: "second"
+        })
+
+      assert {:ok, rows} =
+               call("cf_list_pending_syntheses", %{"product_id" => product.id})
+
+      assert length(rows) == 2
+      [first, second] = rows
+      assert first.note == "first"
+      assert first.window == "all"
+      assert first.source_post_ids == ["00000000-0000-0000-0000-000000000aaa"]
+      assert second.note == "second"
+    end
+
+    test "empty list when no pending syntheses exist" do
+      product = seed_product()
+      assert {:ok, []} = call("cf_list_pending_syntheses", %{"product_id" => product.id})
+    end
+
+    test "not_found on unknown product" do
+      assert {:error, %{code: "not_found"}} =
+               call("cf_list_pending_syntheses", %{"product_id" => Ecto.UUID.generate()})
+    end
+  end
+
+  describe "cf_store_intel resolves matching pending rows" do
+    test "deletes pending rows for the same (product, window) on success" do
+      product = seed_product()
+
+      {:ok, _resolved} =
+        Products.create_pending_intel_synthesis(%{
+          product_id: product.id,
+          window: "week",
+          source_post_ids: []
+        })
+
+      {:ok, _kept} =
+        Products.create_pending_intel_synthesis(%{
+          product_id: product.id,
+          window: "month",
+          source_post_ids: []
+        })
+
+      assert {:ok, _} =
+               call("cf_store_intel", %{
+                 "product_id" => product.id,
+                 "summary" => "manual",
+                 "trending_topics" => [],
+                 "winning_formats" => [],
+                 "effective_hooks" => [],
+                 "audience_signals" => [],
+                 "source_count" => 0,
+                 "window" => "week"
+               })
+
+      pending = Products.list_pending_intel_syntheses_for_product(product.id)
+      assert length(pending) == 1
+      assert hd(pending).window == "month"
     end
   end
 

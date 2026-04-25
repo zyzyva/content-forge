@@ -30,6 +30,7 @@ touching the LiveView dashboard.
 | `cf_top_posts_for_synthesis` | top N posts + comments by window |
 | `cf_store_intel` | persist a manual synthesis (without-key path) |
 | `cf_get_intel` | latest competitor intel or last five |
+| `cf_list_pending_syntheses` | without-key route's pending queue (17.4) |
 | `cf_import_twitter_sqlite` | registered; full implementation lands in 17.5 |
 
 Every tool returns either a structured success map or a
@@ -119,12 +120,25 @@ the stdio server disables the Phoenix endpoint at start time.
 
 When `ANTHROPIC_API_KEY` is absent (Phase 17.2 made this an
 adapter-layer downgrade rather than a discard), the Phase 17.4
-synthesizer marks attempts as `pending_manual` against the
-product. A Claude Code session opens this MCP server, calls
-`cf_top_posts_for_synthesis` to read the bundle, reasons
-through a synthesis by hand, and calls `cf_store_intel` with
-the same row shape the autonomous path would produce. The
-corrective loop (17.6) treats both paths identically.
+synthesizer inserts a `pending_intel_syntheses` row referencing
+the source posts and `:discard`s the Oban job (no retries
+against a permanent misconfiguration). A Claude Code session:
+
+1. Calls `cf_list_pending_syntheses { "product_id": "..." }`
+   to find work to do.
+2. For each pending row, calls `cf_top_posts_for_synthesis`
+   with the matching product + window to read the bundle
+   (post bodies + comment threads).
+3. Reasons through the synthesis by hand and calls
+   `cf_store_intel` with the same row shape the autonomous
+   path would produce - including the new `audience_signals`
+   that the with-key prompt asks the LLM to extract from the
+   comment thread.
+4. `cf_store_intel` resolves (deletes) any pending rows for
+   the matching `(product_id, window)` so the queue stays
+   bounded.
+
+The corrective loop (17.6) treats both paths identically.
 
 ## Updating the server
 
