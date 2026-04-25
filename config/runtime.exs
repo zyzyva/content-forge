@@ -45,7 +45,11 @@ config :content_forge, :apify,
   base_url: System.get_env("APIFY_BASE_URL", "https://api.apify.com"),
   token: System.get_env("APIFY_TOKEN"),
   actors: %{
-    "twitter" => System.get_env("APIFY_ACTOR_TWITTER", "apify~twitter-scraper"),
+    "twitter" =>
+      System.get_env(
+        "APIFY_ACTOR_TWITTER",
+        "kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest"
+      ),
     "linkedin" => System.get_env("APIFY_ACTOR_LINKEDIN", "apify~linkedin-post-scraper"),
     "reddit" => System.get_env("APIFY_ACTOR_REDDIT", "trudax~reddit-scraper"),
     "facebook" => System.get_env("APIFY_ACTOR_FACEBOOK", "apify~facebook-pages-scraper"),

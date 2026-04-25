@@ -10,6 +10,7 @@ defmodule ContentForge.Products do
   alias ContentForge.Products.ProductSnapshot
   alias ContentForge.Products.CompetitorAccount
   alias ContentForge.Products.CompetitorPost
+  alias ContentForge.Products.CompetitorPostComment
   alias ContentForge.Products.CompetitorIntel
   alias ContentForge.Products.ProductMemory
 
@@ -184,6 +185,39 @@ defmodule ContentForge.Products do
     CompetitorPost
     |> where(competitor_account_id: ^account_id)
     |> Repo.delete_all()
+  end
+
+  # CompetitorPostComment CRUD (17.1)
+
+  @doc """
+  Upserts a comment for a competitor post by `(competitor_post_id,
+  platform_comment_id)`. Existing rows refresh their counts +
+  text + raw_payload; the harvester is idempotent because of this.
+  """
+  @spec upsert_competitor_post_comment(map()) ::
+          {:ok, CompetitorPostComment.t()} | {:error, Ecto.Changeset.t()}
+  def upsert_competitor_post_comment(attrs) when is_map(attrs) do
+    update_keys =
+      ~w(author_handle text posted_at likes_count replies_count retweets_count views_count in_reply_to_id conversation_id raw_payload)a
+
+    %CompetitorPostComment{}
+    |> CompetitorPostComment.changeset(attrs)
+    |> Repo.insert(
+      on_conflict: {:replace, update_keys},
+      conflict_target: [:competitor_post_id, :platform_comment_id],
+      returning: true
+    )
+  end
+
+  @doc "Returns every captured comment for a competitor post, newest-likes-first."
+  @spec list_comments_for_post(Ecto.UUID.t()) :: [CompetitorPostComment.t()]
+  def list_comments_for_post(competitor_post_id) when is_binary(competitor_post_id) do
+    Repo.all(
+      from(c in CompetitorPostComment,
+        where: c.competitor_post_id == ^competitor_post_id,
+        order_by: [desc: c.likes_count, asc: c.posted_at]
+      )
+    )
   end
 
   # CompetitorIntel CRUD

@@ -82,6 +82,73 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 17.1: Twitter Apify adapter fix + comment harvesting infra
+
+Status: DONE
+Note: Two coupled work streams shipped in one slice (post-path fix + comment corpus) per BUILDPLAN's explicit sizing. Unblocks 17.4 (synthesis is comment-aware), 17.5 (importer mirrors the schema), and 17.6 (corrective loop reads comment-derived intel).
+
+**Schema + migration** (`priv/repo/migrations/20260510120000_create_competitor_post_comments_and_columns.exs`):
+- `alter table(:competitor_posts)` adds `views_count` (integer, not-null, default 0) and `conversation_id` (string, nullable, indexed). Both are needed by the viral predicate and the comment harvester respectively; bundled into one migration since they're a single logical change.
+- New table `competitor_post_comments` with FK cascade to `competitor_posts`, the spec-listed column set (`platform_comment_id`, `author_handle`, `text`, `posted_at`, `likes_count`, `replies_count`, `retweets_count`, `views_count`, `in_reply_to_id`, `conversation_id`, `raw_payload` jsonb), index on `competitor_post_id`, and a unique index on `(competitor_post_id, platform_comment_id)` named `competitor_post_comments_post_id_platform_comment_id_index` - this is what makes the harvester re-run idempotent.
+- Migrated cleanly against both `MIX_ENV=test` and `MIX_ENV=dev` so the launchd Phoenix can pick up the new schema on its next restart.
+
+**`CompetitorPost` schema** (`lib/content_forge/products/competitor_post.ex`):
+- Casts the new `views_count` + `conversation_id` columns; existing required-field validation unchanged.
+- New `has_many :comments` association so the synthesizer (17.4) can preload comment threads on top posts in one query.
+
+**`CompetitorPostComment` schema** (`lib/content_forge/products/competitor_post_comment.ex`, new):
+- Required fields `competitor_post_id` + `platform_comment_id`; everything else optional.
+- `unique_constraint` points at the partial index name with a human message ("already captured for this post") so a duplicate insert surfaces a structured changeset error rather than a raw Postgres exception.
+- All count fields default to 0 at the schema level.
+
+**Context helpers** (`lib/content_forge/products.ex`):
+- `upsert_competitor_post_comment/1` does a single `Repo.insert` with `on_conflict: {:replace, update_keys}` + `conflict_target: [:competitor_post_id, :platform_comment_id]` so re-runs refresh counts/text/raw_payload in place. Returns `{:ok, row}` or `{:error, changeset}`. The harvester's idempotency guarantee depends on this single call.
+- `list_comments_for_post/1` returns rows ordered `desc: likes_count, asc: posted_at` so the synthesizer reads the highest-resonance replies first.
+
+**Viral predicate + helper module** (`lib/content_forge/competitor_research.ex`, new):
+- `viral?/2` is pure: returns `true` when `views >= viral_views_floor` (default 100k) OR `views >= rolling_avg * viral_views_multiplier` (default 5x). Non-positive views never trip; the multiplier path requires a positive rolling average.
+- `rolling_avg_views/1` averages views across a post list (treats nil as 0).
+- `max_comments_per_viral_post/0` reads the harvester ceiling from config (default 50).
+- All thresholds are config-driven at `:content_forge, :competitor_research` so per-product tuning lands without code changes.
+
+**Apify adapter changes** (`lib/content_forge/competitor_scraper/apify_adapter.ex`):
+- Twitter default actor swapped from broken `apify~twitter-scraper` to `kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest`. Override per-environment via `APIFY_ACTOR_TWITTER`.
+- `build_run_input/1` now passes `from: handle` alongside the existing handle keys. Other actors ignore unknown keys (per Apify SDK behavior), so this is safe defense-in-depth.
+- New defensive `no_results_marker?/1` filter strips `%{"noResults" => true}` placeholders before normalisation. Two helper edges: an all-noResults dataset returns `{:ok, []}` cleanly (cleanly-empty handle is not a parse failure), while a dataset with mixed real items + noResults markers normalises only the real items.
+- `normalise_item/2` now surfaces `views_count` (from `viewCount` / `viewsCount` / `views`), `conversation_id` (from `conversationId` / `conversation_id`), and `raw_data` (the full source item) so the scraper job can persist all three.
+- New public `fetch_comments/2` function pulls top-N replies on a viral post by `conversation_id`. Accepts `:limit` + `:platform` opts. Returns `{:error, :missing_conversation_id}` when the post has none, `{:error, :not_configured}` / `{:error, :unsupported_platform}` matching the post path, or a normalised list of comment-attrs maps shaped for `Products.upsert_competitor_post_comment/1`. The list is sorted desc-by-likes and capped at `:limit` so the harvester pays for top-N resonance only.
+
+**Comment harvester worker** (`lib/content_forge/jobs/competitor_comment_harvester.ex`, new):
+- Oban worker on the `:competitor` queue, max_attempts 3.
+- `perform/1` loads the post (with `competitor_account` preloaded for platform context), classifies adapter failures: `:not_configured` and `:missing_conversation_id` and permanent errors `{:cancel, ...}`, transient errors `{:error, ...}` (Oban retries), success calls `Products.upsert_competitor_post_comment/1` per comment with per-row error logging so a malformed comment does not abort the whole batch.
+- Missing post id, malformed UUID, or unknown post all collapse to `{:cancel, :post_not_found}` so a stale enqueue from before a post deletion cleans up rather than retrying forever.
+
+**`CompetitorScraper` viral trigger** (`lib/content_forge/jobs/competitor_scraper.ex`):
+- After computing `rolling_avg_views/1` once per account, `maybe_enqueue_comment_harvest/3` runs the viral predicate per post on the persisted record. Crossing posts enqueue `CompetitorCommentHarvester` with `%{competitor_post_id: id}`; non-crossing posts are a no-op so the cron's pricing footprint stays bounded.
+- `store_post/3` now passes `views_count`, `conversation_id`, and the original `raw_data` map through to `Products.create_competitor_post/1` so the harvester has the conversation id available without an extra round trip.
+
+**Tests** (43 new):
+- `test/content_forge/products/competitor_post_comment_test.exs` (9): upsert happy path with all fields, conflict-target refresh in place, scoping across posts, required-field validation, list ordering by likes, list scoping, new column casting + defaults on CompetitorPost, has_many :comments preload.
+- `test/content_forge/competitor_research_test.exs` (13): viral?/2 below both axes, at floor, above multiplier, ignores multiplier when avg is 0, non-positive views, custom multiplier, custom floor, plain-map post; max_comments_per_viral_post default + override; rolling_avg_views empty list, mixed views, nil-views.
+- `test/content_forge/competitor_scraper/apify_adapter_test.exs` (4 new + the existing 23 unchanged): kaitoeasyapi normalisation surfaces views + conversation + raw_data; noResults markers filtered; all-noResults returns empty; `from` key in run input; `fetch_comments/2` happy path with top-N by likes + noResults filter; `fetch_comments/2` returns `:missing_conversation_id`.
+- `test/content_forge/jobs/competitor_comment_harvester_test.exs` (12): happy path upsert, platform threaded from account, limit override, idempotent re-run inserts zero, missing arg / unknown id / malformed id all `:cancel`, missing adapter `:cancel`, adapter `:not_configured` `:cancel`, adapter `:missing_conversation_id` `:cancel`, transient adapter error returns `:error` for Oban retry, permanent adapter error `:cancel`.
+- `test/content_forge/jobs/competitor_scraper_test.exs` (5 + 1 new viral-trigger test): viral post enqueues harvester, quiet post does not, harvester args carry the persisted post id.
+
+**Apify free-plan note** (BUILDPLAN explicit): the live integration test (`@tag :live`) against Twitter cannot run until the m4 credit cycle resets 2026-05-05. This slice codes against the captured kaitoeasyapi response shape via fixtures; live verification is deferred but documented in the test file's describe-block comment.
+
+**Spec deviations + small additions outside the literal spec**:
+- The plan asked for the `viral_threshold` config under `:content_forge, :competitor_research, :viral_threshold`. Shipped as two separate keys (`:viral_views_multiplier` + `:viral_views_floor`) because the predicate honors both axes independently and config is easier to read this way. Same end-to-end behavior; documented in `CompetitorResearch` moduledoc.
+- Added a `CompetitorResearch` module that owns the predicate + the rolling-average helper + the harvester ceiling accessor, rather than scattering these across `Products` and the scraper. Single point of tuning, single point of test coverage.
+- Adapter's `fetch_comments/2` accepts an explicit `:platform` opt rather than peeking at `post.competitor_account` so the adapter stays Repo-free. The harvester preloads the account and threads platform through.
+
+**What this slice explicitly does NOT do** (next 17.x slices):
+- 17.2 opens the dev/prod config gate so `:scraper_adapter` + `:intel_model` are wired in dev when env vars are present.
+- 17.3 adds the `ContentForgeMCP` server.
+- 17.4 makes the synthesizer comment-aware and adds the `audience_signals` + `window` columns.
+- 17.6 adds the cron entries that periodically run the scraper + the comment refresher and replaces the existing trigger with the two-condition external corrective loop.
+
+**Gate**: `mix compile --warnings-as-errors` clean, `mix format --check-formatted` clean, `mix test` 1024/0 (43 new), `mix credo --strict` baseline-diff empty for slice-touched files (one in-slice nested-module finding on the new `CompetitorIntelSynthesizer.new` call resolved by aliasing). Zero emdashes in slice-touched files (cleaned the two pre-existing emdashes in `competitor_scraper.ex`'s moduledoc on the way through).
+
 ### Phase 17.0: Local environment up (launchd plist + dev DB)
 
 Status: DONE
