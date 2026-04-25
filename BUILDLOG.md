@@ -82,9 +82,48 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 17.2: Open the dev/prod config gate
+
+Status: DONE
+Note: Smallest critical-path slice in Phase 17. Moves the `:scraper_adapter` and `:intel_model` Application config out of `if config_env() == :prod` in `runtime.exs` so dev runs of the Oban jobs exercise the real adapters. The adapters themselves remain the source of truth for "credentials present?" - they return `{:error, :not_configured}` when the relevant env var is absent, with zero HTTP I/O. Unblocks 17.3 (the MCP server's tool surface lands against the dev wiring) and 17.6 (cron entries need the adapters wired in dev too).
+
+**Config change** (`config/runtime.exs`):
+- The `if config_env() == :prod do ... end` block that previously gated `:apify_token` + `:scraper_adapter` + `:intel_model` is removed.
+- All three keys are now set unconditionally. `apify_token: System.get_env("APIFY_TOKEN")` returns nil in dev/test when the env var is absent; `:scraper_adapter` and `:intel_model` are constant module references that the jobs reach for via `Application.get_env`.
+- The block is replaced with a long comment documenting the rationale + the failure modes so a future cleanup cannot quietly re-add the gate.
+
+**Behavior matrix after the gate opens**:
+
+| Env | APIFY_TOKEN | ANTHROPIC_API_KEY | Scraper job | Synthesizer job |
+|-----|-------------|-------------------|-------------|-----------------|
+| dev | present | present | runs end-to-end | runs end-to-end |
+| dev | absent | present | adapter `:not_configured` (clear, not silent) | runs end-to-end (no posts -> `:skipped`) |
+| dev | present | absent | runs end-to-end | LLMAdapter `:not_configured`; 17.4 routes to `pending_manual` |
+| dev | absent | absent | adapter `:not_configured` | LLMAdapter `:not_configured` |
+| test | unset | unset | adapter `:not_configured` (test path stays observable) | same |
+| prod | required | required | runs end-to-end | runs end-to-end |
+
+The pre-existing job-level `apify_token` short-circuit in `CompetitorScraper.perform/1` is unchanged; it still returns `{:discard, :apify_not_configured}` when the token is absent so the operator sees a single loud signal rather than per-account log spam. The adapter's `:not_configured` is the canonical contract; the job's pre-check is a defensive optimisation that aligns with it.
+
+**Documentation**:
+- `CLAUDE.md` gains a new `## Adapter wiring across Mix envs` section spelling out the matrix above plus the test pin.
+- `CONTENT_FORGE_SPEC.md` Feature 3.5 (Competitor Content Monitoring) gains a closing paragraph that names the adapter wiring contract and points at the regression-pinning test so a future reviewer can spot a re-introduced prod gate immediately.
+
+**Tests**:
+- `test/content_forge/runtime_config_test.exs` (3 new): asserts `:scraper_adapter` is wired to `ApifyAdapter` regardless of env, asserts `:intel_model` is wired to `LLMAdapter` regardless of env, asserts the adapter's `status/0` matches the env's actual `APIFY_TOKEN` presence (so the test stays correct in dev with a token and in test without one).
+- The full pre-existing test suite (1024 tests) continues to pass without modification because the existing `setup` blocks override `:scraper_adapter` and `:intel_model` per-test where they need stubs; the new defaults do not interfere.
+
+**What this slice explicitly does NOT do** (next 17.x slices):
+- 17.3 ships `ContentForgeMCP` server with the tool catalogue (now possible to wire against the dev adapters).
+- 17.4 makes the synthesizer comment-aware and adds the `pending_manual` state for the without-key path.
+- 17.6 adds the MetricsPoller cron + corrective loop. The dev launchd Phoenix will pick up the new cron entries on its next restart.
+
+**Gate**: `mix compile --warnings-as-errors` clean, `mix format --check-formatted` clean, `mix test` 1027/0 (3 new), `mix credo --strict` baseline-diff empty for slice-touched files (one in-slice nested-module finding on the runtime test resolved by aliasing). Zero emdashes in slice-touched lines (pre-existing emdashes in CLAUDE.md / CONTENT_FORGE_SPEC.md are unchanged and out of scope).
+
 ### Phase 17.1: Twitter Apify adapter fix + comment harvesting infra
 
 Status: DONE
+Merged: master @ `14defef` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 1024-0, credo 25 vs 44 baseline (one finding RESOLVED in slice-touched files; zero new). Coverage CompetitorResearch 95%, CompetitorCommentHarvester 90%, CompetitorPostComment 100%, ApifyAdapter 75%. Zero emdashes anywhere. Implementation notes: `viral?/2` predicate is config-driven (5x rolling avg OR 100k absolute floor), tunable per deployment under `:content_forge, :competitor_research, :viral_threshold`. Harvester upserts via partial unique on `(competitor_post_id, platform_comment_id)` so re-runs are genuinely idempotent. Scraper enqueue is a no-op for non-viral posts to keep the pricing footprint bounded. Twitter actor unpinned to `kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest` with `APIFY_ACTOR_TWITTER` env override available for future swaps. Live integration tests (`@tag :live`) deferred to the 2026-05-05 Apify credit reset on m4; stub coverage carries the slice in the meantime.
 Note: Two coupled work streams shipped in one slice (post-path fix + comment corpus) per BUILDPLAN's explicit sizing. Unblocks 17.4 (synthesis is comment-aware), 17.5 (importer mirrors the schema), and 17.6 (corrective loop reads comment-derived intel).
 
 **Schema + migration** (`priv/repo/migrations/20260510120000_create_competitor_post_comments_and_columns.exs`):
