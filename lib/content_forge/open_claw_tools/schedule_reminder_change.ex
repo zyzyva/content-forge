@@ -57,7 +57,8 @@ defmodule ContentForge.OpenClawTools.ScheduleReminderChange do
   @cadence_min 1
   @cadence_max 30
 
-  @spec call(map(), map()) :: {:ok, map()} | {:ok, :confirmation_required, map()} | {:error, term()}
+  @spec call(map(), map()) ::
+          {:ok, map()} | {:ok, :confirmation_required, map()} | {:error, term()}
   def call(ctx, params) when is_map(params) do
     with {:ok, product} <- ProductResolver.resolve(ctx, params),
          :ok <- Authorization.require(Map.put(ctx, :product, product), :owner),
@@ -73,8 +74,7 @@ defmodule ContentForge.OpenClawTools.ScheduleReminderChange do
     current = Sms.get_reminder_config(product.id)
 
     if same?(current, cadence, enabled) do
-      {:ok,
-       %{changed: false, product_id: product.id, cadence_days: cadence, enabled: enabled}}
+      {:ok, %{changed: false, product_id: product.id, cadence_days: cadence, enabled: enabled}}
     else
       case binary_param(params, "confirm") do
         nil -> request_turn(ctx, params, product, current, cadence, enabled)
@@ -94,7 +94,8 @@ defmodule ContentForge.OpenClawTools.ScheduleReminderChange do
 
   defp confirm_turn(ctx, params, product, cadence, enabled, echo) do
     with :ok <- Confirmation.confirm(@tool_name, ctx, params, echo),
-         {:ok, row} <- Sms.upsert_reminder_config(product.id, %{cadence_days: cadence, enabled: enabled}) do
+         {:ok, row} <-
+           Sms.upsert_reminder_config(product.id, %{cadence_days: cadence, enabled: enabled}) do
       {:ok,
        %{
          changed: true,
