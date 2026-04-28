@@ -795,10 +795,34 @@ Phase exit criteria: (1) running `openclaw agent --message "give me an upload li
   - Tests: each combination of internal-drop x competitor-wins fires or no-ops as documented (four cases); the cron schedule survives a launchd-managed Phoenix restart; refresher cron only enqueues comment harvesting for posts that crossed the threshold since the last run.
   - See `RESEARCH_LOOP_PLAN.md` Phase 6 for full detail.
 
-- **17.7 Per-platform metrics fetcher audit + Twitter implementation**
+- **17.7 Per-platform metrics fetcher audit + Twitter via Apify**
   - Blocks: nothing strictly (17.6 ships even with stub fetchers, but the loop is only honest once 17.7 runs). Blocked by: 17.0. Independent of 17.3-17.6.
-  - For each publishing platform module (twitter, linkedin, facebook, reddit, youtube), classify the metrics fetcher as fully implemented, partial stub, or placeholder. For partials and placeholders, document what is missing in `CAPABILITIES.md`. Implement the Twitter fetcher at minimum, routing through Apify (kaitoeasyapi) per the plan's v1 default to keep one credential and one failure mode for the system. Other platforms can remain stubs as long as their stub state is loud (raises or returns explicit `:not_implemented`), not silent (no zero-filled rows).
-  - Tests: each implemented fetcher gets a recorded-fixture test; stub fetchers have a regression test asserting they fail loudly when called.
+  - **Audit-time finding:** at slice spec time (master `67617f2`) all five platform `fetch_metrics/2` implementations are real native-API calls (Twitter v2 `/tweets/:id?tweet.fields=public_metrics`, LinkedIn shares API, Facebook Graph API, Reddit API, YouTube Data API). None are stubs. The "loud failure for unimplemented" half of the plan therefore reduces to a pattern-check sweep, not a behavior change. The actual behavior change in this slice is **rerouting Twitter through the existing Apify kaitoeasyapi adapter** so the system runs on one Twitter credential (`APIFY_TOKEN`) and one Twitter failure mode instead of needing both `APIFY_TOKEN` (for scraping) and a Twitter v2 OAuth token (for metrics).
+
+  - **Twitter via Apify rewire:**
+    - `ContentForge.Publishing.Twitter.fetch_metrics/2` becomes a thin wrapper that delegates to `ContentForge.CompetitorScraper.ApifyAdapter.fetch_metrics_for_post/1` (new function on the existing adapter from 17.1) when the per-product credentials map does not carry a `:twitter_access_token`. When the OAuth token IS present, keep the existing v2 path so any product that already configured native OAuth credentials still uses them; no behavior regression.
+    - New `ApifyAdapter.fetch_metrics_for_post/1` accepts a tweet id (string) and returns `{:ok, %{"likes", "retweets", "replies", "quotes", "views"}}` or a classified error tuple matching the existing 17.1 error taxonomy (`:not_configured | {:transient, ...} | {:http_error, ...} | :unsupported_platform | :apify_run_failed | :apify_run_poll_timeout | :apify_parse_failure`). Internally it spins up a one-shot scrape against the same `kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest` actor used by 17.1, with the input shape `%{"startUrls" => ["https://x.com/i/status/<tweet_id>"], "maxItems" => 1}`. Coder verifies the live actor input shape at slice time exactly the way 17.1 verified the handle-driven shape; if the shape differs, fix it inline and document the delta in BUILDLOG.
+    - Result normalization: extract per-post engagement counts using the same lenient field-priority lookup the 17.1 post-list normalizer uses (likes from `likeCount/numLikes/likes`, replies from `replyCount/numComments/comments`, retweets from `retweetCount/numShares/shares`, view count from `viewCount/numViews/views`). When a count is genuinely missing in the actor response, default to `nil` rather than `0` so MetricsPoller's downstream code can distinguish "not measured" from "measured as zero" (this matters for the corrective-loop signal honesty).
+    - The MetricsPoller code path at `lib/content_forge/jobs/metrics_poller.ex` line 159-164 stays unchanged in shape; the dispatch decision lives entirely inside `Twitter.fetch_metrics/2`. No new credentials concept, no new branch in the poller.
+
+  - **Audit + loudness sweep (small, lands in same commit):**
+    - Refresh `CAPABILITIES.md` with a per-platform fetcher table: platform, status (`real | not_implemented`), credential type, last-verified date, known limitations (rate limits, missing fields). All five rows show `real` after this slice (Twitter via Apify, the other four via their native APIs).
+    - Audit each fetcher's error path: a 4xx/5xx response or a network error must surface a classified `{:error, reason}` to MetricsPoller, never an `{:ok, %{...zeros...}}`. The existing implementations look correct on a quick read; the reviewer confirms no silent-zero path during their pass. If any fetcher does fall back to zeros silently, fix it in this slice (likely none).
+    - Add a regression test for each platform asserting that an HTTP error response from the underlying client yields `{:error, _}`, not `{:ok, zero_filled}`. Five small tests, one per platform, all stubbed via `Req.Test`.
+
+  - **Tests:**
+    - `Twitter.fetch_metrics/2` happy path through Apify when no `twitter_access_token` is set: stubbed Apify run lifecycle (POST run, GET status until SUCCEEDED, GET dataset items), assert the returned engagement map matches the expected shape with non-nil counts.
+    - `Twitter.fetch_metrics/2` happy path through native v2 when `twitter_access_token` IS set: stubbed `/tweets/:id` response, asserts the existing behavior is preserved.
+    - `Twitter.fetch_metrics/2` Apify path with `:not_configured` (no `APIFY_TOKEN`): returns `{:error, :not_configured}` with zero HTTP I/O.
+    - `Twitter.fetch_metrics/2` Apify path with run failure: returns the classified error tuple from the adapter, not a zero-filled map.
+    - `ApifyAdapter.fetch_metrics_for_post/1` direct tests for each error class: missing token, run-poll timeout, parse failure, transient HTTP error, permanent HTTP error.
+    - Per-platform error-path regression: stub a 401/500 response from each native API, assert each `fetch_metrics/2` returns `{:error, _}` not `{:ok, %{"likes" => 0, ...}}`.
+    - No live Apify or live native API calls in the suite.
+
+  - **Out of scope:**
+    - Implementing video-level metrics (impressions, watch time, completion rate). The current shape is engagement counts only; deeper YouTube / TikTok analytics live in a future slice if MetricsPoller decides it needs them.
+    - Replacing other native-API fetchers with Apify scrapers. The plan's v1 stance is "Twitter through one credential because the scraper already pays for it; native OAuth for everything else stays since it's free per-call against rate limits we already manage." Revisit if a platform's OAuth flow becomes painful or its rate limits start dominating.
+
   - See `RESEARCH_LOOP_PLAN.md` Phase 7 for full detail.
 
 - **17.8 Bootstrap HollerClean as the first product** `requires_human`
