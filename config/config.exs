@@ -17,6 +17,18 @@ config :content_forge,
 # path records the reason + state snapshot at approval.
 config :content_forge, :seo, publish_threshold: 18
 
+# Phase 16.6 escalation defaults. `session_window_seconds` bounds
+# how long an open escalation continues to short-circuit
+# subsequent tool calls on the same session before it auto-expires
+# (rows stay in the table as audit). `holding_reply` is the
+# message persisted on every new escalation row so a future copy
+# change does not retroactively rewrite past audit trails.
+config :content_forge, :escalations,
+  session_window_seconds: 86_400,
+  holding_reply:
+    "Thanks - I have flagged this for the team and someone will follow up shortly. " <>
+      "You can keep messaging here in the meantime."
+
 # Configure the endpoint
 config :content_forge, ContentForgeWeb.Endpoint,
   url: [host: "localhost"],
