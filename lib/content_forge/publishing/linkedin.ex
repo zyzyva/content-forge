@@ -6,6 +6,8 @@ defmodule ContentForge.Publishing.LinkedIn do
 
   require Logger
 
+  alias ContentForge.CompetitorScraper.ApifyAdapter
+
   @base_url "https://api.linkedin.com/v2"
   @max_retries 3
   @retry_delay 5000
@@ -270,19 +272,42 @@ defmodule ContentForge.Publishing.LinkedIn do
 
   @doc """
   Fetch engagement metrics for a published LinkedIn post.
-  post_id should be the ugcPost URN numeric portion or full URN.
+
+  Phase 17.7 dispatch: native LinkedIn Marketing API path is
+  preserved when the credentials map carries
+  `:linkedin_access_token`. When OAuth is absent (the default
+  for products that have not gone through the LinkedIn MDP
+  approval grind), the call is rerouted through Apify so the
+  system runs on `APIFY_TOKEN` alone.
+
+  `post_url` is required for the Apify path; if `nil` and OAuth is
+  also missing, returns `{:error, :no_post_url}`.
   """
-  @spec fetch_metrics(String.t(), map()) :: {:ok, map()} | {:error, String.t()}
-  def fetch_metrics(post_id, %{linkedin_access_token: token} = _credentials) do
+  @spec fetch_metrics(String.t(), String.t() | nil, map()) :: {:ok, map()} | {:error, term()}
+  def fetch_metrics(post_id, _post_url, %{linkedin_access_token: _} = credentials) do
+    fetch_metrics_via_oauth(post_id, credentials)
+  end
+
+  def fetch_metrics(_post_id, nil, _credentials_without_oauth), do: {:error, :no_post_url}
+
+  def fetch_metrics(_post_id, post_url, _credentials_without_oauth) do
+    ApifyAdapter.fetch_metrics_for_post("linkedin", post_url)
+  end
+
+  defp fetch_metrics_via_oauth(post_id, %{linkedin_access_token: token}) do
     urn = if String.starts_with?(post_id, "urn:"), do: post_id, else: "urn:li:ugcPost:#{post_id}"
-    url = "#{@base_url}/shareStatistics?q=ugcPost&ugcPost=#{URI.encode(urn)}"
+    path = "/shareStatistics?q=ugcPost&ugcPost=#{URI.encode(urn)}"
 
     headers = [
       {"Authorization", "Bearer #{token}"},
       {"X-Restli-Protocol-Version", "2.0.0"}
     ]
 
-    case Req.get(url, headers: headers) do
+    [url: path, base_url: base_url(), headers: headers]
+    |> Kernel.++(req_options())
+    |> Req.new()
+    |> Req.get()
+    |> case do
       {:ok, %{status: status, body: body}} when status in 200..299 ->
         stats = get_in(body, ["elements", Access.at(0), "totalShareStatistics"]) || %{}
 
@@ -301,6 +326,14 @@ defmodule ContentForge.Publishing.LinkedIn do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp base_url do
+    Application.get_env(:content_forge, :linkedin, []) |> Keyword.get(:base_url, @base_url)
+  end
+
+  defp req_options do
+    Application.get_env(:content_forge, :linkedin, []) |> Keyword.get(:req_options, [])
   end
 
   defp linkedin_request(method, path, credentials, body) do

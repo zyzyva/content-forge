@@ -648,4 +648,408 @@ defmodule ContentForge.CompetitorScraper.ApifyAdapterTest do
       assert decoded["screenName"] == "acme"
     end
   end
+
+  describe "fetch_metrics_for_post/2 (Phase 17.7 all-platforms via Apify)" do
+    @kaito "kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest"
+    @fb_post_actor "apify~facebook-posts-scraper"
+
+    setup do
+      # Phase 17.7 picks the per-platform actor for metrics from
+      # `:metrics_actors` first; the slice ships overrides only
+      # for platforms whose handle-scraping actor (from 17.1) is
+      # not the right per-post actor (Facebook, where the page
+      # scraper is not the post scraper). All other platforms fall
+      # through to the existing `:actors` map.
+      put_cfg(
+        cfg()
+        |> Keyword.put(
+          :actors,
+          Map.merge(cfg()[:actors], %{"twitter" => @kaito})
+        )
+        |> Keyword.put(:metrics_actors, %{
+          "facebook" => @fb_post_actor
+        })
+      )
+
+      :ok
+    end
+
+    test "twitter happy path returns unified engagement shape with non-nil counts" do
+      items = [
+        %{
+          "id" => "1900000",
+          "text" => "looked up by id",
+          "url" => "https://x.com/i/status/1900000",
+          "likeCount" => 42,
+          "replyCount" => 3,
+          "retweetCount" => 7,
+          "quoteCount" => 2,
+          "viewCount" => 5_000,
+          "createdAt" => "2026-04-22T12:00:00.000Z"
+        }
+      ]
+
+      stage_success(items, @kaito)
+
+      assert {:ok, metrics} =
+               ApifyAdapter.fetch_metrics_for_post(
+                 "twitter",
+                 "https://x.com/i/status/1900000"
+               )
+
+      assert metrics["likes"] == 42
+      assert metrics["comments"] == 3
+      assert metrics["shares"] == 7
+      assert metrics["views"] == 5_000
+    end
+
+    test "linkedin happy path normalises numLikes/numComments/numShares shape" do
+      items = [
+        %{
+          "urn" => "urn:li:activity:111",
+          "url" => "https://linkedin.com/posts/111",
+          "numLikes" => 55,
+          "numComments" => 4,
+          "numShares" => 2
+        }
+      ]
+
+      stage_success(items, "apify~linkedin-post-scraper")
+
+      assert {:ok, metrics} =
+               ApifyAdapter.fetch_metrics_for_post(
+                 "linkedin",
+                 "https://linkedin.com/posts/111"
+               )
+
+      assert metrics["likes"] == 55
+      assert metrics["comments"] == 4
+      assert metrics["shares"] == 2
+    end
+
+    test "facebook happy path uses the metrics_actors override for the post scraper" do
+      items = [
+        %{
+          "postId" => "fb_9001",
+          "url" => "https://facebook.com/posts/9001",
+          "likes" => 80,
+          "comments" => 12,
+          "shares" => 4
+        }
+      ]
+
+      stage_success(items, @fb_post_actor)
+
+      assert {:ok, metrics} =
+               ApifyAdapter.fetch_metrics_for_post(
+                 "facebook",
+                 "https://facebook.com/posts/9001"
+               )
+
+      assert metrics["likes"] == 80
+      assert metrics["comments"] == 12
+      assert metrics["shares"] == 4
+    end
+
+    test "instagram happy path normalises image/reel shape with views" do
+      items = [
+        %{
+          "id" => "ig_7777",
+          "url" => "https://instagram.com/p/7777",
+          "likesCount" => 250,
+          "commentsCount" => 30,
+          "playCount" => 9_000
+        }
+      ]
+
+      stage_success(items, "apify~instagram-scraper")
+
+      assert {:ok, metrics} =
+               ApifyAdapter.fetch_metrics_for_post(
+                 "instagram",
+                 "https://instagram.com/p/7777"
+               )
+
+      assert metrics["likes"] == 250
+      assert metrics["comments"] == 30
+      assert metrics["views"] == 9_000
+    end
+
+    test "reddit happy path maps score and num_comments to the unified shape" do
+      items = [
+        %{
+          "id" => "reddit_abc",
+          "url" => "https://reddit.com/r/foo/comments/abc",
+          "score" => 123,
+          "num_comments" => 17
+        }
+      ]
+
+      stage_success(items, "trudax~reddit-scraper")
+
+      assert {:ok, metrics} =
+               ApifyAdapter.fetch_metrics_for_post(
+                 "reddit",
+                 "https://reddit.com/r/foo/comments/abc"
+               )
+
+      assert metrics["likes"] == 123
+      assert metrics["comments"] == 17
+    end
+
+    test "youtube happy path captures viewCount + likes + comments" do
+      items = [
+        %{
+          "id" => "yt_AbCd",
+          "url" => "https://youtube.com/watch?v=AbCd",
+          "viewCount" => 50_000,
+          "likes" => 1_500,
+          "comments" => 200
+        }
+      ]
+
+      stage_success(items, "apify~youtube-scraper")
+
+      assert {:ok, metrics} =
+               ApifyAdapter.fetch_metrics_for_post(
+                 "youtube",
+                 "https://youtube.com/watch?v=AbCd"
+               )
+
+      assert metrics["likes"] == 1_500
+      assert metrics["comments"] == 200
+      assert metrics["views"] == 50_000
+    end
+
+    test "missing counts default to nil (not zero) so corrective-loop signal is honest" do
+      items = [
+        %{
+          "id" => "1900001",
+          "url" => "https://x.com/i/status/1900001",
+          "likeCount" => 10,
+          # no replyCount/retweetCount/viewCount
+          "createdAt" => "2026-04-22T12:00:00.000Z"
+        }
+      ]
+
+      stage_success(items, @kaito)
+
+      assert {:ok, metrics} =
+               ApifyAdapter.fetch_metrics_for_post(
+                 "twitter",
+                 "https://x.com/i/status/1900001"
+               )
+
+      assert metrics["likes"] == 10
+      assert metrics["comments"] == nil
+      assert metrics["shares"] == nil
+      assert metrics["views"] == nil
+    end
+
+    test "twitter input shape: startUrls=[<post_url>] + maxItems=>1 against the configured actor" do
+      ref = make_ref()
+      test_pid = self()
+
+      Req.Test.stub(@stub_key, fn conn ->
+        cond do
+          conn.method == "POST" and String.starts_with?(conn.request_path, "/v2/acts/") ->
+            {:ok, body, conn} = Plug.Conn.read_body(conn)
+            send(test_pid, {ref, :run_input, conn.request_path, body})
+
+            Req.Test.json(conn, %{
+              "data" => %{"id" => "rmx", "status" => "READY", "defaultDatasetId" => "dmx"}
+            })
+
+          conn.request_path == "/v2/actor-runs/rmx" ->
+            Req.Test.json(conn, %{
+              "data" => %{"id" => "rmx", "status" => "SUCCEEDED", "defaultDatasetId" => "dmx"}
+            })
+
+          conn.request_path == "/v2/datasets/dmx/items" ->
+            Req.Test.json(conn, [
+              %{
+                "id" => "1888777",
+                "url" => "https://x.com/i/status/1888777",
+                "createdAt" => "2026-04-22T12:00:00.000Z",
+                "likeCount" => 0
+              }
+            ])
+        end
+      end)
+
+      assert {:ok, _} =
+               ApifyAdapter.fetch_metrics_for_post(
+                 "twitter",
+                 "https://x.com/i/status/1888777"
+               )
+
+      assert_receive {^ref, :run_input, path, raw_body}
+      assert path == "/v2/acts/#{@kaito}/runs"
+
+      decoded = Jason.decode!(raw_body)
+      assert decoded["maxItems"] == 1
+      assert decoded["startUrls"] == ["https://x.com/i/status/1888777"]
+    end
+
+    test "linkedin input shape: urls=[<post_url>] (no startUrls)" do
+      ref = make_ref()
+      test_pid = self()
+
+      Req.Test.stub(@stub_key, fn conn ->
+        cond do
+          conn.method == "POST" and String.starts_with?(conn.request_path, "/v2/acts/") ->
+            {:ok, body, conn} = Plug.Conn.read_body(conn)
+            send(test_pid, {ref, :run_input, body})
+
+            Req.Test.json(conn, %{
+              "data" => %{"id" => "rli", "status" => "READY", "defaultDatasetId" => "dli"}
+            })
+
+          conn.request_path == "/v2/actor-runs/rli" ->
+            Req.Test.json(conn, %{
+              "data" => %{"id" => "rli", "status" => "SUCCEEDED", "defaultDatasetId" => "dli"}
+            })
+
+          conn.request_path == "/v2/datasets/dli/items" ->
+            Req.Test.json(conn, [%{"urn" => "u1", "url" => "u1", "numLikes" => 1}])
+        end
+      end)
+
+      assert {:ok, _} =
+               ApifyAdapter.fetch_metrics_for_post(
+                 "linkedin",
+                 "https://linkedin.com/posts/111"
+               )
+
+      assert_receive {^ref, :run_input, raw_body}
+      decoded = Jason.decode!(raw_body)
+      assert decoded["urls"] == ["https://linkedin.com/posts/111"]
+      refute Map.has_key?(decoded, "startUrls")
+    end
+
+    test "instagram input shape: directUrls=[<permalink>] (no startUrls)" do
+      ref = make_ref()
+      test_pid = self()
+
+      Req.Test.stub(@stub_key, fn conn ->
+        cond do
+          conn.method == "POST" and String.starts_with?(conn.request_path, "/v2/acts/") ->
+            {:ok, body, conn} = Plug.Conn.read_body(conn)
+            send(test_pid, {ref, :run_input, body})
+
+            Req.Test.json(conn, %{
+              "data" => %{"id" => "rig", "status" => "READY", "defaultDatasetId" => "dig"}
+            })
+
+          conn.request_path == "/v2/actor-runs/rig" ->
+            Req.Test.json(conn, %{
+              "data" => %{"id" => "rig", "status" => "SUCCEEDED", "defaultDatasetId" => "dig"}
+            })
+
+          conn.request_path == "/v2/datasets/dig/items" ->
+            Req.Test.json(conn, [%{"id" => "ig1", "url" => "u", "likesCount" => 1}])
+        end
+      end)
+
+      assert {:ok, _} =
+               ApifyAdapter.fetch_metrics_for_post(
+                 "instagram",
+                 "https://instagram.com/p/7777"
+               )
+
+      assert_receive {^ref, :run_input, raw_body}
+      decoded = Jason.decode!(raw_body)
+      assert decoded["directUrls"] == ["https://instagram.com/p/7777"]
+      refute Map.has_key?(decoded, "startUrls")
+    end
+
+    test "missing token returns {:error, :not_configured} with zero HTTP" do
+      put_cfg(Keyword.put(cfg(), :token, nil))
+
+      test_pid = self()
+
+      Req.Test.stub(@stub_key, fn _conn ->
+        send(test_pid, :unexpected_http)
+        raise "no HTTP expected when apify token is missing"
+      end)
+
+      assert {:error, :not_configured} =
+               ApifyAdapter.fetch_metrics_for_post("twitter", "https://x.com/i/status/1")
+
+      refute_received :unexpected_http
+    end
+
+    test "unsupported platform (no actor mapped) returns {:error, :unsupported_platform}" do
+      put_cfg(
+        cfg()
+        |> Keyword.put(:actors, %{})
+        |> Keyword.put(:metrics_actors, %{})
+      )
+
+      test_pid = self()
+
+      Req.Test.stub(@stub_key, fn _conn ->
+        send(test_pid, :unexpected_http)
+        raise "no HTTP expected when no actor is mapped"
+      end)
+
+      assert {:error, :unsupported_platform} =
+               ApifyAdapter.fetch_metrics_for_post("twitter", "https://x.com/i/status/1")
+
+      refute_received :unexpected_http
+    end
+
+    test "transient HTTP error on run creation returns classified error" do
+      Req.Test.stub(@stub_key, fn conn ->
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(500, JSON.encode!(%{"error" => "boom"}))
+      end)
+
+      assert {:error, {:transient, 500, _}} =
+               ApifyAdapter.fetch_metrics_for_post("twitter", "https://x.com/i/status/1")
+    end
+
+    test "permanent HTTP error on run creation returns classified error" do
+      Req.Test.stub(@stub_key, fn conn ->
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(401, JSON.encode!(%{"error" => "auth"}))
+      end)
+
+      assert {:error, {:http_error, 401, _}} =
+               ApifyAdapter.fetch_metrics_for_post("twitter", "https://x.com/i/status/1")
+    end
+
+    test "actor run FAILED is propagated as :apify_run_failed (not zero-filled)" do
+      Req.Test.stub(@stub_key, fn conn ->
+        cond do
+          conn.method == "POST" and String.starts_with?(conn.request_path, "/v2/acts/") ->
+            Req.Test.json(conn, %{
+              "data" => %{"id" => "fr", "status" => "READY", "defaultDatasetId" => "fd"}
+            })
+
+          conn.request_path == "/v2/actor-runs/fr" ->
+            Req.Test.json(conn, %{
+              "data" => %{"id" => "fr", "status" => "FAILED", "defaultDatasetId" => "fd"}
+            })
+        end
+      end)
+
+      log =
+        capture_log(fn ->
+          assert {:error, {:apify_run_failed, "FAILED"}} =
+                   ApifyAdapter.fetch_metrics_for_post("twitter", "https://x.com/i/status/1")
+        end)
+
+      assert log =~ "FAILED"
+    end
+
+    test "empty dataset returns :apify_parse_failure (not zero-filled metrics)" do
+      stage_success([], @kaito)
+
+      assert {:error, :apify_parse_failure} =
+               ApifyAdapter.fetch_metrics_for_post("twitter", "https://x.com/i/status/1")
+    end
+  end
 end
