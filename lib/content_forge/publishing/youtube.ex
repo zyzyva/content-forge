@@ -6,6 +6,8 @@ defmodule ContentForge.Publishing.YouTube do
 
   require Logger
 
+  alias ContentForge.CompetitorScraper.ApifyAdapter
+
   @upload_url "https://www.googleapis.com/upload/youtube/v3"
   @data_url "https://www.googleapis.com/youtube/v3"
   @analytics_url "https://youtubeanalytics.googleapis.com/v2"
@@ -204,12 +206,31 @@ defmodule ContentForge.Publishing.YouTube do
   # ============================================
 
   @doc """
-  Fetch engagement metrics and retention curve for a published YouTube video.
-  Returns views, likes, comments from the Data API, plus a retention curve
-  from the Analytics API (empty list if Analytics call fails or returns no data).
+  Fetch engagement metrics and retention curve for a published
+  YouTube video.
+
+  Phase 17.7 dispatch: native YouTube Data API + Analytics path
+  runs when the credentials map carries `:youtube_access_token`
+  (returns engagement counts plus retention curve). When the
+  token is absent (default for products that have not completed
+  YouTube OAuth verification), routes through Apify with the
+  watch URL; the Apify path returns engagement counts only
+  (no retention curve - Apify YouTube actors do not expose it).
+
+  `post_url` is the canonical watch URL. When `nil`, a permalink
+  is reconstructed from the video id.
   """
-  @spec fetch_metrics(String.t(), map()) :: {:ok, map()} | {:error, String.t()}
-  def fetch_metrics(video_id, %{youtube_access_token: token} = _credentials) do
+  @spec fetch_metrics(String.t(), String.t() | nil, map()) :: {:ok, map()} | {:error, term()}
+  def fetch_metrics(video_id, _post_url, %{youtube_access_token: _} = credentials) do
+    fetch_metrics_via_oauth(video_id, credentials)
+  end
+
+  def fetch_metrics(video_id, post_url, _credentials_without_oauth) do
+    url = post_url || "https://www.youtube.com/watch?v=#{video_id}"
+    ApifyAdapter.fetch_metrics_for_post("youtube", url)
+  end
+
+  defp fetch_metrics_via_oauth(video_id, %{youtube_access_token: token}) do
     headers = [{"Authorization", "Bearer #{token}"}]
 
     with {:ok, stats} <- fetch_video_stats(video_id, headers),
@@ -219,9 +240,16 @@ defmodule ContentForge.Publishing.YouTube do
   end
 
   defp fetch_video_stats(video_id, headers) do
-    url = "#{@data_url}/videos"
-
-    case Req.get(url, headers: headers, params: [part: "statistics", id: video_id]) do
+    [
+      url: "/videos",
+      base_url: data_url(),
+      headers: headers,
+      params: [part: "statistics", id: video_id]
+    ]
+    |> Kernel.++(req_options())
+    |> Req.new()
+    |> Req.get()
+    |> case do
       {:ok, %{status: status, body: body}} when status in 200..299 ->
         stats = get_in(body, ["items", Access.at(0), "statistics"]) || %{}
 
@@ -246,8 +274,6 @@ defmodule ContentForge.Publishing.YouTube do
     start_date = today |> Date.add(-30) |> Date.to_string()
     end_date = Date.to_string(today)
 
-    url = "#{@analytics_url}/reports"
-
     params = [
       ids: "channel==MINE",
       startDate: start_date,
@@ -257,7 +283,11 @@ defmodule ContentForge.Publishing.YouTube do
       filters: "video==#{video_id}"
     ]
 
-    case Req.get(url, headers: headers, params: params) do
+    [url: "/reports", base_url: analytics_url(), headers: headers, params: params]
+    |> Kernel.++(req_options())
+    |> Req.new()
+    |> Req.get()
+    |> case do
       {:ok, %{status: status, body: body}} when status in 200..299 ->
         rows = body["rows"] || []
 
@@ -275,6 +305,19 @@ defmodule ContentForge.Publishing.YouTube do
       {:error, _reason} ->
         {:ok, []}
     end
+  end
+
+  defp data_url do
+    Application.get_env(:content_forge, :youtube, []) |> Keyword.get(:data_url, @data_url)
+  end
+
+  defp analytics_url do
+    Application.get_env(:content_forge, :youtube, [])
+    |> Keyword.get(:analytics_url, @analytics_url)
+  end
+
+  defp req_options do
+    Application.get_env(:content_forge, :youtube, []) |> Keyword.get(:req_options, [])
   end
 
   defp parse_stat(nil), do: 0
