@@ -785,7 +785,7 @@ Phase exit criteria: (1) running `openclaw agent --message "give me an upload li
   - Tests: happy-path import against a small fixture sqlite asserting the row counts + the comment foreign-key linkage; idempotent re-run; date-range filtering; missing sqlite returns `not_found` through the MCP error envelope.
   - See `RESEARCH_LOOP_PLAN.md` Phase 5 for full detail.
 
-- **17.6 MetricsPoller cron + competitor refresher cron + corrective-loop replacement** ✅ Shipped ARCHITECT-COMMIT.
+- **17.6 MetricsPoller cron + competitor refresher cron + corrective-loop replacement** ✅ Shipped 4e44af2.
   - Blocks: 17.8 (HollerClean bootstrap needs the loop closing). Blocked by: 17.0, 17.1, 17.4. 17.7 helps but is not blocking.
   - Three coordinated changes:
     - Oban cron entry for `MetricsPoller` covering every active product on a 6-hour cadence (v1 default per the plan's open-questions section); "active product" means at least one published post in the last 90 days.
