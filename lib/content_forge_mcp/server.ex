@@ -25,9 +25,17 @@ defmodule ContentForgeMCP.Server do
       completion path from Phase 17.4)
     * `cf_get_intel` - latest competitor intel for a product, or
       the last five rows when `latest: false`
-    * `cf_import_twitter_sqlite` - registered in 17.3 but
-      dispatches to a 17.5 placeholder until the real importer
-      ships
+    * `cf_list_pending_syntheses` - list of without-key
+      synthesis requests waiting for manual completion via the
+      MCP route (Phase 17.4)
+    * `cf_import_twitter_sqlite` - backfill a competitor's posts
+      and comments from the standalone scraper's sqlite (Phase
+      17.5)
+    * `cf_recent_scoreboard` - operator surface added in 17.6.
+      Returns recent winners + losers per product plus an
+      indication of whether the corrective trigger fired. Used
+      to verify the corrective loop is closing without trawling
+      the DB
 
   ## Error envelope
 
@@ -49,6 +57,8 @@ defmodule ContentForgeMCP.Server do
 
   alias ContentForge.CompetitorScraper.SqliteImporter
   alias ContentForge.Jobs.CompetitorScraper
+  alias ContentForge.Jobs.MetricsPollerScheduler
+  alias ContentForge.Metrics.ScoreboardEntry
   alias ContentForge.Products
   alias ContentForge.Products.CompetitorAccount
   alias ContentForge.Products.CompetitorIntel
@@ -75,8 +85,7 @@ defmodule ContentForgeMCP.Server do
         "Create a new Content Forge product (the unit every other tool scopes to).",
         %{
           name: {:required, :string, description: "Product name."},
-          voice_profile:
-            {:optional, :string, description: "Optional voice profile descriptor."},
+          voice_profile: {:optional, :string, description: "Optional voice profile descriptor."},
           publishing_targets:
             {:optional, :string,
              description:
@@ -119,9 +128,7 @@ defmodule ContentForgeMCP.Server do
         %{
           product_id: {:required, :string, description: "Product UUID."},
           n: {:optional, :integer, description: "Max posts to return (default 10, max 50)."},
-          window:
-            {:optional, :string,
-             description: "Time window: all (default), week, or month."}
+          window: {:optional, :string, description: "Time window: all (default), week, or month."}
         }
       ),
       SimpleMCP.Tool.new(
@@ -130,22 +137,15 @@ defmodule ContentForgeMCP.Server do
         %{
           product_id: {:required, :string, description: "Product UUID."},
           summary: {:required, :string, description: "Plain-English synthesis (2-4 sentences)."},
-          trending_topics:
-            {:required, :string,
-             description: "JSON-encoded list of strings."},
-          winning_formats:
-            {:required, :string,
-             description: "JSON-encoded list of strings."},
-          effective_hooks:
-            {:required, :string,
-             description: "JSON-encoded list of strings."},
+          trending_topics: {:required, :string, description: "JSON-encoded list of strings."},
+          winning_formats: {:required, :string, description: "JSON-encoded list of strings."},
+          effective_hooks: {:required, :string, description: "JSON-encoded list of strings."},
           audience_signals:
             {:required, :string,
              description:
                "JSON-encoded list of audience-signal strings. Pass an empty list when no comments fed the synthesis."},
           source_count:
-            {:required, :integer,
-             description: "How many source posts seeded the synthesis."},
+            {:required, :integer, description: "How many source posts seeded the synthesis."},
           window:
             {:optional, :string,
              description: "Time window the synthesis covered: all, week, or month."}
@@ -178,6 +178,20 @@ defmodule ContentForgeMCP.Server do
           since: {:optional, :string, description: "Optional ISO date lower bound."},
           until: {:optional, :string, description: "Optional ISO date upper bound."}
         }
+      ),
+      SimpleMCP.Tool.new(
+        "cf_recent_scoreboard",
+        "Phase 17.6 operator surface. Recent scoreboard outcomes per product: top winners + losers from the last 7 days plus an indication of whether the corrective trigger fired (a week-windowed competitor_intel row exists for the product within the last 24 hours). Use to verify the corrective loop is closing without trawling the DB.",
+        %{
+          product_id:
+            {:optional, :string,
+             description:
+               "Optional product UUID to scope to a single product. When omitted, returns active products (>=1 published post in the last 90 days)."},
+          limit:
+            {:optional, :integer,
+             description:
+               "Cap on winners + losers returned per product (default 5, clamped to [1, 20])."}
+        }
       )
     ]
   end
@@ -195,6 +209,7 @@ defmodule ContentForgeMCP.Server do
   def handle_tool_call("cf_get_intel", args), do: cf_get_intel(args)
   def handle_tool_call("cf_list_pending_syntheses", args), do: cf_list_pending_syntheses(args)
   def handle_tool_call("cf_import_twitter_sqlite", args), do: cf_import_twitter_sqlite(args)
+  def handle_tool_call("cf_recent_scoreboard", args), do: cf_recent_scoreboard(args)
 
   def handle_tool_call(name, _args),
     do: error("not_found", "Unknown tool: #{name}")
@@ -364,8 +379,11 @@ defmodule ContentForgeMCP.Server do
 
   defp enqueue_scrape(product_id) do
     case %{"product_id" => product_id} |> CompetitorScraper.new() |> Oban.insert() do
-      {:ok, job} -> {:ok, job}
-      {:error, reason} -> error("dependency_error", "Failed to enqueue scrape", %{reason: inspect(reason)})
+      {:ok, job} ->
+        {:ok, job}
+
+      {:error, reason} ->
+        error("dependency_error", "Failed to enqueue scrape", %{reason: inspect(reason)})
     end
   end
 
@@ -495,8 +513,16 @@ defmodule ContentForgeMCP.Server do
 
   defp fetch_optional_window(args) do
     case binary_param(args, "window") do
-      nil -> {:ok, nil}
-      value -> if value in @windows, do: {:ok, value}, else: error("validation_failed", "window must be one of #{Enum.join(@windows, ", ")}", %{field: "window"})
+      nil ->
+        {:ok, nil}
+
+      value ->
+        if value in @windows,
+          do: {:ok, value},
+          else:
+            error("validation_failed", "window must be one of #{Enum.join(@windows, ", ")}", %{
+              field: "window"
+            })
     end
   end
 
@@ -602,6 +628,113 @@ defmodule ContentForgeMCP.Server do
     end
   end
 
+  # --- cf_recent_scoreboard -------------------------------------------------
+
+  @scoreboard_default_limit 5
+  @scoreboard_max_limit 20
+  @corrective_window_hours 24
+  @scoreboard_lookback_days 7
+
+  defp cf_recent_scoreboard(args) do
+    limit = clamp_scoreboard_limit(args["limit"] || args[:limit])
+
+    case binary_param(args, "product_id") do
+      nil ->
+        rows =
+          MetricsPollerScheduler.active_product_ids()
+          |> Enum.map(&scoreboard_summary_for(&1, limit))
+          |> Enum.reject(&is_nil/1)
+
+        ok(%{products: rows})
+
+      product_id ->
+        with {:ok, product} <- fetch_product(product_id) do
+          ok(%{products: [build_scoreboard_summary(product, limit)]})
+        end
+    end
+  end
+
+  defp clamp_scoreboard_limit(value) when is_integer(value) and value >= 1,
+    do: min(value, @scoreboard_max_limit)
+
+  defp clamp_scoreboard_limit(_), do: @scoreboard_default_limit
+
+  defp scoreboard_summary_for(product_id, limit) do
+    case safe_get_product(product_id) do
+      %Product{} = product -> build_scoreboard_summary(product, limit)
+      _ -> nil
+    end
+  end
+
+  defp build_scoreboard_summary(%Product{} = product, limit) do
+    cutoff =
+      DateTime.utc_now()
+      |> DateTime.add(-@scoreboard_lookback_days * 24 * 3600, :second)
+
+    entries =
+      Repo.all(
+        from(s in ScoreboardEntry,
+          where: s.product_id == ^product.id and s.measured_at >= ^cutoff,
+          order_by: [desc: s.measured_at]
+        )
+      )
+
+    winners =
+      entries
+      |> Enum.filter(&(&1.outcome == "winner"))
+      |> Enum.take(limit)
+      |> Enum.map(&serialize_scoreboard_entry/1)
+
+    losers =
+      entries
+      |> Enum.filter(&(&1.outcome == "loser"))
+      |> Enum.take(limit)
+      |> Enum.map(&serialize_scoreboard_entry/1)
+
+    last_polled_at =
+      case entries do
+        [latest | _] -> iso8601(latest.measured_at)
+        [] -> nil
+      end
+
+    %{
+      product_id: product.id,
+      product_name: product.name,
+      window_days: @scoreboard_lookback_days,
+      recent_winners: winners,
+      recent_losers: losers,
+      corrective_trigger_fired: corrective_trigger_fired?(product.id),
+      last_polled_at: last_polled_at
+    }
+  end
+
+  defp serialize_scoreboard_entry(%ScoreboardEntry{} = entry) do
+    %{
+      content_id: entry.content_id,
+      platform: entry.platform,
+      angle: entry.angle,
+      delta: entry.delta,
+      composite_ai_score: entry.composite_ai_score,
+      actual_engagement_score: entry.actual_engagement_score,
+      measured_at: iso8601(entry.measured_at)
+    }
+  end
+
+  defp corrective_trigger_fired?(product_id) do
+    cutoff =
+      DateTime.utc_now()
+      |> DateTime.add(-@corrective_window_hours * 3600, :second)
+
+    Repo.exists?(
+      from(intel in CompetitorIntel,
+        where:
+          intel.product_id == ^product_id and
+            intel.window == "week" and
+            intel.inserted_at >= ^cutoff
+      )
+    )
+  end
+
   # --- product / competitor lookups -----------------------------------------
 
   defp fetch_product(product_id) do
@@ -651,16 +784,14 @@ defmodule ContentForgeMCP.Server do
       list when is_list(list) ->
         if Enum.all?(list, &is_binary/1),
           do: {:ok, list},
-          else:
-            error("validation_failed", "#{key} must be a list of strings", %{field: key})
+          else: error("validation_failed", "#{key} must be a list of strings", %{field: key})
 
       json when is_binary(json) ->
         case JSON.decode(json) do
           {:ok, list} when is_list(list) ->
             if Enum.all?(list, &is_binary/1),
               do: {:ok, list},
-              else:
-                error("validation_failed", "#{key} must be a list of strings", %{field: key})
+              else: error("validation_failed", "#{key} must be a list of strings", %{field: key})
 
           _ ->
             error("validation_failed", "#{key} must be a JSON-encoded list of strings", %{

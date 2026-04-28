@@ -50,7 +50,8 @@ defmodule ContentForge.OpenClawTools.GenerateDraftsFromBundle do
 
   @tool_name "generate_drafts_from_bundle"
 
-  @spec call(map(), map()) :: {:ok, map()} | {:ok, :confirmation_required, map()} | {:error, term()}
+  @spec call(map(), map()) ::
+          {:ok, map()} | {:ok, :confirmation_required, map()} | {:error, term()}
   def call(ctx, params) when is_map(params) do
     with {:ok, product} <- ProductResolver.resolve(ctx, params),
          {:ok, bundle} <- fetch_bundle(product, params),

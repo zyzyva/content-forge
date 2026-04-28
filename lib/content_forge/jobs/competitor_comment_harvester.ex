@@ -41,7 +41,8 @@ defmodule ContentForge.Jobs.CompetitorCommentHarvester do
   alias ContentForge.Repo
 
   @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"competitor_post_id" => post_id} = args}) when is_binary(post_id) do
+  def perform(%Oban.Job{args: %{"competitor_post_id" => post_id} = args})
+      when is_binary(post_id) do
     case load_post(post_id) do
       nil ->
         Logger.warning("CompetitorCommentHarvester: post #{post_id} not found, cancelling")

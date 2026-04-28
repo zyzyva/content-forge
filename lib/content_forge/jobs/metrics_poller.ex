@@ -19,6 +19,9 @@ defmodule ContentForge.Jobs.MetricsPoller do
 
   alias ContentForge.{Metrics, Products, Publishing}
   alias ContentForge.ContentGeneration.DraftScore
+  alias ContentForge.Jobs.CompetitorIntelSynthesizer
+  alias ContentForge.Jobs.ContentBriefGenerator
+  alias ContentForge.Jobs.WinnerRepurposingEngine
   alias ContentForge.Metrics.ScoreboardEntry
   alias ContentForge.Publishing.PublishedPost
   alias ContentForge.Publishing.{Twitter, LinkedIn, Facebook, Reddit, YouTube}
@@ -394,26 +397,56 @@ defmodule ContentForge.Jobs.MetricsPoller do
   end
 
   @doc """
-  Checks every platform for poor-performer thresholds and enqueues a
-  brief-rewrite job when at least five scoreboard entries have
-  `delta < -1.0` within the configured window.
+  Phase 17.6 corrective loop: checks every platform for the
+  two-condition external trigger and enqueues a week-windowed
+  competitor-intel synthesis followed by a brief regeneration
+  when both conditions are met.
 
-  Public so the auto-trigger behaviour can be asserted by tests; it is
-  also called at the end of each poll from `poll_product_metrics/2`.
-  Enqueued jobs are idempotent per `product_id`: Oban's `unique` config
-  collapses duplicate rewrite requests so repeat polls do not stack up
-  multiple rewrites for the same state transition.
+  Conditions (in the same 7-day window):
+
+    1. Internal drop: at least 5 scoreboard entries on this
+       platform have `delta < -1.0`
+       (`Metrics.should_trigger_rewrite?/3`).
+    2. Competitor wins: at least one tracked competitor account
+       has a post in the window with `engagement_score > 1.0`
+       (above their own rolling average,
+       `Metrics.competitor_wins_in_window?/2`).
+
+  Other combinations are no-ops:
+
+    * Internal drop alone is treated as noise; we are not the
+      only signal in the world.
+    * Competitor wins alone are normal corpus refresh material
+      (the synthesizer cron handles those independently).
+
+  Public so the auto-trigger behaviour can be asserted by
+  tests; also called at the end of each poll from
+  `poll_product_metrics/2`. Enqueued jobs are idempotent per
+  `product_id` via Oban's `unique` config so repeat polls do
+  not stack up duplicate corrective syntheses.
   """
   def check_rewrite_trigger(product) do
     platforms = ~w(twitter linkedin reddit facebook instagram youtube)
+    competitor_wins = Metrics.competitor_wins_in_window?(product.id, 7)
 
     Enum.each(platforms, fn platform ->
-      if Metrics.should_trigger_rewrite?(product.id, platform, 7) do
-        Logger.warning(
-          "MetricsPoller: Triggering brief rewrite for #{product.name} on #{platform}"
-        )
+      cond do
+        not Metrics.should_trigger_rewrite?(product.id, platform, 7) ->
+          :noop
 
-        trigger_rewrite(product)
+        not competitor_wins ->
+          Logger.info(
+            "MetricsPoller: internal drop on #{platform} for #{product.name} but no competitor wins; treating as noise"
+          )
+
+          :noop
+
+        true ->
+          Logger.warning(
+            "MetricsPoller: corrective trigger for #{product.name} on #{platform} (drop + competitor wins)"
+          )
+
+          trigger_corrective_loop(product)
       end
     end)
   end
@@ -442,22 +475,26 @@ defmodule ContentForge.Jobs.MetricsPoller do
     )
 
     %{"draft_id" => entry.draft_id}
-    |> ContentForge.Jobs.WinnerRepurposingEngine.new(
-      unique: [period: :infinity, fields: [:args, :worker]]
-    )
+    |> WinnerRepurposingEngine.new(unique: [period: :infinity, fields: [:args, :worker]])
     |> Oban.insert()
   end
 
-  defp trigger_rewrite(product) do
-    Logger.warning("MetricsPoller: Enqueueing brief rewrite for #{product.name}")
+  defp trigger_corrective_loop(product) do
+    # Step 1: enqueue a week-windowed competitor-intel synthesis
+    # so the brief regeneration that follows reads fresh
+    # corrective intel, not all-time top posts. The synthesizer
+    # also resolves any pending_intel_syntheses rows for the
+    # matching (product, "week") pair on success (Phase 17.4).
+    %{"product_id" => product.id, "window" => "week"}
+    |> CompetitorIntelSynthesizer.new(unique: [period: 24 * 60 * 60, fields: [:args, :worker]])
+    |> Oban.insert()
 
-    # Idempotency: repeat polls in the same day for the same product
-    # collapse to a single rewrite job. force_rewrite is held constant so
-    # duplicate arg maps compare equal.
+    # Step 2: enqueue the brief regeneration. Oban does not
+    # enforce ordering, but the brief generator reads whatever
+    # intel exists at run time; a stale prior intel is acceptable
+    # as a fallback if the synthesizer has not completed yet.
     %{"product_id" => product.id, "force_rewrite" => true}
-    |> ContentForge.Jobs.ContentBriefGenerator.new(
-      unique: [period: 24 * 60 * 60, fields: [:args, :worker]]
-    )
+    |> ContentBriefGenerator.new(unique: [period: 24 * 60 * 60, fields: [:args, :worker]])
     |> Oban.insert()
   end
 end

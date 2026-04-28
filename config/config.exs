@@ -79,7 +79,22 @@ config :content_forge, Oban,
        # Hourly reminder sweep: iterates products with enabled
        # ReminderConfig and enqueues a ReminderDispatcher per eligible
        # phone. Cadence/pause/quiet-hours gates live in the worker.
-       {"0 * * * *", ContentForge.Jobs.ReminderScheduler}
+       {"0 * * * *", ContentForge.Jobs.ReminderScheduler},
+
+       # Phase 17.6 corrective-loop scheduler: every 6 hours, fan
+       # out a MetricsPoller job per active product (>=1 published
+       # post in the last 90 days). Each MetricsPoller run also
+       # owns the corrective trigger (drop + competitor wins ->
+       # week-windowed synthesis + brief regen).
+       {"0 */6 * * *", ContentForge.Jobs.MetricsPollerScheduler},
+
+       # Phase 17.6 competitor scrape refresher: weekly per
+       # product with active competitor accounts. Each scraper run
+       # re-evaluates the viral threshold per post and queues
+       # CompetitorCommentHarvester for posts that crossed since
+       # the last run. Runs Mondays at 03:00 UTC to avoid clashing
+       # with the start-of-day metrics polls.
+       {"0 3 * * 1", ContentForge.Jobs.CompetitorScrapeRefresher}
      ]}
   ]
 
