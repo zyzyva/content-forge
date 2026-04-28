@@ -202,7 +202,11 @@ defmodule ContentForgeMCP.Server do
   # wrapper so the dashboard + REST surface see every invocation
   # (channel = "mcp"). The per-tool dispatch lives in
   # `call_tool/2`; the @impl callback only times the call and
-  # writes the audit row.
+  # writes the audit row. Phase 16.6 adds an escalation
+  # short-circuit before `call_tool/2`. Two exemptions:
+  # `escalate_to_human` (re-escalation must always succeed) and
+  # `cf_recent_scoreboard` (operator-facing read; harmless on an
+  # escalated session).
   @impl true
   def handle_tool_call(name, args) do
     audit_ctx = %{channel: "mcp"}
@@ -210,7 +214,15 @@ defmodule ContentForgeMCP.Server do
     invoked_at = DateTime.utc_now()
     args_map = if is_map(args), do: args, else: %{}
 
-    result = call_tool(name, args)
+    result =
+      case mcp_escalation_block(name, args_map) do
+        {:block, holding_reply} ->
+          {:error, %{code: "escalated", message: holding_reply, details: %{}}}
+
+        :pass ->
+          call_tool(name, args)
+      end
+
     duration_ms = System.monotonic_time(:millisecond) - started_at
 
     _ =
@@ -220,6 +232,28 @@ defmodule ContentForgeMCP.Server do
       })
 
     result
+  end
+
+  defp mcp_escalation_block(name, _args)
+       when name in ["escalate_to_human", "cf_recent_scoreboard"],
+       do: :pass
+
+  defp mcp_escalation_block(_name, args) do
+    with id when is_binary(id) and id != "" <- Map.get(args, "product_id"),
+         {:ok, uuid} <- Ecto.UUID.cast(id),
+         %ContentForge.Escalations.EscalationEvent{} = event <-
+           ContentForge.Escalations.find_open(uuid, "mcp",
+             max_age_seconds: mcp_escalation_window()
+           ) do
+      {:block, event.holding_reply}
+    else
+      _ -> :pass
+    end
+  end
+
+  defp mcp_escalation_window do
+    Application.get_env(:content_forge, :escalations, [])
+    |> Keyword.get(:session_window_seconds, 86_400)
   end
 
   defp call_tool("cf_create_product", args), do: cf_create_product(args)

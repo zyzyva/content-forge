@@ -32,17 +32,22 @@ defmodule ContentForge.OpenClawTools do
   `generate_drafts_from_bundle`, escalation, and audit surfacing.
   """
 
+  alias ContentForge.Escalations
+  alias ContentForge.Escalations.EscalationEvent
   alias ContentForge.OpenClawTools.AddTagToAsset
   alias ContentForge.OpenClawTools.ApproveDraft
   alias ContentForge.OpenClawTools.CompetitorIntelSummary
   alias ContentForge.OpenClawTools.CreateAssetBundle
   alias ContentForge.OpenClawTools.CreateUploadLink
   alias ContentForge.OpenClawTools.DraftStatus
+  alias ContentForge.OpenClawTools.EscalateToHuman
   alias ContentForge.OpenClawTools.GenerateDraftsFromBundle
   alias ContentForge.OpenClawTools.ListRecentAssets
+  alias ContentForge.OpenClawTools.ProductResolver
   alias ContentForge.OpenClawTools.RecordMemory
   alias ContentForge.OpenClawTools.ScheduleReminderChange
   alias ContentForge.OpenClawTools.UpcomingSchedule
+  alias ContentForge.ToolAudit
 
   @type ctx :: %{
           optional(:session_id) => String.t(),
@@ -66,7 +71,8 @@ defmodule ContentForge.OpenClawTools do
     "record_memory" => RecordMemory,
     "approve_draft" => ApproveDraft,
     "schedule_reminder_change" => ScheduleReminderChange,
-    "generate_drafts_from_bundle" => GenerateDraftsFromBundle
+    "generate_drafts_from_bundle" => GenerateDraftsFromBundle,
+    "escalate_to_human" => EscalateToHuman
   }
 
   @doc """
@@ -83,8 +89,14 @@ defmodule ContentForge.OpenClawTools do
   Returns `{:error, :unknown_tool}` for unregistered tool names
   so the controller can respond 404. Phase 16.5 wraps every
   invocation (including unknown-tool short-circuits) with a
-  `ContentForge.ToolAudit.log_invocation/5` call so the dashboard
-  surface and REST API see every attempted call.
+  `ToolAudit.log_invocation/5` call so the dashboard
+  surface and REST API see every attempted call. Phase 16.6 adds
+  a pre-check that short-circuits with
+  `{:error, {:escalated, %{holding_reply: ...}}}` when the
+  current `(product_id, session_id)` has an open escalation.
+  Two exemptions: `escalate_to_human` itself never short-circuits
+  (re-escalation must always succeed), and `cf_recent_scoreboard`
+  is operator-facing and lives on the MCP surface.
   """
   @spec dispatch(String.t(), ctx(), map()) :: result()
   def dispatch(tool_name, ctx, params) when is_binary(tool_name) and is_map(params) do
@@ -92,21 +104,74 @@ defmodule ContentForge.OpenClawTools do
     started_at = System.monotonic_time(:millisecond)
     invoked_at = DateTime.utc_now()
 
-    result =
-      case lookup_tool(tool_name) do
-        nil -> {:error, :unknown_tool}
-        module -> module.call(ctx, params)
-      end
-
+    result = run_dispatch(tool_name, ctx, params)
     duration_ms = System.monotonic_time(:millisecond) - started_at
 
     _ =
-      ContentForge.ToolAudit.log_invocation(tool_name, audit_ctx, params, result, %{
+      ToolAudit.log_invocation(tool_name, audit_ctx, params, result, %{
         duration_ms: duration_ms,
         invoked_at: invoked_at
       })
 
     result
+  end
+
+  defp run_dispatch(tool_name, ctx, params) do
+    case lookup_tool(tool_name) do
+      nil ->
+        {:error, :unknown_tool}
+
+      module ->
+        case escalation_block(tool_name, ctx, params) do
+          {:block, holding_reply} -> {:error, {:escalated, %{holding_reply: holding_reply}}}
+          :pass -> module.call(ctx, params)
+        end
+    end
+  end
+
+  defp escalation_block("escalate_to_human", _ctx, _params), do: :pass
+
+  defp escalation_block(_tool_name, ctx, params) do
+    with {:ok, product_id} <- best_effort_product_id(params, ctx),
+         %EscalationEvent{} = event <-
+           Escalations.find_open(product_id, session_id_for(ctx),
+             max_age_seconds: escalation_window()
+           ) do
+      {:block, event.holding_reply}
+    else
+      _ -> :pass
+    end
+  end
+
+  defp best_effort_product_id(params, ctx) do
+    cond do
+      is_binary(params["product_id"]) and params["product_id"] != "" ->
+        {:ok, params["product_id"]}
+
+      is_binary(params["product"]) and params["product"] != "" ->
+        case ProductResolver.resolve(ctx, params) do
+          {:ok, product} -> {:ok, product.id}
+          _ -> :error
+        end
+
+      true ->
+        case ProductResolver.resolve(ctx, params) do
+          {:ok, product} -> {:ok, product.id}
+          _ -> :error
+        end
+    end
+  end
+
+  defp session_id_for(ctx) do
+    case Map.get(ctx, :session_id) do
+      sid when is_binary(sid) and sid != "" -> sid
+      _ -> "openclaw-#{Map.get(ctx, :channel) || "unknown"}"
+    end
+  end
+
+  defp escalation_window do
+    Application.get_env(:content_forge, :escalations, [])
+    |> Keyword.get(:session_window_seconds, 86_400)
   end
 
   defp put_channel_namespace(ctx, prefix) do
