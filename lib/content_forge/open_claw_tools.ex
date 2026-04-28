@@ -81,15 +81,42 @@ defmodule ContentForge.OpenClawTools do
   Dispatches a tool invocation to the matching module.
 
   Returns `{:error, :unknown_tool}` for unregistered tool names
-  so the controller can respond 404.
+  so the controller can respond 404. Phase 16.5 wraps every
+  invocation (including unknown-tool short-circuits) with a
+  `ContentForge.ToolAudit.log_invocation/5` call so the dashboard
+  surface and REST API see every attempted call.
   """
   @spec dispatch(String.t(), ctx(), map()) :: result()
   def dispatch(tool_name, ctx, params) when is_binary(tool_name) and is_map(params) do
-    case lookup_tool(tool_name) do
-      nil -> {:error, :unknown_tool}
-      module -> module.call(ctx, params)
-    end
+    audit_ctx = put_channel_namespace(ctx, "openclaw")
+    started_at = System.monotonic_time(:millisecond)
+    invoked_at = DateTime.utc_now()
+
+    result =
+      case lookup_tool(tool_name) do
+        nil -> {:error, :unknown_tool}
+        module -> module.call(ctx, params)
+      end
+
+    duration_ms = System.monotonic_time(:millisecond) - started_at
+
+    _ =
+      ContentForge.ToolAudit.log_invocation(tool_name, audit_ctx, params, result, %{
+        duration_ms: duration_ms,
+        invoked_at: invoked_at
+      })
+
+    result
   end
+
+  defp put_channel_namespace(ctx, prefix) do
+    raw = Map.get(ctx, :channel)
+    Map.put(ctx, :channel, namespaced_channel(prefix, raw))
+  end
+
+  defp namespaced_channel(prefix, nil), do: "#{prefix}_unknown"
+  defp namespaced_channel(prefix, ""), do: "#{prefix}_unknown"
+  defp namespaced_channel(prefix, channel) when is_binary(channel), do: "#{prefix}_#{channel}"
 
   # Tests register temporary stub tools via
   # `Application.put_env(:content_forge, :extra_open_claw_tools,
