@@ -65,7 +65,7 @@ defmodule ContentForgeMCP.ServerTest do
       assert {"Content Forge", "1.0.0"} = Server.server_info()
     end
 
-    test "registers exactly the ten documented tools (nine from 17.3 + cf_list_pending_syntheses from 17.4)" do
+    test "registers exactly the eleven documented tools (nine from 17.3 + cf_list_pending_syntheses from 17.4 + cf_recent_scoreboard from 17.6)" do
       names = Server.tools() |> Enum.map(& &1.name) |> MapSet.new()
 
       expected =
@@ -80,6 +80,7 @@ defmodule ContentForgeMCP.ServerTest do
           cf_get_intel
           cf_list_pending_syntheses
           cf_import_twitter_sqlite
+          cf_recent_scoreboard
         ))
 
       assert names == expected
@@ -569,7 +570,8 @@ defmodule ContentForgeMCP.ServerTest do
       product = seed_product()
       account = seed_competitor(product, %{handle: "smoke"})
 
-      sqlite_path = Path.join(System.tmp_dir!(), "cf_mcp_smoke_#{System.unique_integer([:positive])}.db")
+      sqlite_path =
+        Path.join(System.tmp_dir!(), "cf_mcp_smoke_#{System.unique_integer([:positive])}.db")
 
       try do
         seed_tiny_sqlite!(sqlite_path, "smoke")
@@ -661,5 +663,130 @@ defmodule ContentForgeMCP.ServerTest do
     :done = Exqlite.Sqlite3.step(conn, stmt)
     Exqlite.Sqlite3.release(conn, stmt)
     Exqlite.Sqlite3.close(conn)
+  end
+
+  describe "cf_recent_scoreboard" do
+    alias ContentForge.Metrics.ScoreboardEntry
+    alias ContentForge.Publishing
+
+    defp seed_scoreboard!(product, outcome, attrs \\ %{}) do
+      base = %{
+        product_id: product.id,
+        content_id: Ecto.UUID.generate(),
+        platform: "twitter",
+        angle: "humor",
+        format: "post",
+        composite_ai_score: 7.0,
+        actual_engagement_score: 100.0,
+        delta: if(outcome == "winner", do: 2.0, else: -2.0),
+        outcome: outcome,
+        measured_at: DateTime.utc_now() |> DateTime.truncate(:second)
+      }
+
+      Repo.insert!(struct(ScoreboardEntry, Map.merge(base, attrs)))
+    end
+
+    defp publish!(product) do
+      {:ok, draft} =
+        ContentForge.ContentGeneration.create_draft(%{
+          product_id: product.id,
+          platform: "twitter",
+          content_type: "post",
+          angle: "humor",
+          content: "draft body",
+          generating_model: "test"
+        })
+
+      {:ok, _post} =
+        Publishing.create_published_post(%{
+          product_id: product.id,
+          draft_id: draft.id,
+          platform: "twitter",
+          platform_post_id: "p-#{System.unique_integer([:positive])}",
+          platform_post_url: "https://x.com/x/status/1",
+          posted_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        })
+    end
+
+    test "scoped to a product returns winners + losers + last_polled_at" do
+      product = seed_product()
+      seed_scoreboard!(product, "winner")
+      seed_scoreboard!(product, "winner", %{angle: "education"})
+      seed_scoreboard!(product, "loser")
+
+      assert {:ok, %{products: [summary]}} =
+               call("cf_recent_scoreboard", %{"product_id" => product.id})
+
+      assert summary.product_id == product.id
+      assert summary.product_name == product.name
+      assert length(summary.recent_winners) == 2
+      assert length(summary.recent_losers) == 1
+      assert is_binary(summary.last_polled_at)
+      assert summary.window_days == 7
+      assert summary.corrective_trigger_fired == false
+    end
+
+    test "limit is clamped to [1, 20] and respected per outcome" do
+      product = seed_product()
+      for _ <- 1..3, do: seed_scoreboard!(product, "winner")
+      for _ <- 1..3, do: seed_scoreboard!(product, "loser")
+
+      assert {:ok, %{products: [summary]}} =
+               call("cf_recent_scoreboard", %{"product_id" => product.id, "limit" => 2})
+
+      assert length(summary.recent_winners) == 2
+      assert length(summary.recent_losers) == 2
+    end
+
+    test "empty scoreboard returns empty winners + losers and nil last_polled_at" do
+      product = seed_product()
+
+      assert {:ok, %{products: [summary]}} =
+               call("cf_recent_scoreboard", %{"product_id" => product.id})
+
+      assert summary.recent_winners == []
+      assert summary.recent_losers == []
+      assert summary.last_polled_at == nil
+      assert summary.corrective_trigger_fired == false
+    end
+
+    test "corrective_trigger_fired flips when a recent week-windowed CompetitorIntel exists" do
+      product = seed_product()
+
+      {:ok, _intel} =
+        Products.create_competitor_intel(%{
+          product_id: product.id,
+          summary: "fresh corrective signal",
+          trending_topics: [],
+          winning_formats: [],
+          effective_hooks: [],
+          audience_signals: [],
+          source_count: 0,
+          window: "week"
+        })
+
+      assert {:ok, %{products: [summary]}} =
+               call("cf_recent_scoreboard", %{"product_id" => product.id})
+
+      assert summary.corrective_trigger_fired == true
+    end
+
+    test "no product_id returns active products only (skips products with no recent publishes)" do
+      active = seed_product(%{name: "Active"})
+      _quiet = seed_product(%{name: "Quiet"})
+      publish!(active)
+      seed_scoreboard!(active, "winner")
+
+      assert {:ok, %{products: rows}} = call("cf_recent_scoreboard", %{})
+
+      ids = Enum.map(rows, & &1.product_id)
+      assert active.id in ids
+      assert length(rows) == 1
+    end
+
+    test "unknown product_id returns the structured not_found envelope" do
+      assert {:error, %{code: "not_found"}} =
+               call("cf_recent_scoreboard", %{"product_id" => Ecto.UUID.generate()})
+    end
   end
 end

@@ -127,7 +127,8 @@ defmodule ContentForge.CompetitorIntelSynthesizer.LLMAdapter do
     """
   end
 
-  defp format_comments(%CompetitorPost{comments: comments}) when is_list(comments) and comments != [] do
+  defp format_comments(%CompetitorPost{comments: comments})
+       when is_list(comments) and comments != [] do
     top =
       comments
       |> Enum.sort_by(&(&1.likes_count || 0), :desc)
@@ -186,12 +187,14 @@ defmodule ContentForge.CompetitorIntelSynthesizer.LLMAdapter do
     end
   end
 
-  defp coerce_intel(%{
-         "summary" => summary,
-         "trending_topics" => topics,
-         "winning_formats" => formats,
-         "effective_hooks" => hooks
-       } = json)
+  defp coerce_intel(
+         %{
+           "summary" => summary,
+           "trending_topics" => topics,
+           "winning_formats" => formats,
+           "effective_hooks" => hooks
+         } = json
+       )
        when is_binary(summary) and summary != "" do
     with {:ok, topics} <- coerce_string_list(topics),
          {:ok, formats} <- coerce_string_list(formats),

@@ -162,9 +162,7 @@ defmodule ContentForge.Jobs.CompetitorScraper do
 
   defp schedule_intel_synthesis(product_id) do
     %{"product_id" => product_id}
-    |> CompetitorIntelSynthesizer.new(
-      scheduled_at: DateTime.add(DateTime.utc_now(), 5, :second)
-    )
+    |> CompetitorIntelSynthesizer.new(scheduled_at: DateTime.add(DateTime.utc_now(), 5, :second))
     |> Oban.insert()
   end
 

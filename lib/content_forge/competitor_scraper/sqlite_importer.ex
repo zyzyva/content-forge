@@ -52,7 +52,9 @@ defmodule ContentForge.CompetitorScraper.SqliteImporter do
         }
 
   @spec import_twitter_sqlite(opts()) :: {:ok, result()} | {:error, term()}
-  def import_twitter_sqlite(%{sqlite_path: path, competitor: %CompetitorAccount{} = account} = opts) do
+  def import_twitter_sqlite(
+        %{sqlite_path: path, competitor: %CompetitorAccount{} = account} = opts
+      ) do
     case File.exists?(path) do
       true -> open_and_import(path, account, opts)
       false -> {:error, :sqlite_not_found}
@@ -123,7 +125,8 @@ defmodule ContentForge.CompetitorScraper.SqliteImporter do
   # lexicographically the same way they sort chronologically, so a
   # text comparison is correct without per-fixture unix timestamps.
   defp build_tweets_query(handle, since_iso, until_iso) do
-    base = ~s|select platform_id, text, posted_at, posted_unix, likes, retweets, replies, views, conversation_id, url, raw_json from tweets where handle = ?|
+    base =
+      ~s|select platform_id, text, posted_at, posted_unix, likes, retweets, replies, views, conversation_id, url, raw_json from tweets where handle = ?|
 
     {clauses, params} =
       {[], []}
@@ -197,7 +200,8 @@ defmodule ContentForge.CompetitorScraper.SqliteImporter do
   # --- comment streaming ----------------------------------------------------
 
   defp stream_comments(conn, handle) do
-    sql = ~s|select platform_id, parent_tweet_id, author_handle, text, posted_at, likes, replies, retweets, views, in_reply_to_id, conversation_id, raw_json from comments where parent_handle = ?|
+    sql =
+      ~s|select platform_id, parent_tweet_id, author_handle, text, posted_at, likes, replies, retweets, views, in_reply_to_id, conversation_id, raw_json from comments where parent_handle = ?|
 
     stream(conn, sql, [handle], &row_to_comment_map/1)
   end
@@ -336,5 +340,4 @@ defmodule ContentForge.CompetitorScraper.SqliteImporter do
         end
     end
   end
-
 end

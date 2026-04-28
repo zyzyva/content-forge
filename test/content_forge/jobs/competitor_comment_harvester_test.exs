@@ -164,14 +164,17 @@ defmodule ContentForge.Jobs.CompetitorCommentHarvesterTest do
     end
 
     test "adapter :missing_conversation_id cancels", %{post: post} do
-      Application.put_env(:content_forge, :stub_adapter_response, {:error, :missing_conversation_id})
+      Application.put_env(
+        :content_forge,
+        :stub_adapter_response,
+        {:error, :missing_conversation_id}
+      )
+
       assert {:cancel, :missing_conversation_id} = run(post.id)
     end
 
     test "adapter transient error returns :error so Oban retries", %{post: post} do
-      Application.put_env(:content_forge, :stub_adapter_response,
-        error: nil
-      )
+      Application.put_env(:content_forge, :stub_adapter_response, error: nil)
 
       Application.put_env(
         :content_forge,

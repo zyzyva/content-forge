@@ -356,6 +356,45 @@ defmodule ContentForge.Metrics do
     negative_count >= 5
   end
 
+  @doc """
+  Phase 17.6 corrective-loop predicate: returns true when at
+  least one tracked competitor has a post in the last `days`
+  whose `engagement_score` is above 1.0 (i.e., above their own
+  rolling average per `CompetitorPost.engagement_score`'s
+  contract).
+
+  Used in conjunction with `should_trigger_rewrite?/3`: the
+  corrective loop fires only when both our own content
+  underperformed AND a competitor outperformed in the same
+  window. A drop alone is treated as noise; a competitor win
+  alone is normal corpus refresh material.
+  """
+  @spec competitor_wins_in_window?(Ecto.UUID.t(), pos_integer()) :: boolean()
+  def competitor_wins_in_window?(product_id, days \\ 7) when is_binary(product_id) do
+    cutoff = DateTime.utc_now() |> DateTime.add(-days * 24 * 3600, :second)
+
+    account_ids =
+      ContentForge.Products.CompetitorAccount
+      |> where(product_id: ^product_id, active: true)
+      |> select([a], a.id)
+      |> Repo.all()
+
+    case account_ids do
+      [] ->
+        false
+
+      ids ->
+        Repo.exists?(
+          from(p in ContentForge.Products.CompetitorPost,
+            where:
+              p.competitor_account_id in ^ids and
+                p.posted_at >= ^cutoff and
+                p.engagement_score > 1.0
+          )
+        )
+    end
+  end
+
   # ============================================
   # Helpers
   # ============================================
