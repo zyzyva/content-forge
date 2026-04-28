@@ -708,7 +708,7 @@ Phase exit criteria: a marketer can text a photo in, get it tagged into a produc
   - Rate limits: the tool does not skip enqueueing when `would_exceed_budget` is true; it surfaces the warning and lets the confirmed owner decide (the existing budget ceiling on the Oban worker is the hard stop). The tool's responsibility is transparency, not enforcement.
   - Tests: submitter role = `:forbidden`; owner + no confirm = envelope with `asset_count`, `estimated_cost_cents`, `remaining_budget_cents`, and `would_exceed_budget` accurately computed against stub budget state; owner + confirm matching = `AssetBundleDraftGenerator` enqueued with the correct args (`assert_enqueued`); owner + confirm mismatching = `:confirmation_mismatch`, no enqueue; cross-product bundle = `:not_found`; unknown bundle = `:not_found`; budget-exhausted path still enqueues (warning in preview, not a block). One controller end-to-end covering the full two-turn HTTP cycle.
 
-- **16.5 Unified tool-invocation audit + dashboard surface**
+- **16.5 Unified tool-invocation audit + dashboard surface** ✅ Shipped `951f8ae`.
   - New `ToolInvocationEvent` schema capturing every tool call across all channels: tool_name, params (hashed if they contain PII), result_status, channel, sender_identity, product_id, invoked_at. Separate from `SmsEvent` because the surface is multi-channel.
   - Every tool module wraps its `call/2` in a `log_invocation` helper so audit is automatic rather than per-tool.
   - New LiveView page at `/dashboard/tool-activity` listing recent invocations per product with channel + sender + result. Filterable by tool, channel, status.
