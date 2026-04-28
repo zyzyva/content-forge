@@ -6,6 +6,8 @@ defmodule ContentForge.Publishing.Reddit do
 
   require Logger
 
+  alias ContentForge.CompetitorScraper.ApifyAdapter
+
   @base_url "https://oauth.reddit.com"
   @max_retries 3
   @retry_delay 5000
@@ -76,10 +78,27 @@ defmodule ContentForge.Publishing.Reddit do
 
   @doc """
   Fetch engagement metrics for a published Reddit post.
-  post_id is the Reddit post ID (without the t3_ prefix).
+
+  Phase 17.7 dispatch: native Reddit OAuth path runs when the
+  credentials map carries `:reddit_access_token`. When the token
+  is absent (default for products that have not registered a
+  Reddit app), routes through Apify so the system runs on
+  `APIFY_TOKEN` alone. `post_url` is required for the Apify path.
+
+  `post_id` is the Reddit post id (without the `t3_` prefix).
   """
-  @spec fetch_metrics(String.t(), map()) :: {:ok, map()} | {:error, String.t()}
-  def fetch_metrics(post_id, %{reddit_access_token: _token} = credentials) do
+  @spec fetch_metrics(String.t(), String.t() | nil, map()) :: {:ok, map()} | {:error, term()}
+  def fetch_metrics(post_id, _post_url, %{reddit_access_token: _} = credentials) do
+    fetch_metrics_via_oauth(post_id, credentials)
+  end
+
+  def fetch_metrics(_post_id, nil, _credentials_without_oauth), do: {:error, :no_post_url}
+
+  def fetch_metrics(_post_id, post_url, _credentials_without_oauth) do
+    ApifyAdapter.fetch_metrics_for_post("reddit", post_url)
+  end
+
+  defp fetch_metrics_via_oauth(post_id, credentials) do
     case reddit_request(:get, "/api/info.json?id=t3_#{post_id}", credentials) do
       {:ok, body} ->
         post_data = get_in(body, ["data", "children", Access.at(0), "data"]) || %{}
@@ -98,14 +117,16 @@ defmodule ContentForge.Publishing.Reddit do
   end
 
   defp reddit_request(:get, path, credentials) do
-    url = @base_url <> path
-
     headers = [
       {"Authorization", "Bearer #{credentials.reddit_access_token}"},
       {"User-Agent", "ContentForge/1.0"}
     ]
 
-    case Req.get(url, headers: headers) do
+    [url: path, base_url: base_url(), headers: headers]
+    |> Kernel.++(req_options())
+    |> Req.new()
+    |> Req.get()
+    |> case do
       {:ok, %{status: status, body: body}} when status in 200..299 ->
         {:ok, body}
 
@@ -116,6 +137,14 @@ defmodule ContentForge.Publishing.Reddit do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp base_url do
+    Application.get_env(:content_forge, :reddit, []) |> Keyword.get(:base_url, @base_url)
+  end
+
+  defp req_options do
+    Application.get_env(:content_forge, :reddit, []) |> Keyword.get(:req_options, [])
   end
 
   defp reddit_request(method, path, credentials, body) do

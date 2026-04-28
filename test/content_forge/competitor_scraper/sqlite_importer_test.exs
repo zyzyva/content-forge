@@ -37,7 +37,9 @@ defmodule ContentForge.CompetitorScraper.SqliteImporterTest do
         active: true
       })
 
-    sqlite_path = Path.join(System.tmp_dir!(), "cf_import_test_#{System.unique_integer([:positive])}.db")
+    sqlite_path =
+      Path.join(System.tmp_dir!(), "cf_import_test_#{System.unique_integer([:positive])}.db")
+
     seed_fixture_sqlite!(sqlite_path)
 
     on_exit(fn ->
@@ -101,7 +103,8 @@ defmodule ContentForge.CompetitorScraper.SqliteImporterTest do
     insert_tweet = fn args ->
       [post_id, posted_at, posted_unix, likes, replies, retweets, views, conv_id] = args
 
-      sql = ~s|INSERT INTO tweets (platform_id, handle, text, posted_at, posted_unix, likes, retweets, replies, views, conversation_id, url, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)|
+      sql =
+        ~s|INSERT INTO tweets (platform_id, handle, text, posted_at, posted_unix, likes, retweets, replies, views, conversation_id, url, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)|
 
       {:ok, stmt} = Exqlite.Sqlite3.prepare(conn, sql)
 
@@ -128,7 +131,8 @@ defmodule ContentForge.CompetitorScraper.SqliteImporterTest do
     insert_comment = fn args ->
       [comment_id, parent_id, author, posted_at, likes] = args
 
-      sql = ~s|INSERT INTO comments (platform_id, parent_tweet_id, parent_handle, author_handle, text, posted_at, likes, conversation_id, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)|
+      sql =
+        ~s|INSERT INTO comments (platform_id, parent_tweet_id, parent_handle, author_handle, text, posted_at, likes, conversation_id, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)|
 
       {:ok, stmt} = Exqlite.Sqlite3.prepare(conn, sql)
 
@@ -163,7 +167,10 @@ defmodule ContentForge.CompetitorScraper.SqliteImporterTest do
   end
 
   describe "happy path" do
-    test "imports tweets + comments and returns the counts", %{competitor: competitor, sqlite_path: path} do
+    test "imports tweets + comments and returns the counts", %{
+      competitor: competitor,
+      sqlite_path: path
+    } do
       assert {:ok, result} =
                SqliteImporter.import_twitter_sqlite(%{
                  sqlite_path: path,
@@ -324,7 +331,9 @@ defmodule ContentForge.CompetitorScraper.SqliteImporterTest do
       assert result.comments_imported == 2
       assert Repo.aggregate(CompetitorPostComment, :count, :id) == 2
 
-      orphan = Repo.one(from(c in CompetitorPostComment, where: c.platform_comment_id == "c-orphan"))
+      orphan =
+        Repo.one(from(c in CompetitorPostComment, where: c.platform_comment_id == "c-orphan"))
+
       assert orphan == nil
     end
   end

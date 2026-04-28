@@ -778,14 +778,14 @@ Phase exit criteria: (1) running `openclaw agent --message "give me an upload li
   - Tests (Req.Test stubs for the LLM client): with-key path produces a `competitor_intel` row autonomously and `audience_signals` is populated when at least one source post has comments; without-key path leaves the synthesis pending and an MCP-driven completion produces an indistinguishable row; comment data makes it into the prompt; `window` round-trips correctly.
   - See `RESEARCH_LOOP_PLAN.md` Phase 4 for full detail.
 
-- **17.5 Sqlite backfill importer (posts + comments) via MCP** *(DONE - see `BUILDLOG.md` Phase 17.5)*
+- **17.5 Sqlite backfill importer (posts + comments) via MCP** ✅ Shipped `e77447e`.
   - Blocks: 17.8 (HollerClean bootstrap leans on the existing cleanwithmike sqlite). Blocked by: 17.1, 17.3, 17.4.
   - The importer is the `cf_import_twitter_sqlite` MCP tool from 17.3; this slice ships its real implementation. Inputs: `sqlite_path`, `product_id`, `competitor_id`, optional `since` / `until`. Reads the standalone scraper's sqlite (`tweets` + `comments` tables), upserts each into `competitor_posts` and `competitor_post_comments` respectively, recomputes the competitor account's rolling engagement average so per-post scores reflect the broader corpus.
   - Idempotent. Re-running over the same source produces zero new rows for both tables.
   - Tests: happy-path import against a small fixture sqlite asserting the row counts + the comment foreign-key linkage; idempotent re-run; date-range filtering; missing sqlite returns `not_found` through the MCP error envelope.
   - See `RESEARCH_LOOP_PLAN.md` Phase 5 for full detail.
 
-- **17.6 MetricsPoller cron + competitor refresher cron + corrective-loop replacement**
+- **17.6 MetricsPoller cron + competitor refresher cron + corrective-loop replacement** ✅ Shipped 4e44af2.
   - Blocks: 17.8 (HollerClean bootstrap needs the loop closing). Blocked by: 17.0, 17.1, 17.4. 17.7 helps but is not blocking.
   - Three coordinated changes:
     - Oban cron entry for `MetricsPoller` covering every active product on a 6-hour cadence (v1 default per the plan's open-questions section); "active product" means at least one published post in the last 90 days.
@@ -795,10 +795,46 @@ Phase exit criteria: (1) running `openclaw agent --message "give me an upload li
   - Tests: each combination of internal-drop x competitor-wins fires or no-ops as documented (four cases); the cron schedule survives a launchd-managed Phoenix restart; refresher cron only enqueues comment harvesting for posts that crossed the threshold since the last run.
   - See `RESEARCH_LOOP_PLAN.md` Phase 6 for full detail.
 
-- **17.7 Per-platform metrics fetcher audit + Twitter implementation**
-  - Blocks: nothing strictly (17.6 ships even with stub fetchers, but the loop is only honest once 17.7 runs). Blocked by: 17.0. Independent of 17.3-17.6.
-  - For each publishing platform module (twitter, linkedin, facebook, reddit, youtube), classify the metrics fetcher as fully implemented, partial stub, or placeholder. For partials and placeholders, document what is missing in `CAPABILITIES.md`. Implement the Twitter fetcher at minimum, routing through Apify (kaitoeasyapi) per the plan's v1 default to keep one credential and one failure mode for the system. Other platforms can remain stubs as long as their stub state is loud (raises or returns explicit `:not_implemented`), not silent (no zero-filled rows).
-  - Tests: each implemented fetcher gets a recorded-fixture test; stub fetchers have a regression test asserting they fail loudly when called.
+- **17.7 All-platforms metrics via Apify (one credential, ship today)**
+  - Blocks: nothing strictly (17.6 ships even with stub fetchers, but the loop is only honest once 17.7 runs). Blocked by: 17.0, 17.1 (the ApifyAdapter from 17.1 is the foundation this extends). Independent of 17.3-17.6.
+  - **Premise:** every native social-platform API requires an approval flow before it produces metrics: LinkedIn Marketing Developer Platform takes weeks (often rejected the first round); Facebook + Instagram App Review is the same flavor; YouTube needs OAuth verification; Reddit needs an app approval; Twitter v2 needs OAuth + elevated access. The user is starting from zero content and zero existing OAuth setups, so the cost of going native is "wait a week and beg every platform" before any metrics flow at all. Apify costs cents per scrape, runs through the credential we already have (`APIFY_TOKEN` from 17.1), and ships today. The trade-off is acknowledged: per-call cost vs. zero approval friction. At current volume (zero content) the cost is negligible; revisit if a product reaches volume where Apify spend dominates the metrics budget.
+
+  - **Audit-time finding (master `67617f2`):** all five platform `fetch_metrics/2` implementations are real native-API calls. None are stubs. They will be **replaced**, not repaired. The existing publishing paths (`publish_post`, `publish_thread`, etc.) keep their native OAuth code unchanged; OAuth is genuinely required for posting on every platform, but not for reading public engagement counts on already-published posts.
+
+  - **Apify-for-all rewire:**
+    - Each platform's `fetch_metrics/2` is rewritten to call a new `ContentForge.CompetitorScraper.ApifyAdapter.fetch_metrics_for_post/2` taking `(platform, post_url)` and returning `{:ok, %{"likes", "comments", "shares", "views"}}` or a classified error tuple. The function name is intentionally generic ("for_post" not "for_tweet") because the second-platform adoption is supposed to be trivial.
+    - `fetch_metrics_for_post/2` dispatches to the right Apify actor per platform via the existing `:content_forge, :apify, :actors` config map (already populated by 17.1 with handle-scraping actors; 17.7 either reuses each actor with a per-post input shape OR ships a sibling `:content_forge, :apify, :metrics_actors` map if any platform needs a different actor for per-post fetching than for handle scraping). Coder picks the cleaner of those two layouts at slice time based on what each actor's input schema supports.
+    - **Per-platform input shape (subject to coder live-shape verification at slice time, the same way 17.1 verified the Twitter handle scrape):**
+      - **Twitter** -> `kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest`, input `%{"startUrls" => ["https://x.com/i/status/<tweet_id>"], "maxItems" => 1}`.
+      - **LinkedIn** -> `apify~linkedin-post-scraper`, input `%{"urls" => ["<post_url>"]}`.
+      - **Facebook** -> `apify~facebook-posts-scraper` (or whichever actor is current at slice time; 17.1 mapped the page scraper, the post scraper may be a sibling), input `%{"startUrls" => ["<post_url>"]}`.
+      - **Instagram** -> `apify~instagram-scraper`, input `%{"directUrls" => ["<post_permalink>"]}` for individual posts.
+      - **Reddit** -> `trudax~reddit-scraper`, input `%{"startUrls" => ["<reddit_post_url>"]}`.
+      - **YouTube** -> `apify~youtube-scraper`, input `%{"startUrls" => ["https://youtube.com/watch?v=<video_id>"], "maxItems" => 1}`.
+    - **Result normalization:** per-platform normalizer extracts engagement counts using the same lenient field-priority lookup the 17.1 post-list normalizer uses, extended for views where each actor exposes them: `likes` from `likeCount/numLikes/likes/score/reactions`, `comments` from `replyCount/numComments/commentsCount/comments`, `shares` from `retweetCount/numShares/sharesCount/shares/repostCount`, `views` from `viewCount/numViews/views/playCount`. When a count is genuinely missing in the actor response, default to `nil` rather than `0` so MetricsPoller can distinguish "not measured" from "measured as zero" (matters for corrective-loop signal honesty).
+    - **Native fallback retained but inverted:** if a product happens to have a native OAuth token configured (`twitter_access_token`, `linkedin_access_token`, etc.), the platform module still honors it and uses the native API. This keeps any product that has already done the OAuth grind on the faster + richer native path. New default for products without an OAuth token: Apify. The dispatch lives entirely inside each platform's `fetch_metrics/2`; MetricsPoller's code path is unchanged.
+    - **`PublishedPost.platform_post_url`:** the per-post URL is the input the Apify actors need. The `published_posts` table already carries `platform_post_id`; MetricsPoller currently passes only the id. Each platform module reconstructs the canonical URL from the id (Twitter: `https://x.com/i/status/<id>`, YouTube: `https://youtube.com/watch?v=<id>`, etc.). For Reddit, LinkedIn, Facebook, Instagram where the post id is opaque or not URL-safe, the module pulls the full URL from the `PublishedPost.platform_post_url` field if present and falls back to a constructed URL otherwise. The reviewer flags any case where the URL cannot be reconstructed from existing data and we have to defer that platform.
+
+  - **Concurrency + batching:**
+    - Apify actors generally accept multiple `startUrls`/`urls` per run and return one dataset item per URL. **Batching is a future optimization, not in this slice.** Per-call cost at zero-content volume is pennies; the simpler one-run-per-post code path is easier to test and reason about. If MetricsPoller volume grows into a real cost, a follow-up slice batches by grouping a poll cycle's posts per platform into one Apify run each.
+    - The Apify run lifecycle (POST run, poll status until SUCCEEDED/FAILED, GET dataset items) is reused unchanged from 17.1. The new function adds nothing to the run protocol; it just submits a different input shape.
+
+  - **`CAPABILITIES.md` refresh:**
+    - Per-platform fetcher table: platform, status (`apify | apify+native_fallback | unimplemented`), Apify actor used, OAuth fallback supported (yes for the existing five since their `fetch_metrics/2` retains the native-credentials branch), credential needed (`APIFY_TOKEN` or `APIFY_TOKEN + <platform>_access_token`), last-verified date.
+    - Document the cost-vs-friction trade-off explicitly so a future maintainer knows why we went Apify-first rather than going through five OAuth approvals.
+
+  - **Tests:**
+    - `ApifyAdapter.fetch_metrics_for_post/2` direct tests, one per supported platform: stubbed Apify run lifecycle (POST run, GET status SUCCEEDED, GET dataset items with a representative actor response), assert the returned engagement map matches the expected shape with non-nil counts.
+    - Each platform module's `fetch_metrics/2`: happy path through Apify when no native OAuth token is set; happy path through native API when the OAuth token IS set (preserves existing behavior); `:not_configured` when neither path has its credential; classified error tuple on Apify run failure, not a zero-filled map.
+    - `ApifyAdapter.fetch_metrics_for_post/2` error classes: missing token (`:not_configured`), run-poll timeout, parse failure, transient HTTP error, permanent HTTP error, unsupported-platform when called with a platform not in the actors map.
+    - No live Apify or live native API calls in the suite. All exercised via `Req.Test`.
+
+  - **Out of scope:**
+    - Batching multiple posts into one Apify run. Future optimization; per-call cost at current volume is negligible.
+    - Video-level deep analytics (watch time, retention, audience demographics). The current shape is engagement counts only; deeper analytics live in a future slice if MetricsPoller decides it needs them. Apify YouTube actors generally do not expose retention curves.
+    - Per-product Apify actor overrides. v1 uses one global actors map. If a product needs a different actor for some reason, that is a per-product config follow-up.
+    - Cost surfacing in the dashboard. Apify spend per product is a Phase 15 polish item, not Phase 17.
+
   - See `RESEARCH_LOOP_PLAN.md` Phase 7 for full detail.
 
 - **17.8 Bootstrap HollerClean as the first product** `requires_human`

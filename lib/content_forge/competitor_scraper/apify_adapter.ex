@@ -126,6 +126,159 @@ defmodule ContentForge.CompetitorScraper.ApifyAdapter do
     dispatch_comments(post, limit, fetch_token(), comment_actor_for(platform))
   end
 
+  @doc """
+  Phase 17.7 all-platforms metrics rewire: looks up engagement
+  counts for a single published post by spinning up a one-shot
+  scrape against the per-platform Apify actor.
+
+  Returns:
+
+      {:ok, %{
+        "likes"    => non_neg_integer() | nil,
+        "comments" => non_neg_integer() | nil,
+        "shares"   => non_neg_integer() | nil,
+        "views"    => non_neg_integer() | nil
+      }}
+
+  The map is intentionally platform-agnostic ("comments" not
+  "replies", "shares" not "retweets") so MetricsPoller and the
+  corrective loop can read engagement uniformly across platforms.
+  Counts default to `nil` (not `0`) when the actor response does
+  not include the field, so callers can distinguish "not measured"
+  from "measured as zero" (matters for corrective-loop signal
+  honesty).
+
+  Per-platform dispatch:
+
+    * `"twitter"`  -> kaitoeasyapi tweet-by-id actor, `startUrls`
+    * `"linkedin"` -> apify linkedin-post-scraper, `urls`
+    * `"facebook"` -> apify facebook posts scraper, `startUrls`
+    * `"instagram"`-> apify instagram-scraper, `directUrls`
+    * `"reddit"`   -> trudax reddit-scraper, `startUrls`
+    * `"youtube"`  -> apify youtube-scraper, `startUrls`
+
+  Per-platform actor selection: looks up `:metrics_actors` first
+  (so a platform can use a different per-post actor than its
+  handle-scraping actor without disturbing 17.1), then falls back
+  to the `:actors` map populated by 17.1.
+
+  Same error taxonomy as `fetch_posts/1`:
+
+    * `{:error, :not_configured}` - no `APIFY_TOKEN`
+    * `{:error, :unsupported_platform}` - actor not mapped for platform
+    * `{:error, {:transient, status, body}}` / `{:error, {:http_error, status, body}}`
+    * `{:error, {:apify_run_failed, status}}`
+    * `{:error, :apify_run_poll_timeout}`
+    * `{:error, :apify_parse_failure}` (zero items in dataset)
+  """
+  @spec fetch_metrics_for_post(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def fetch_metrics_for_post(platform, post_url)
+      when is_binary(platform) and is_binary(post_url) do
+    dispatch_metrics(platform, post_url, fetch_token(), metrics_actor_for(platform))
+  end
+
+  defp dispatch_metrics(_platform, _url, nil, _actor), do: {:error, :not_configured}
+  defp dispatch_metrics(_platform, _url, "", _actor), do: {:error, :not_configured}
+  defp dispatch_metrics(_platform, _url, _token, nil), do: {:error, :unsupported_platform}
+
+  defp dispatch_metrics(platform, url, token, actor) do
+    with {:ok, run} <- start_metrics_run(platform, url, actor, token),
+         {:ok, finished} <- poll_until_done(run, token, poll_max_attempts()),
+         {:ok, items} <- fetch_items(finished["defaultDatasetId"], token) do
+      normalise_metrics(items)
+    end
+  end
+
+  defp start_metrics_run(platform, url, actor, token) do
+    body = build_metrics_input(platform, url)
+
+    actor
+    |> build_req("/v2/acts/#{actor}/runs", token)
+    |> Req.post(json: body)
+    |> classify()
+    |> extract_data()
+  end
+
+  # Per-platform input shapes per BUILDPLAN section 17.7. Twitter
+  # and YouTube cap maxItems=1 because their actors are otherwise
+  # paginating crawlers and we only want the one published post.
+  # LinkedIn and Instagram use platform-specific keys (`urls`,
+  # `directUrls`) per their actor schemas.
+  defp build_metrics_input("twitter", url),
+    do: %{"startUrls" => [url], "maxItems" => 1}
+
+  defp build_metrics_input("youtube", url),
+    do: %{"startUrls" => [url], "maxItems" => 1}
+
+  defp build_metrics_input("linkedin", url), do: %{"urls" => [url]}
+  defp build_metrics_input("instagram", url), do: %{"directUrls" => [url]}
+  defp build_metrics_input(_platform, url), do: %{"startUrls" => [url]}
+
+  defp normalise_metrics(items) when is_list(items) do
+    items
+    |> Enum.reject(&no_results_marker?/1)
+    |> List.first()
+    |> metrics_from_item()
+  end
+
+  defp normalise_metrics(_), do: {:error, :apify_parse_failure}
+
+  defp metrics_from_item(nil), do: {:error, :apify_parse_failure}
+
+  # Lenient field-priority lookup, extending the 17.1 post-list
+  # normalizer with views. Keys cover the common shapes across the
+  # six configured actors. `optional_integer/2` returns `nil` when
+  # the field is absent or unparseable; callers must not assume
+  # zero on missing.
+  defp metrics_from_item(item) when is_map(item) do
+    {:ok,
+     %{
+       "likes" =>
+         optional_integer(item, [
+           "likeCount",
+           "likesCount",
+           "numLikes",
+           "likes",
+           "score",
+           "ups",
+           "reactions"
+         ]),
+       "comments" =>
+         optional_integer(item, [
+           "replyCount",
+           "repliesCount",
+           "numComments",
+           "commentsCount",
+           "comments",
+           "numberOfComments",
+           "num_comments"
+         ]),
+       "shares" =>
+         optional_integer(item, [
+           "retweetCount",
+           "retweetsCount",
+           "numShares",
+           "sharesCount",
+           "shares",
+           "repostCount",
+           "reposts"
+         ]),
+       "views" =>
+         optional_integer(item, [
+           "viewCount",
+           "viewsCount",
+           "numViews",
+           "views",
+           "playCount",
+           "videoViews"
+         ])
+     }}
+  end
+
+  defp metrics_actor_for(platform) do
+    config(:metrics_actors, %{}) |> Map.get(platform) || actor_for(platform)
+  end
+
   defp dispatch_comments(_post, _limit, nil, _actor), do: {:error, :not_configured}
   defp dispatch_comments(_post, _limit, "", _actor), do: {:error, :not_configured}
   defp dispatch_comments(_post, _limit, _token, nil), do: {:error, :unsupported_platform}
@@ -478,6 +631,22 @@ defmodule ContentForge.CompetitorScraper.ApifyAdapter do
   end
 
   defp integer_field(item, keys), do: integer_field_value(first_present(item, keys))
+
+  # Variant for Phase 17.7 metrics: missing fields return nil (not 0)
+  # so MetricsPoller can distinguish "not measured" from "measured as zero".
+  defp optional_integer(item, keys), do: optional_integer_value(first_present(item, keys))
+
+  defp optional_integer_value(n) when is_integer(n), do: n
+  defp optional_integer_value(n) when is_float(n), do: trunc(n)
+
+  defp optional_integer_value(n) when is_binary(n) do
+    case Integer.parse(n) do
+      {int, _} -> int
+      :error -> nil
+    end
+  end
+
+  defp optional_integer_value(_), do: nil
 
   defp integer_field_value(n) when is_integer(n), do: n
   defp integer_field_value(n) when is_float(n), do: trunc(n)
