@@ -795,7 +795,7 @@ Phase exit criteria: (1) running `openclaw agent --message "give me an upload li
   - Tests: each combination of internal-drop x competitor-wins fires or no-ops as documented (four cases); the cron schedule survives a launchd-managed Phoenix restart; refresher cron only enqueues comment harvesting for posts that crossed the threshold since the last run.
   - See `RESEARCH_LOOP_PLAN.md` Phase 6 for full detail.
 
-- **17.7 All-platforms metrics via Apify (one credential, ship today)**
+- **17.7 All-platforms metrics via Apify (one credential, ship today)** ✅ Shipped `e31e1a8`.
   - Blocks: nothing strictly (17.6 ships even with stub fetchers, but the loop is only honest once 17.7 runs). Blocked by: 17.0, 17.1 (the ApifyAdapter from 17.1 is the foundation this extends). Independent of 17.3-17.6.
   - **Premise:** every native social-platform API requires an approval flow before it produces metrics: LinkedIn Marketing Developer Platform takes weeks (often rejected the first round); Facebook + Instagram App Review is the same flavor; YouTube needs OAuth verification; Reddit needs an app approval; Twitter v2 needs OAuth + elevated access. The user is starting from zero content and zero existing OAuth setups, so the cost of going native is "wait a week and beg every platform" before any metrics flow at all. Apify costs cents per scrape, runs through the credential we already have (`APIFY_TOKEN` from 17.1), and ships today. The trade-off is acknowledged: per-call cost vs. zero approval friction. At current volume (zero content) the cost is negligible; revisit if a product reaches volume where Apify spend dominates the metrics budget.
 
