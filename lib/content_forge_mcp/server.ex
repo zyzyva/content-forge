@@ -198,20 +198,43 @@ defmodule ContentForgeMCP.Server do
 
   # --- dispatch -------------------------------------------------------------
 
+  # Phase 16.5: every MCP tool call routes through the audit
+  # wrapper so the dashboard + REST surface see every invocation
+  # (channel = "mcp"). The per-tool dispatch lives in
+  # `call_tool/2`; the @impl callback only times the call and
+  # writes the audit row.
   @impl true
-  def handle_tool_call("cf_create_product", args), do: cf_create_product(args)
-  def handle_tool_call("cf_list_products", _args), do: cf_list_products()
-  def handle_tool_call("cf_add_competitor", args), do: cf_add_competitor(args)
-  def handle_tool_call("cf_list_competitors", args), do: cf_list_competitors(args)
-  def handle_tool_call("cf_scrape_competitor", args), do: cf_scrape_competitor(args)
-  def handle_tool_call("cf_top_posts_for_synthesis", args), do: cf_top_posts_for_synthesis(args)
-  def handle_tool_call("cf_store_intel", args), do: cf_store_intel(args)
-  def handle_tool_call("cf_get_intel", args), do: cf_get_intel(args)
-  def handle_tool_call("cf_list_pending_syntheses", args), do: cf_list_pending_syntheses(args)
-  def handle_tool_call("cf_import_twitter_sqlite", args), do: cf_import_twitter_sqlite(args)
-  def handle_tool_call("cf_recent_scoreboard", args), do: cf_recent_scoreboard(args)
+  def handle_tool_call(name, args) do
+    audit_ctx = %{channel: "mcp"}
+    started_at = System.monotonic_time(:millisecond)
+    invoked_at = DateTime.utc_now()
+    args_map = if is_map(args), do: args, else: %{}
 
-  def handle_tool_call(name, _args),
+    result = call_tool(name, args)
+    duration_ms = System.monotonic_time(:millisecond) - started_at
+
+    _ =
+      ContentForge.ToolAudit.log_invocation(name, audit_ctx, args_map, result, %{
+        duration_ms: duration_ms,
+        invoked_at: invoked_at
+      })
+
+    result
+  end
+
+  defp call_tool("cf_create_product", args), do: cf_create_product(args)
+  defp call_tool("cf_list_products", _args), do: cf_list_products()
+  defp call_tool("cf_add_competitor", args), do: cf_add_competitor(args)
+  defp call_tool("cf_list_competitors", args), do: cf_list_competitors(args)
+  defp call_tool("cf_scrape_competitor", args), do: cf_scrape_competitor(args)
+  defp call_tool("cf_top_posts_for_synthesis", args), do: cf_top_posts_for_synthesis(args)
+  defp call_tool("cf_store_intel", args), do: cf_store_intel(args)
+  defp call_tool("cf_get_intel", args), do: cf_get_intel(args)
+  defp call_tool("cf_list_pending_syntheses", args), do: cf_list_pending_syntheses(args)
+  defp call_tool("cf_import_twitter_sqlite", args), do: cf_import_twitter_sqlite(args)
+  defp call_tool("cf_recent_scoreboard", args), do: cf_recent_scoreboard(args)
+
+  defp call_tool(name, _args),
     do: error("not_found", "Unknown tool: #{name}")
 
   # --- cf_create_product ----------------------------------------------------

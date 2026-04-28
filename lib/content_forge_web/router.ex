@@ -61,6 +61,7 @@ defmodule ContentForgeWeb.Router do
     live "/dashboard/clips", Live.Dashboard.Clips.QueueLive, :index
     live "/dashboard/sms", Live.Dashboard.Sms.NeedsAttentionLive, :index
     live "/dashboard/providers", Live.Dashboard.Providers.StatusLive, :index
+    live "/dashboard/tool-activity", Live.Dashboard.ToolActivity.Live, :index
   end
 
   scope "/api/v1", ContentForgeWeb do
@@ -101,6 +102,9 @@ defmodule ContentForgeWeb.Router do
       get "/metrics", MetricsController, :metrics
       get "/hot", MetricsController, :hot
       get "/needs-reply", MetricsController, :needs_reply
+
+      # Phase 16.5 unified tool-invocation audit
+      get "/tool-activity", ToolActivityController, :index
     end
 
     # Video retention and clip endpoints
