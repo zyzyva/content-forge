@@ -1,23 +1,32 @@
 defmodule ContentForgeWeb.Live.Dashboard.Sms.NeedsAttentionLive do
   @moduledoc """
-  Operator dashboard for SMS conversations that need human attention.
+  Operator dashboard for conversations that need human attention.
+
+  Phase 16.6 made this page channel-agnostic: the **Escalated**
+  section now sources from `ContentForge.Escalations.list_open/1`
+  so it lists open escalations regardless of channel (SMS,
+  OpenClaw CLI, OpenClaw SMS, MCP). The 14.5 SMS-specific
+  resolve behavior (clearing `escalated_at` + unpausing
+  auto-response) is preserved: when the operator resolves a
+  `channel: "sms"` row, the LiveView marks the
+  `EscalationEvent` resolved AND unpauses the underlying
+  `ConversationSession`.
 
   Two sections:
 
-    * **Escalated** - sessions with a non-nil `escalated_at`. These
-      were marked by `ContentForge.Sms.escalate_session/3` (either by
-      an operator action or, in the future, by OpenClaw's confidence
-      gate). Each row shows the product name, phone number, last
-      inbound body, escalation reason, and escalated-at timestamp,
-      plus a "Mark resolved" button that calls
-      `ContentForge.Sms.resolve_session/1`.
-    * **High volume / needs reply** - sessions with >= 10 inbound
-      messages in the last 24h and no outbound reply in that same
-      window. Excludes already-escalated sessions so a single
-      conversation never double-renders.
+    * **Escalated** - open `EscalationEvent` rows across every
+      channel. Each row shows the product, channel, sender
+      identity (hashed for phone-shaped senders), reason
+      snippet, and escalated-at timestamp, plus a "Mark
+      resolved" button.
+    * **High volume / needs reply** - SMS-only. Sessions with
+      >= 10 inbound messages in the last 24h and no outbound
+      reply. Unchanged from 14.5.
   """
   use ContentForgeWeb, :live_view
 
+  alias ContentForge.Escalations
+  alias ContentForge.Escalations.EscalationEvent
   alias ContentForge.Products
   alias ContentForge.Repo
   alias ContentForge.Sms
@@ -32,23 +41,33 @@ defmodule ContentForgeWeb.Live.Dashboard.Sms.NeedsAttentionLive do
   end
 
   @impl true
-  def handle_event("resolve", %{"session-id" => id}, socket) do
-    case Repo.get(ConversationSession, id) do
+  def handle_event("resolve", %{"escalation-id" => id}, socket) do
+    case Escalations.get(id) do
       nil ->
-        {:noreply, put_flash(socket, :error, "Session not found")}
+        {:noreply, put_flash(socket, :error, "Escalation not found")}
 
-      session ->
-        {:ok, _} = Sms.resolve_session(session)
+      %EscalationEvent{} = event ->
+        {:ok, resolved} = Escalations.mark_resolved(event, "dashboard-operator")
+        _ = maybe_resume_sms_session(resolved)
 
         {:noreply,
          socket
-         |> put_flash(:info, "Session resolved - auto-response resumed")
+         |> put_flash(:info, "Escalation resolved")
          |> refresh()}
     end
   end
 
+  defp maybe_resume_sms_session(%EscalationEvent{channel: "sms", session_id: session_id}) do
+    case Repo.get(ConversationSession, session_id) do
+      nil -> :ok
+      %ConversationSession{} = session -> Sms.resolve_session(session)
+    end
+  end
+
+  defp maybe_resume_sms_session(_), do: :ok
+
   defp refresh(socket) do
-    escalated = Sms.list_escalated_sessions()
+    escalations = Escalations.list_open([])
 
     high_volume =
       Sms.list_high_volume_sessions(
@@ -56,16 +75,16 @@ defmodule ContentForgeWeb.Live.Dashboard.Sms.NeedsAttentionLive do
         seconds: @high_volume_window_seconds
       )
 
-    ids =
-      (escalated ++ high_volume)
-      |> Enum.map(& &1.product_id)
+    product_ids =
+      (Enum.map(escalations, & &1.product_id) ++ Enum.map(high_volume, & &1.product_id))
+      |> Enum.reject(&is_nil/1)
       |> Enum.uniq()
 
-    product_map = load_product_map(ids)
-    last_inbound_map = build_last_inbound_map(escalated ++ high_volume)
+    product_map = load_product_map(product_ids)
+    last_inbound_map = build_last_inbound_map(high_volume)
 
     assign(socket,
-      escalated_sessions: escalated,
+      escalations: escalations,
       high_volume_sessions: high_volume,
       product_map: product_map,
       last_inbound_map: last_inbound_map
@@ -103,63 +122,64 @@ defmodule ContentForgeWeb.Live.Dashboard.Sms.NeedsAttentionLive do
     ~H"""
     <main id="main-content" aria-labelledby="page-title" class="space-y-6">
       <header>
-        <h1 id="page-title" class="text-2xl font-bold">SMS - Needs Attention</h1>
+        <h1 id="page-title" class="text-2xl font-bold">Needs Attention</h1>
         <p class="text-base-content/70">
-          Conversations awaiting a human response.
+          Open escalations across every channel, plus the SMS high-volume queue.
         </p>
       </header>
 
       <section aria-labelledby="escalated-heading" class="card bg-base-200">
         <div class="card-body">
           <h2 id="escalated-heading" class="card-title">
-            Escalated ({length(@escalated_sessions)})
+            Escalated ({length(@escalations)})
           </h2>
 
           <p
-            :if={@escalated_sessions == []}
+            :if={@escalations == []}
             class="text-center py-8 text-base-content/70"
             role="status"
           >
-            No escalated sessions
+            No open escalations
           </p>
 
-          <div :if={@escalated_sessions != []} class="overflow-x-auto">
+          <div :if={@escalations != []} class="overflow-x-auto">
             <table class="table table-sm">
               <thead>
                 <tr>
                   <th scope="col">Product</th>
-                  <th scope="col">Phone</th>
-                  <th scope="col">Last inbound</th>
+                  <th scope="col">Channel</th>
+                  <th scope="col">Sender</th>
                   <th scope="col">Reason</th>
+                  <th scope="col">Urgency</th>
                   <th scope="col">Escalated</th>
                   <th scope="col"><span class="sr-only">Actions</span></th>
                 </tr>
               </thead>
               <tbody>
                 <tr
-                  :for={session <- @escalated_sessions}
-                  id={"escalated-session-#{session.id}"}
-                  data-escalated-session={session.id}
+                  :for={event <- @escalations}
+                  id={"escalation-#{event.id}"}
+                  data-escalation-id={event.id}
                 >
-                  <td>{product_name(@product_map, session.product_id)}</td>
-                  <td class="font-mono text-xs">{session.phone_number}</td>
-                  <td class="max-w-xs truncate">
-                    {Map.get(@last_inbound_map, session.id, "")}
+                  <td>{product_name(@product_map, event.product_id)}</td>
+                  <td class="text-xs">{event.channel}</td>
+                  <td class="font-mono text-xs max-w-xs truncate">
+                    {event.sender_identity || "-"}
                   </td>
-                  <td class="max-w-xs truncate">{session.escalation_reason}</td>
-                  <td class="text-xs whitespace-nowrap">
-                    {format_ts(session.escalated_at)}
+                  <td class="max-w-xs truncate">{event.reason}</td>
+                  <td>
+                    <span class={urgency_class(event.urgency)}>{event.urgency}</span>
                   </td>
+                  <td class="text-xs whitespace-nowrap">{format_ts(event.inserted_at)}</td>
                   <td>
                     <button
                       type="button"
                       class="btn btn-sm btn-primary"
                       phx-click="resolve"
-                      phx-value-session-id={session.id}
+                      phx-value-escalation-id={event.id}
                       aria-label={
-                        "Mark escalated session for " <>
-                          product_name(@product_map, session.product_id) <>
-                          " at " <> session.phone_number <> " resolved"
+                        "Mark escalation on " <>
+                          product_name(@product_map, event.product_id) <> " resolved"
                       }
                     >
                       Mark resolved
@@ -237,4 +257,9 @@ defmodule ContentForgeWeb.Live.Dashboard.Sms.NeedsAttentionLive do
     |> DateTime.truncate(:second)
     |> DateTime.to_iso8601()
   end
+
+  defp urgency_class("high"), do: "badge badge-error"
+  defp urgency_class("normal"), do: "badge badge-warning"
+  defp urgency_class("low"), do: "badge badge-ghost"
+  defp urgency_class(_), do: "badge"
 end

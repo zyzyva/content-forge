@@ -38,7 +38,7 @@ defmodule ContentForge.ToolAudit.ToolInvocationEvent do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
-  @result_statuses ~w(ok error confirmation_required unknown_tool)
+  @result_statuses ~w(ok error confirmation_required unknown_tool blocked_escalated)
 
   schema "tool_invocation_events" do
     field :tool_name, :string

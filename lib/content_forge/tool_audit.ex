@@ -126,11 +126,20 @@ defmodule ContentForge.ToolAudit do
     do: {"confirmation_required", nil}
 
   def normalize_result({:error, :unknown_tool}), do: {"unknown_tool", "unknown_tool"}
+
+  # Phase 16.6: dispatcher-blocked calls on an escalated session
+  # land in their own audit status so operators can distinguish a
+  # genuine tool error from a "blocked while session is awaiting
+  # a human" no-op.
+  def normalize_result({:error, {:escalated, _details}}), do: {"blocked_escalated", "escalated"}
+  def normalize_result({:error, :escalated}), do: {"blocked_escalated", "escalated"}
+
   def normalize_result({:error, atom}) when is_atom(atom), do: {"error", Atom.to_string(atom)}
 
   def normalize_result({:error, {tag, _details}}) when is_atom(tag),
     do: {"error", Atom.to_string(tag)}
 
+  def normalize_result({:error, %{code: "escalated"}}), do: {"blocked_escalated", "escalated"}
   def normalize_result({:error, %{code: code}}) when is_binary(code), do: {"error", code}
   def normalize_result({:error, %{code: code}}) when is_atom(code), do: {"error", to_string(code)}
   def normalize_result({:error, _other}), do: {"error", "unknown_error"}

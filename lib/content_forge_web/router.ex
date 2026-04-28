@@ -121,6 +121,9 @@ defmodule ContentForgeWeb.Router do
     post "/drafts/:id/approve_override", DraftController, :approve_override
     post "/drafts/:id/reject", DraftController, :reject
     post "/drafts/:id/score", DraftController, :score
+
+    # Phase 16.6 escalation resolve
+    post "/escalations/:id/resolve", EscalationController, :resolve
   end
 
   scope "/api/v1/openclaw", ContentForgeWeb do

@@ -272,11 +272,38 @@ defmodule ContentForge.Sms do
             body: escalation_audit_body(reason, notify_channels)
           })
 
+        # Phase 16.6: write a generic EscalationEvent so the
+        # cross-channel dispatcher hook short-circuits any
+        # subsequent OpenClaw / MCP tool call on this same
+        # session until a human resolves it. The 14.5
+        # SMS-specific behavior (paused auto-response, SmsEvent
+        # row, 14.5 dashboard) above is preserved.
+        _ =
+          ContentForge.Escalations.create_or_update_open(%{
+            product_id: row.product_id,
+            session_id: row.id,
+            channel: "sms",
+            sender_identity: row.phone_number,
+            reason: reason,
+            urgency: "normal",
+            holding_reply: holding_reply()
+          })
+
         ok
 
       err ->
         err
     end
+  end
+
+  defp holding_reply do
+    Application.get_env(:content_forge, :escalations, [])
+    |> Keyword.get(:holding_reply, default_holding_reply())
+  end
+
+  defp default_holding_reply do
+    "Thanks - I have flagged this for the team and someone will follow up shortly. " <>
+      "You can keep messaging here in the meantime."
   end
 
   defp escalation_audit_body(reason, []), do: "escalated: #{reason}"
