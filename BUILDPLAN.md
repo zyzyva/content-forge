@@ -715,7 +715,7 @@ Phase exit criteria: a marketer can text a photo in, get it tagged into a produc
   - API: `GET /api/v1/products/:id/tool-activity` mirrors the dashboard for external inspection.
   - Tests: every shipped tool has an audit row after invocation; hashing of PII-bearing params; the LiveView filters correctly; the API matches the dashboard.
 
-- **16.6 Escalate-to-human as a tool** (promoted from the old 14.5 escalation primitive)
+- **16.6 Escalate-to-human as a tool** ✅ Shipped `be2d068`. (promoted from the old 14.5 escalation primitive)
   - Blocks: nothing remaining in Phase 16. Blocked by: 16.1 (tool surface), 16.5 (audit; this slice writes through it). Independent of any Phase 17 work.
   - Wire `escalate_to_human` as a first-class tool the agent self-invokes on ambiguity, cost / pricing discussions, or complaints. Generalizes the SMS-scoped `Sms.escalate_session/3` primitive from 14.5 so any channel (SMS, CLI, future Telegram) can escalate, and so a single dispatcher hook can short-circuit subsequent tool calls on an escalated session until a human resolves it.
 
