@@ -13,6 +13,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
   alias ContentForge.ProductAssets.AssetBundle
   alias ContentForge.ProductAssets.ProductAsset
   alias ContentForge.Products
+  alias ContentForge.Products.BlogWebhook
   alias ContentForge.Publishing
   alias ContentForgeWeb.Live.Dashboard.Components
 
@@ -41,6 +42,7 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
     published_posts = Publishing.list_published_posts(product_id: product_id, limit: 10)
     assets = ProductAssets.list_assets(product_id)
     bundles = list_bundles_with_assets(product_id)
+    webhooks = Products.list_blog_webhooks_for_product(product_id)
 
     if connected?(socket) do
       ProductAssets.subscribe(product_id)
@@ -66,6 +68,9 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
        picker_media_filter: "",
        generating_bundle_ids: MapSet.new(),
        bundle_generation_error: nil,
+       webhooks: webhooks,
+       webhook_form: to_webhook_form(%BlogWebhook{}, %{}),
+       editing_webhook_id: nil,
        active_tab: "overview"
      )
      |> allow_upload(:assets,
@@ -132,6 +137,80 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
     # Refresh synchronously so this session sees the change immediately;
     # the PubSub broadcast from add_tag/2 keeps other subscribers in sync.
     {:noreply, socket |> refresh_assets() |> refresh_asset_catalog()}
+  end
+
+  # --- webhook events ------------------------------------------------------
+
+  @impl true
+  def handle_event("create_webhook", %{"webhook" => params}, socket) do
+    attrs = Map.put(params, "product_id", socket.assigns.product.id)
+
+    case Products.create_blog_webhook(attrs) do
+      {:ok, _webhook} ->
+        {:noreply,
+         socket
+         |> assign(webhooks: Products.list_blog_webhooks_for_product(socket.assigns.product.id))
+         |> assign(webhook_form: to_webhook_form(%BlogWebhook{}, %{}))}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, webhook_form: to_form(changeset, as: :webhook))}
+    end
+  end
+
+  @impl true
+  def handle_event("edit_webhook", %{"webhook-id" => id}, socket) do
+    webhook = Products.get_blog_webhook!(id)
+    {:noreply,
+     socket
+     |> assign(editing_webhook_id: id)
+     |> assign(webhook_form: to_webhook_form(webhook, %{}))}
+  end
+
+  @impl true
+  def handle_event("cancel_webhook_edit", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(editing_webhook_id: nil)
+     |> assign(webhook_form: to_webhook_form(%BlogWebhook{}, %{}))}
+  end
+
+  @impl true
+  def handle_event("update_webhook", %{"webhook" => params}, socket) do
+    webhook = Products.get_blog_webhook!(socket.assigns.editing_webhook_id)
+
+    case Products.update_blog_webhook(webhook, params) do
+      {:ok, _webhook} ->
+        {:noreply,
+         socket
+         |> assign(webhooks: Products.list_blog_webhooks_for_product(socket.assigns.product.id))
+         |> assign(editing_webhook_id: nil)
+         |> assign(webhook_form: to_webhook_form(%BlogWebhook{}, %{}))}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, webhook_form: to_form(changeset, as: :webhook))}
+    end
+  end
+
+  @impl true
+  def handle_event("delete_webhook", %{"webhook-id" => id}, socket) do
+    webhook = Products.get_blog_webhook!(id)
+    {:ok, _} = Products.delete_blog_webhook(webhook)
+
+    {:noreply,
+     socket
+     |> assign(webhooks: Products.list_blog_webhooks_for_product(socket.assigns.product.id))
+     |> assign(editing_webhook_id: nil)
+     |> assign(webhook_form: to_webhook_form(%BlogWebhook{}, %{}))}
+  end
+
+  @impl true
+  def handle_event("toggle_webhook_active", %{"webhook-id" => id}, socket) do
+    webhook = Products.get_blog_webhook!(id)
+    {:ok, _} = Products.update_blog_webhook(webhook, %{"active" => !webhook.active})
+
+    {:noreply,
+     socket
+     |> assign(webhooks: Products.list_blog_webhooks_for_product(socket.assigns.product.id))}
   end
 
   @impl true
@@ -393,6 +472,9 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
 
   defp to_bundle_form(bundle, attrs),
     do: bundle |> AssetBundle.changeset(attrs) |> to_form(as: :bundle)
+
+  defp to_webhook_form(webhook, attrs),
+    do: webhook |> BlogWebhook.changeset(attrs) |> to_form(as: :webhook)
 
   # Shifts `asset_id` one slot earlier or later in `ids`. No-op if the
   # asset is already at the edge or not present in the list.
@@ -1232,8 +1314,300 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
           </div>
         </div>
       </div>
-    </main>
-    """
+
+    <!-- Webhooks Tab -->
+    <div :if={@active_tab == "webhooks"} class="space-y-4">
+      <div class="card bg-base-200">
+        <div class="card-body">
+          <h2 class="card-title">Blog Webhooks</h2>
+          <p class="text-sm text-base-content/70">
+            Configure where approved blog drafts get published. Each webhook can target a
+            different CMS (WordPress or generic). The receiver URL is the endpoint hosted
+            by the client; CMS credentials are passed securely via the webhook payload.
+          </p>
+
+          <.form
+            :let={f}
+            for={@webhook_form}
+            as={:webhook}
+            phx-submit={if @editing_webhook_id, do: "update_webhook", else: "create_webhook"}
+            class="space-y-4"
+          >
+            <input type="hidden" name="webhook[product_id]" value={@product.id} />
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <label class="form-control w-full">
+                <span class="label-text">Receiver URL</span>
+                <input
+                  type="url"
+                  name={f[:url].name}
+                  value={Phoenix.HTML.Form.normalize_value("url", f[:url].value)}
+                  placeholder="https://client-site.com/api/webhook"
+                  class="input input-bordered w-full"
+                />
+                <span :for={msg <- Enum.map(f[:url].errors, &translate_error/1)} class="text-xs text-error mt-1">
+                  {msg}
+                </span>
+              </label>
+
+              <label class="form-control w-full">
+                <span class="label-text">HMAC Secret (optional, for signing)</span>
+                <input
+                  type="password"
+                  name={f[:hmac_secret].name}
+                  value={Phoenix.HTML.Form.normalize_value("text", f[:hmac_secret].value)}
+                  placeholder="Leave blank for unsigned requests"
+                  class="input input-bordered w-full"
+                  autocomplete="off"
+                />
+              </label>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <label class="form-control w-full">
+                <span class="label-text">Platform</span>
+                <select
+                  name={f[:platform].name}
+                  class="select select-bordered w-full"
+                  aria-label="CMS platform"
+                >
+                  <option value="generic" selected={f[:platform].value == "generic"}>
+                    Generic Webhook
+                  </option>
+                  <option value="wordpress" selected={f[:platform].value == "wordpress"}>
+                    WordPress
+                  </option>
+                </select>
+              </label>
+
+              <label class="form-control w-full">
+                <span class="label-text">Active</span>
+                <input
+                  type="checkbox"
+                  name={f[:active].name}
+                  value="true"
+                  checked={f[:active].value == true || f[:active].value == "true"}
+                  class="toggle toggle-primary"
+                  aria-label="Active"
+                />
+              </label>
+            </div>
+
+            <!-- WordPress fields -->
+            <div
+              :if={f[:platform].value == "wordpress"}
+              id="wordpress-fields"
+              class="border border-base-300 rounded-lg p-4 space-y-3"
+            >
+              <p class="text-sm font-semibold">WordPress Settings</p>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <label class="form-control w-full">
+                  <span class="label-text">WordPress Site URL</span>
+                  <input
+                    type="url"
+                    name={f[:wp_site_url].name}
+                    value={Phoenix.HTML.Form.normalize_value("url", f[:wp_site_url].value)}
+                    placeholder="https://client-site.com"
+                    class="input input-bordered w-full"
+                  />
+                  <span :for={msg <- Enum.map(f[:wp_site_url].errors, &translate_error/1)} class="text-xs text-error mt-1">
+                    {msg}
+                  </span>
+                </label>
+
+                <label class="form-control w-full">
+                  <span class="label-text">WordPress Username</span>
+                  <input
+                    type="text"
+                    name={f[:wp_username].name}
+                    value={Phoenix.HTML.Form.normalize_value("text", f[:wp_username].value)}
+                    placeholder="admin"
+                    class="input input-bordered w-full"
+                  />
+                  <span :for={msg <- Enum.map(f[:wp_username].errors, &translate_error/1)} class="text-xs text-error mt-1">
+                    {msg}
+                  </span>
+                </label>
+
+                <label class="form-control w-full md:col-span-2">
+                  <span class="label-text">WordPress Application Password</span>
+                  <input
+                    type="password"
+                    name={f[:wp_app_password].name}
+                    value={Phoenix.HTML.Form.normalize_value("text", f[:wp_app_password].value)}
+                    placeholder="xxxx xxxx xxxx xxxx"
+                    class="input input-bordered w-full"
+                    autocomplete="new-password"
+                  />
+                  <span class="label-text-alt">
+                    Generate in WP Admin → Users → Application Passwords
+                  </span>
+                  <span :for={msg <- Enum.map(f[:wp_app_password].errors, &translate_error/1)} class="text-xs text-error mt-1">
+                    {msg}
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            <!-- Generic webhook auth fields -->
+            <div
+              :if={f[:platform].value == "generic"}
+              id="generic-fields"
+              class="border border-base-300 rounded-lg p-4 space-y-3"
+            >
+              <p class="text-sm font-semibold">Generic Webhook Auth (optional)</p>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <label class="form-control w-full">
+                  <span class="label-text">Auth Type</span>
+                  <select
+                    name={f[:generic_auth_type].name}
+                    class="select select-bordered w-full"
+                    aria-label="Auth type"
+                  >
+                    <option value="none" selected={f[:generic_auth_type].value == "none" || f[:generic_auth_type].value == nil}>
+                      None
+                    </option>
+                    <option value="bearer" selected={f[:generic_auth_type].value == "bearer"}>
+                      Bearer Token
+                    </option>
+                    <option value="basic" selected={f[:generic_auth_type].value == "basic"}>
+                      Basic Auth
+                    </option>
+                  </select>
+                </label>
+
+                <label :if={f[:generic_auth_type].value == "bearer"} class="form-control w-full">
+                  <span class="label-text">Bearer Token</span>
+                  <input
+                    type="password"
+                    name={f[:generic_bearer_token].name}
+                    value={Phoenix.HTML.Form.normalize_value("text", f[:generic_bearer_token].value)}
+                    placeholder="your-api-token"
+                    class="input input-bordered w-full"
+                    autocomplete="new-password"
+                  />
+                </label>
+
+                <label :if={f[:generic_auth_type].value == "basic"} class="form-control w-full">
+                  <span class="label-text">Username</span>
+                  <input
+                    type="text"
+                    name={f[:generic_basic_username].name}
+                    value={Phoenix.HTML.Form.normalize_value("text", f[:generic_basic_username].value)}
+                    placeholder="username"
+                    class="input input-bordered w-full"
+                  />
+                </label>
+
+                <label :if={f[:generic_auth_type].value == "basic"} class="form-control w-full">
+                  <span class="label-text">Password</span>
+                  <input
+                    type="password"
+                    name={f[:generic_basic_password].name}
+                    value={Phoenix.HTML.Form.normalize_value("text", f[:generic_basic_password].value)}
+                    placeholder="password"
+                    class="input input-bordered w-full"
+                    autocomplete="new-password"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div class="flex gap-2">
+              <button type="submit" class="btn btn-primary">
+                {if @editing_webhook_id, do: "Update Webhook", else: "Add Webhook"}
+              </button>
+              <button
+                :if={@editing_webhook_id}
+                type="button"
+                class="btn btn-ghost"
+                phx-click="cancel_webhook_edit"
+              >
+                Cancel
+              </button>
+            </div>
+          </.form>
+        </div>
+      </div>
+
+      <div :if={@webhooks == []} class="text-center py-8 text-base-content/70">
+        No webhooks configured yet
+      </div>
+
+      <div :if={@webhooks != []} class="card bg-base-200">
+        <div class="card-body">
+          <h3 class="card-title text-lg">Configured Webhooks</h3>
+          <div class="overflow-x-auto">
+            <table class="table table-sm">
+              <thead>
+                <tr>
+                  <th>Active</th>
+                  <th>Platform</th>
+                  <th>Receiver URL</th>
+                  <th>HMAC</th>
+                  <th>Created</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr :for={webhook <- @webhooks} class={if not webhook.active, do: "opacity-50"}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      class="toggle toggle-sm toggle-success"
+                      checked={webhook.active}
+                      phx-click="toggle_webhook_active"
+                      phx-value-webhook-id={webhook.id}
+                      aria-label={"Toggle #{webhook.url} active"}
+                    />
+                  </td>
+                  <td>
+                    <span class="badge badge-sm">
+                      {BlogWebhook.platform_name(webhook.platform)}
+                    </span>
+                  </td>
+                  <td class="max-w-xs truncate" title={webhook.url}>
+                    {webhook.url}
+                  </td>
+                  <td>
+                    <span :if={webhook.hmac_secret && webhook.hmac_secret != ""} class="badge badge-sm badge-success">
+                      Yes
+                    </span>
+                    <span :if={!webhook.hmac_secret || webhook.hmac_secret == ""} class="badge badge-sm badge-ghost">
+                      No
+                    </span>
+                  </td>
+                  <td>{Components.format_datetime(webhook.inserted_at)}</td>
+                  <td>
+                    <div class="flex gap-1">
+                      <button
+                        type="button"
+                        class="btn btn-ghost btn-xs"
+                        phx-click="edit_webhook"
+                        phx-value-webhook-id={webhook.id}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        class="btn btn-ghost btn-xs text-error"
+                        phx-click="delete_webhook"
+                        phx-value-webhook-id={webhook.id}
+                        data-confirm={"Delete this webhook?"}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+  """
   end
 
   defp translate_bundle_error({msg, _opts}), do: msg
@@ -1277,7 +1651,8 @@ defmodule ContentForgeWeb.Live.Dashboard.Products.DetailLive do
       {"drafts", "Drafts"},
       {"history", "History"},
       {"assets", "Assets"},
-      {"bundles", "Bundles"}
+      {"bundles", "Bundles"},
+      {"webhooks", "Webhooks"}
     ]
   end
 end

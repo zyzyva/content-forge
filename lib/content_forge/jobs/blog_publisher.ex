@@ -7,6 +7,7 @@ defmodule ContentForge.Jobs.BlogPublisher do
   use Oban.Worker, max_attempts: 3
 
   alias ContentForge.{Products, Publishing, Storage}
+  alias ContentForge.Products.BlogWebhook
   alias ContentForge.ContentGeneration
 
   require Logger
@@ -84,20 +85,38 @@ defmodule ContentForge.Jobs.BlogPublisher do
   defp deliver_to_webhooks(draft, product, webhooks, r2_url) do
     product_slug = get_product_slug(product)
 
-    payload = %{
-      title: get_draft_title(draft),
-      content: draft.content,
-      r2_url: r2_url,
-      product_slug: product_slug,
-      timestamp: DateTime.utc_now() |> DateTime.to_iso8601()
-    }
-
     # Deliver to each webhook
     Enum.each(webhooks, fn webhook ->
+      payload = build_payload(draft, product_slug, r2_url, webhook)
       deliver_to_single_webhook(draft, product, webhook, payload)
     end)
 
     :ok
+  end
+
+  defp build_payload(draft, product_slug, r2_url, webhook) do
+    timestamp = DateTime.utc_now() |> DateTime.to_iso8601()
+
+    # Build CMS metadata from webhook
+    cms_meta = BlogWebhook.cms_metadata(webhook)
+
+    # Legacy payload format (no platform = backward compat)
+    # New format: include platform + CMS credentials in metadata
+    payload = %{
+      title: get_draft_title(draft),
+      r2_url: r2_url,
+      product_slug: product_slug,
+      timestamp: timestamp
+    }
+
+    # If this webhook has CMS credentials, include metadata block.
+    # The receiver will fetch markdown from R2 using r2_url.
+    # For legacy webhooks (no platform set), include content inline.
+    if map_size(cms_meta) > 0 do
+      Map.put(payload, :metadata, cms_meta)
+    else
+      Map.put(payload, :content, draft.content)
+    end
   end
 
   defp get_draft_title(draft) do
