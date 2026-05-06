@@ -17,7 +17,5 @@ defmodule ContentForge.Repo.Migrations.AddCmsFieldsToBlogWebhooks do
       add :generic_basic_username, :string
       add :generic_basic_password, :string
     end
-
-
   end
 end

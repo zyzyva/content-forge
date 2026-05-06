@@ -1,4 +1,32 @@
 defmodule ContentForge.Products.BlogWebhook do
+  @moduledoc """
+  Per-product blog publishing webhook.
+
+  Carries the receiver URL + HMAC secret + the platform-specific
+  credentials needed for the receiver to fan out to a CMS
+  (WordPress + Generic today; the receiver dropped Ghost in
+  feature/cms-handlers).
+
+  ## Note on credentials (plaintext at rest)
+
+  As of this commit, `wp_app_password` and `generic_bearer_token`
+  / `generic_basic_password` are stored in the database **as
+  plaintext**. The same is intended for `ghost_admin_api_key`
+  if/when Ghost lands again. Operators with database access can
+  read them.
+
+  This is acceptable for a single-operator, runway-stage
+  deployment but is documented here as an explicit known gap.
+  Encryption at rest (Cloak.Ecto or equivalent vault-keyed
+  field encryption) is a tracked follow-up; until that lands,
+  treat these columns the same way you would treat any secrets
+  table - restrict DB access, do not export to logs / backups
+  unredacted, and rotate any value that ever leaks.
+
+  The `BlogPublisher` job already handles in-flight redaction
+  for log lines, but at-rest exposure is the unhandled half.
+  """
+
   use Ecto.Schema
   import Ecto.Changeset
 
@@ -54,17 +82,25 @@ defmodule ContentForge.Products.BlogWebhook do
     |> maybe_validate_wordpress()
   end
 
+  # `get_field/2` (not `get_change/2`) so the WordPress-required
+  # validations still run on UPDATE when `:platform` is unchanged.
+  # An UPDATE that casts `%{wp_site_url: nil}` against an existing
+  # WordPress row must fail validation; with `get_change/2` the
+  # platform key was nil-on-update and the entire branch
+  # short-circuited, letting the caller blank out a required field.
   defp maybe_validate_wordpress(changeset) do
-    if get_change(changeset, :platform) == "wordpress" do
-      changeset
-      |> validate_required([:wp_site_url, :wp_username, :wp_app_password],
-        message: "required for WordPress platform"
-      )
-      |> validate_format(:wp_site_url, ~r/^https?:\/\/.*$/, message: "must be a valid URL")
-    else
-      changeset
-    end
+    validate_for_platform(get_field(changeset, :platform), changeset)
   end
+
+  defp validate_for_platform("wordpress", changeset) do
+    changeset
+    |> validate_required([:wp_site_url, :wp_username, :wp_app_password],
+      message: "required for WordPress platform"
+    )
+    |> validate_format(:wp_site_url, ~r/^https?:\/\/.*$/, message: "must be a valid URL")
+  end
+
+  defp validate_for_platform(_other, changeset), do: changeset
 
   @doc """
   Returns the CMS metadata map for this webhook to include in the
