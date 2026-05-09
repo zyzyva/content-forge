@@ -36,6 +36,10 @@ defmodule ContentForgeMCP.Server do
       indication of whether the corrective trigger fired. Used
       to verify the corrective loop is closing without trawling
       the DB
+    * `cf_publish_text` - publish a text post to one or more platforms
+    * `cf_publish_video` - publish a completed VideoJob to platforms
+    * `cf_platform_status` - check OAuth connection status per platform
+    * `cf_list_published_posts` - list published posts for a product
 
   ## Error envelope
 
@@ -65,6 +69,8 @@ defmodule ContentForgeMCP.Server do
   alias ContentForge.Products.CompetitorPost
   alias ContentForge.Products.PendingIntelSynthesis
   alias ContentForge.Products.Product
+  alias ContentForge.Publishing
+  alias ContentForge.Publishing.VideoJob
   alias ContentForge.Repo
 
   @platforms ~w(twitter linkedin reddit facebook instagram youtube)
@@ -192,6 +198,41 @@ defmodule ContentForgeMCP.Server do
              description:
                "Cap on winners + losers returned per product (default 5, clamped to [1, 20])."}
         }
+      ),
+      SimpleMCP.Tool.new(
+        "cf_publish_text",
+        "Publish a text post to one or more social platforms for a product. Checks each platform for valid OAuth credentials before attempting.",
+        %{
+          product_id: {:required, :string, description: "Product UUID."},
+          text: {:required, :string, description: "Post body text."},
+          image_url: {:optional, :string, description: "Optional image URL (Twitter, Facebook, LinkedIn, Instagram only)."},
+          platforms: {:optional, :string, description: "JSON-encoded list of platforms (default: all connected). Options: twitter, linkedin, reddit, facebook, instagram."}
+        }
+      ),
+      SimpleMCP.Tool.new(
+        "cf_publish_video",
+        "Publish a completed VideoJob to one or more social platforms. The video must have finished encoding (final R2 key present). Downloads from R2, then uploads to each platform.",
+        %{
+          video_job_id: {:required, :string, description: "VideoJob UUID."},
+          platforms: {:optional, :string, description: "JSON-encoded list of platforms (default: all connected). Options: youtube, twitter, facebook, instagram, linkedin, reddit."},
+          product_id: {:optional, :string, description: "Product UUID (auto-derived from VideoJob if omitted)."}
+        }
+      ),
+      SimpleMCP.Tool.new(
+        "cf_platform_status",
+        "Check which social platforms have valid OAuth credentials configured for a product.",
+        %{
+          product_id: {:required, :string, description: "Product UUID."}
+        }
+      ),
+      SimpleMCP.Tool.new(
+        "cf_list_published_posts",
+        "List published posts for a product, optionally filtered by platform.",
+        %{
+          product_id: {:required, :string, description: "Product UUID."},
+          platform: {:optional, :string, description: "Filter by platform: twitter, linkedin, reddit, facebook, instagram, youtube."},
+          limit: {:optional, :integer, description: "Max results (default 50, max 200)."}
+        }
       )
     ]
   end
@@ -267,6 +308,10 @@ defmodule ContentForgeMCP.Server do
   defp call_tool("cf_list_pending_syntheses", args), do: cf_list_pending_syntheses(args)
   defp call_tool("cf_import_twitter_sqlite", args), do: cf_import_twitter_sqlite(args)
   defp call_tool("cf_recent_scoreboard", args), do: cf_recent_scoreboard(args)
+  defp call_tool("cf_publish_text", args), do: cf_publish_text(args)
+  defp call_tool("cf_publish_video", args), do: cf_publish_video(args)
+  defp call_tool("cf_platform_status", args), do: cf_platform_status(args)
+  defp call_tool("cf_list_published_posts", args), do: cf_list_published_posts(args)
 
   defp call_tool(name, _args),
     do: error("not_found", "Unknown tool: #{name}")
@@ -791,6 +836,151 @@ defmodule ContentForgeMCP.Server do
       )
     )
   end
+
+  # --- cf_publish_text ------------------------------------------------------
+
+  defp cf_publish_text(args) do
+    with {:ok, product_id} <- require_binary(args, "product_id"),
+         {:ok, product} <- fetch_product(product_id),
+         {:ok, text} <- require_binary(args, "text") do
+      image_url = binary_param(args, "image_url")
+      platforms = case parse_platforms(args, "platforms", Publishing.connected_platforms(product)) do
+        {:ok, p} -> p
+        _ -> Publishing.connected_platforms(product)
+      end
+      connected = Publishing.connected_platforms(product)
+      not_connected = platforms -- connected
+      if not_connected != [], do: Logger.info("cf_publish_text: platforms missing credentials: #{inspect(not_connected)}")
+
+      results = Publishing.publish_text(product, text, image_url, platforms)
+      serialized = results |> Enum.map(fn {platform, result} -> serialize_publish_result(platform, result) end) |> Map.new()
+
+      ok(%{
+        product_id: product_id,
+        text_preview: String.slice(text, 0, 80),
+        results: serialized,
+        total_attempted: map_size(serialized),
+        total_succeeded: Enum.count(serialized, fn {_, r} -> r[:status] == "success" end)
+      })
+    end
+  end
+
+  # --- cf_publish_video ------------------------------------------------------
+
+  defp cf_publish_video(args) do
+    with {:ok, video_job_id} <- require_binary(args, "video_job_id"),
+         {:ok, video_job} <- fetch_video_job(video_job_id),
+         {:ok, product} <- fetch_product(binary_param(args, "product_id") || video_job.product_id) do
+      platforms = case parse_platforms(args, "platforms", Publishing.connected_platforms(product)) do
+        {:ok, p} -> p
+        _ -> Publishing.connected_platforms(product)
+      end
+
+      results = Publishing.publish_video(video_job, platforms, product)
+      serialized = results |> Enum.map(fn {platform, result} -> serialize_publish_result(platform, result) end) |> Map.new()
+
+      # Update VideoJob with new published platforms
+      Enum.each(results, fn
+        {platform, {:ok, _}} -> Publishing.record_video_published(video_job, platform)
+        _ -> :ok
+      end)
+
+      ok(%{
+        video_job_id: video_job_id,
+        product_id: product.id,
+        results: serialized,
+        all_published_platforms: Enum.uniq(video_job.published_platforms ++ Enum.map(results, fn {p, {:ok, _}} -> p; _ -> nil end) |> Enum.reject(&is_nil/1)),
+        total_attempted: map_size(serialized),
+        total_succeeded: Enum.count(serialized, fn {_, r} -> r[:status] == "success" end)
+      })
+    end
+  end
+
+  # --- cf_platform_status ---------------------------------------------------
+
+  defp cf_platform_status(args) do
+    with {:ok, product_id} <- require_binary(args, "product_id"),
+         {:ok, product} <- fetch_product(product_id) do
+      status = Publishing.platform_status(product)
+      connected = Publishing.connected_platforms(product)
+
+      ok(%{
+        product_id: product_id,
+        connected_count: length(connected),
+        connected: connected,
+        platforms: status
+      })
+    end
+  end
+
+  # --- cf_list_published_posts ----------------------------------------------
+
+  defp cf_list_published_posts(args) do
+    with {:ok, product_id} <- require_binary(args, "product_id"),
+         {:ok, _product} <- fetch_product(product_id) do
+      opts =
+        []
+        |> maybe_put_platform(binary_param(args, "platform"))
+        |> maybe_put_limit(args["limit"] || args[:limit] || 50)
+
+      posts = Publishing.list_published_posts([{:product_id, product_id} | opts])
+
+      serialized = Enum.map(posts, &serialize_published_post/1)
+
+      ok(%{product_id: product_id, count: length(serialized), posts: serialized})
+    end
+  end
+
+  # ============================================
+  # Helpers
+  # ============================================
+
+  defp parse_platforms(args, key, default) do
+    case Map.get(args, key) do
+      list when is_list(list) -> {:ok, list}
+      json when is_binary(json) ->
+        case JSON.decode(json) do
+          {:ok, list} when is_list(list) -> {:ok, list}
+          _ -> {:ok, default}
+        end
+      nil -> {:ok, default}
+      _ -> {:ok, default}
+    end
+  end
+
+  defp serialize_publish_result(platform, {:ok, %{post_id: id, post_url: url}}) do
+    {platform, %{status: "success", post_id: id, post_url: url}}
+  end
+
+  defp serialize_publish_result(platform, {:error, reason}) do
+    {platform, %{status: "failed", error: reason}}
+  end
+
+  defp serialize_published_post(%Publishing.PublishedPost{} = post) do
+    %{
+      id: post.id,
+      platform: post.platform,
+      platform_post_id: post.platform_post_id,
+      platform_post_url: post.platform_post_url,
+      posted_at: iso8601(post.posted_at),
+      engagement_data: post.engagement_data
+    }
+  end
+
+  defp fetch_video_job(id) do
+    case Publishing.get_video_job(id) do
+      %VideoJob{} = job -> {:ok, job}
+      _ -> {:error, "VideoJob not found", %{video_job_id: id}}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, "Invalid VideoJob ID format", %{video_job_id: id}}
+  end
+
+  defp maybe_put_platform(opts, nil), do: opts
+  defp maybe_put_platform(opts, platform), do: [{:platform, platform} | opts]
+
+  defp maybe_put_limit(opts, n) when is_integer(n) and n > 0, do: [{:limit, min(n, 200)} | opts]
+  defp maybe_put_limit(opts, _), do: opts
 
   # --- product / competitor lookups -----------------------------------------
 

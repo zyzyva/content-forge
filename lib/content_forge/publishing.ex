@@ -171,6 +171,23 @@ defmodule ContentForge.Publishing do
   end
 
   # ============================================
+  # Publishing (multi-platform)
+  # ============================================
+
+  alias ContentForge.Publishing.MultiPlatform
+
+  def publish_text(product, text, image_url \\ nil, platforms \\ ~w(twitter linkedin reddit facebook instagram)) do
+    MultiPlatform.publish_text(product, text, image_url, platforms)
+  end
+
+  def publish_video(video_job, platforms \\ ~w(youtube twitter facebook instagram linkedin reddit), product) do
+    MultiPlatform.publish_video(video_job, platforms, product)
+  end
+
+  def connected_platforms(product), do: MultiPlatform.connected_platforms(product)
+  def platform_status(product), do: MultiPlatform.platform_status(product)
+
+  # ============================================
   # Video Jobs
   # ============================================
 
@@ -335,6 +352,26 @@ defmodule ContentForge.Publishing do
     |> where(status: "script_approved")
     |> where(feature_flag: true)
     |> Repo.all()
+  end
+
+  @doc """
+  Record that a VideoJob was published to a platform.
+  Called by MultiPlatform after each successful publish.
+  """
+  def record_video_published(%VideoJob{} = video_job, platform) do
+    video_job
+    |> VideoJob.publish_update(platform)
+    |> Repo.update()
+  end
+
+  @doc """
+  Get all published posts for a video job (via draft_id join).
+  """
+  def list_video_published_posts(video_job_id) when is_binary(video_job_id) do
+    case get_video_job(video_job_id) do
+      nil -> []
+      job -> Repo.all(from p in PublishedPost, where: p.draft_id == ^job.draft_id)
+    end
   end
 
   defp maybe_filter_by_video_status(query, nil), do: query

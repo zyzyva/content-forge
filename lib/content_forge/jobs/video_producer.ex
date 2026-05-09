@@ -131,13 +131,55 @@ defmodule ContentForge.Jobs.VideoProducer do
 
   defp upload_and_finish(draft, product, video_job, final_r2_key) do
     case upload_to_youtube(draft, product, video_job, final_r2_key) do
-      {:ok, _video_url, video_job} ->
+      {:ok, _video_url, reloaded} ->
+        Logger.info("VideoProducer: YouTube upload complete for job #{video_job.id}")
+
+        # Fan out to other connected platforms (best-effort)
+        distribute_to_other_platforms(reloaded, product)
+
         Logger.info("VideoProducer: Completed job #{video_job.id}")
         :ok
 
       {:error, reason, video_job} ->
         handle_step_error(video_job, :youtube_upload, reason)
     end
+  end
+
+  defp distribute_to_other_platforms(%Publishing.VideoJob{} = video_job, %Products.Product{} = product) do
+    connected = Publishing.connected_platforms(product)
+    # YouTube is already done in the main path
+    others = connected -- ["youtube"]
+
+    if others == [] do
+      Logger.info("No other platforms to distribute to for job #{video_job.id}")
+    else
+      Logger.info("Distributing to: #{inspect(others)}")
+
+      results = Publishing.publish_video(video_job, others, product)
+
+      Enum.each(results, fn {platform, result} ->
+        case result do
+          {:ok, %{post_id: id, post_url: _url}} ->
+            Logger.info("Distribute: #{platform} -> #{id}")
+            updated = Publishing.record_video_published(video_job, platform)
+            case updated do
+              {:error, _} -> Logger.warning("Failed to record #{platform} on VideoJob")
+              _ -> :ok
+            end
+
+          {:error, reason} ->
+            Logger.warning("Distribute: #{platform} failed: #{reason}")
+        end
+      end)
+    end
+  rescue
+    e in RuntimeError ->
+      Logger.warning("distribute_to_other_platforms: #{e.message}")
+      :ok
+
+    e ->
+      Logger.warning("distribute_to_other_platforms: unexpected #{inspect(e)}")
+      :ok
   end
 
   # ============================================
