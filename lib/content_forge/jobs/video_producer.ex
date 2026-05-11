@@ -131,13 +131,70 @@ defmodule ContentForge.Jobs.VideoProducer do
 
   defp upload_and_finish(draft, product, video_job, final_r2_key) do
     case upload_to_youtube(draft, product, video_job, final_r2_key) do
-      {:ok, _video_url, video_job} ->
+      {:ok, _video_url, reloaded} ->
+        Logger.info("VideoProducer: YouTube upload complete for job #{video_job.id}")
+
+        # Fan out to other connected platforms (best-effort)
+        distribute_to_other_platforms(reloaded, product)
+
         Logger.info("VideoProducer: Completed job #{video_job.id}")
         :ok
 
       {:error, reason, video_job} ->
         handle_step_error(video_job, :youtube_upload, reason)
     end
+  end
+
+  defp distribute_to_other_platforms(
+         %Publishing.VideoJob{} = video_job,
+         %Products.Product{} = product
+       ) do
+    connected = Publishing.connected_platforms(product)
+    # YouTube is already done in the main path
+    others = connected -- ["youtube"]
+
+    if others == [] do
+      Logger.info("No other platforms to distribute to for job #{video_job.id}")
+    else
+      do_distribute(video_job, product, others)
+    end
+  end
+
+  # Phase 16-tail rework: removed the two blanket `rescue` clauses
+  # that previously swallowed `MultiPlatform.publish_video`'s
+  # raise into `:ok`. With fix #3 the fan-out returns a
+  # classified `{:error, reason}` tuple instead of raising, and
+  # the constitution prohibits blanket rescues here.
+  defp do_distribute(video_job, product, others) do
+    Logger.info("Distributing to: #{inspect(others)}")
+
+    case Publishing.publish_video(video_job, others, product) do
+      {:error, reason} ->
+        Logger.warning(
+          "distribute_to_other_platforms: fan-out failed for job #{video_job.id}: #{inspect(reason)}"
+        )
+
+      results when is_map(results) ->
+        record_distribution_results(video_job, results)
+    end
+  end
+
+  defp record_distribution_results(video_job, results) do
+    Enum.each(results, fn {platform, result} ->
+      case result do
+        {:ok, %{post_id: id, post_url: _url}} ->
+          Logger.info("Distribute: #{platform} -> #{id}")
+          updated = Publishing.record_video_published(video_job, platform)
+
+          case updated do
+            {:error, _} -> Logger.warning("Failed to record #{platform} on VideoJob")
+            _ -> :ok
+          end
+
+        {:error, reason} ->
+          Logger.warning("Distribute: #{platform} failed: #{inspect(reason)}")
+      end
+    end)
   end
 
   # ============================================

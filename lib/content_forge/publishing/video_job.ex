@@ -31,6 +31,7 @@ defmodule ContentForge.Publishing.VideoJob do
     field :promoted_via_override, :boolean, default: false
     field :promoted_score, :float
     field :promoted_threshold, :float
+    field :published_platforms, {:array, :string}, default: []
 
     belongs_to :draft, ContentForge.ContentGeneration.Draft
     belongs_to :product, ContentForge.Products.Product
@@ -50,7 +51,8 @@ defmodule ContentForge.Publishing.VideoJob do
       :media_forge_job_id,
       :promoted_via_override,
       :promoted_score,
-      :promoted_threshold
+      :promoted_threshold,
+      :published_platforms
     ])
     |> validate_required([:draft_id, :product_id])
     |> validate_inclusion(:status, @statuses)
@@ -58,9 +60,20 @@ defmodule ContentForge.Publishing.VideoJob do
 
   def status_changeset(video_job, attrs) do
     video_job
-    |> cast(attrs, [:status, :per_step_r2_keys, :error, :media_forge_job_id])
+    |> cast(attrs, [:status, :per_step_r2_keys, :error, :media_forge_job_id, :published_platforms])
     |> validate_inclusion(:status, @statuses)
     |> clear_error_on_status_change()
+  end
+
+  @doc """
+  Lightweight changeset for updating published_platforms only.
+  Called after each platform publish completes.
+  """
+  def publish_update(video_job, platform) do
+    current = video_job.published_platforms || []
+
+    video_job
+    |> change(%{published_platforms: Enum.uniq([platform | current])})
   end
 
   defp clear_error_on_status_change(changeset) do
@@ -91,6 +104,16 @@ defmodule ContentForge.Publishing.VideoJob do
 
   def uploaded?(%__MODULE__{status: "uploaded"}), do: true
   def uploaded?(_), do: false
+
+  # Nil-safe: the migration backfills `[]` for pre-existing
+  # rows, but a row loaded from a partial-column select or a
+  # raw insert that bypasses the changeset could still surface
+  # `nil`. Defaulting to `[]` keeps the predicate honest.
+  def published_to?(%__MODULE__{published_platforms: nil}, _platform), do: false
+
+  def published_to?(%__MODULE__{published_platforms: platforms}, platform)
+      when is_list(platforms),
+      do: platform in platforms
 
   def failed?(%__MODULE__{status: "failed"}), do: true
   def failed?(_), do: false
