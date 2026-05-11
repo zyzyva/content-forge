@@ -65,4 +65,19 @@ defmodule ContentForge.Storage do
       query_params: [{"Content-Type", content_type}]
     )
   end
+
+  @doc """
+  Generates a presigned GET URL that any HTTP client can use to
+  download the object directly from R2. `expires_in` defaults to
+  900 seconds (15 minutes). Used by the multi-platform publisher
+  to hand external APIs (Twitter / Facebook / LinkedIn) a fetchable
+  URL for a video/image stored in a private R2 bucket without
+  flipping the bucket to public.
+  """
+  def presigned_get_url(key, opts \\ []) when is_binary(key) do
+    expires_in = Keyword.get(opts, :expires_in, 900)
+    config = ExAws.Config.new(:s3)
+
+    ExAws.S3.presigned_url(config, :get, @bucket, key, expires_in: expires_in)
+  end
 end

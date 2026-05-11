@@ -17,6 +17,14 @@ defmodule ContentForge.OpenClawTools.Authorization do
     * `ctx.channel == "cli"` looks up
       `(sender_identity, product.id)` in `OperatorIdentity` via
       `ContentForge.Operators.lookup_active_identity/2`.
+    * `ctx.channel == "mcp"` is a single-operator stdio transport
+      with no per-user identity concept. The MCP transport
+      itself is the authz boundary - only the local operator
+      running content-forge on their machine can reach it - so
+      this surface resolves to a config-driven role
+      (`:content_forge, :mcp_authz, default_role: "owner"`
+      by default). Tests demote the default to assert the
+      `:forbidden` path on write tools.
     * Any other channel (including `"telegram"` and future
       surfaces) is fail-closed: `:forbidden` with zero DB I/O.
       New channels are onboarded by adding a `resolve/3` clause,
@@ -77,8 +85,19 @@ defmodule ContentForge.OpenClawTools.Authorization do
   end
 
   defp resolve("cli", sender, product_id), do: resolve_operator(sender, product_id)
+  defp resolve("mcp", _sender, _product_id), do: resolve_mcp()
   defp resolve(nil, _sender, _product_id), do: :forbidden
   defp resolve(_unknown_channel, _sender, _product_id), do: :forbidden
+
+  defp resolve_mcp do
+    :content_forge
+    |> Application.get_env(:mcp_authz, [])
+    |> Keyword.get(:default_role, "owner")
+    |> mcp_role_to_ok()
+  end
+
+  defp mcp_role_to_ok(role) when role in ["owner", "submitter", "viewer"], do: {:ok, role}
+  defp mcp_role_to_ok(_), do: :forbidden
 
   defp resolve_operator(sender, product_id) do
     case Operators.lookup_active_identity(sender, product_id) do

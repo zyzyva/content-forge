@@ -176,11 +176,20 @@ defmodule ContentForge.Publishing do
 
   alias ContentForge.Publishing.MultiPlatform
 
-  def publish_text(product, text, image_url \\ nil, platforms \\ ~w(twitter linkedin reddit facebook instagram)) do
+  def publish_text(
+        product,
+        text,
+        image_url \\ nil,
+        platforms \\ ~w(twitter linkedin reddit facebook instagram)
+      ) do
     MultiPlatform.publish_text(product, text, image_url, platforms)
   end
 
-  def publish_video(video_job, platforms \\ ~w(youtube twitter facebook instagram linkedin reddit), product) do
+  def publish_video(
+        video_job,
+        platforms \\ ~w(youtube twitter facebook instagram linkedin reddit),
+        product
+      ) do
     MultiPlatform.publish_video(video_job, platforms, product)
   end
 

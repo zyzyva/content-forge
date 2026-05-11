@@ -63,6 +63,8 @@ defmodule ContentForgeMCP.Server do
   alias ContentForge.Jobs.CompetitorScraper
   alias ContentForge.Jobs.MetricsPollerScheduler
   alias ContentForge.Metrics.ScoreboardEntry
+  alias ContentForge.OpenClawTools.Authorization
+  alias ContentForge.OpenClawTools.Confirmation
   alias ContentForge.Products
   alias ContentForge.Products.CompetitorAccount
   alias ContentForge.Products.CompetitorIntel
@@ -205,8 +207,13 @@ defmodule ContentForgeMCP.Server do
         %{
           product_id: {:required, :string, description: "Product UUID."},
           text: {:required, :string, description: "Post body text."},
-          image_url: {:optional, :string, description: "Optional image URL (Twitter, Facebook, LinkedIn, Instagram only)."},
-          platforms: {:optional, :string, description: "JSON-encoded list of platforms (default: all connected). Options: twitter, linkedin, reddit, facebook, instagram."}
+          image_url:
+            {:optional, :string,
+             description: "Optional image URL (Twitter, Facebook, LinkedIn, Instagram only)."},
+          platforms:
+            {:optional, :string,
+             description:
+               "JSON-encoded list of platforms (default: all connected). Options: twitter, linkedin, reddit, facebook, instagram."}
         }
       ),
       SimpleMCP.Tool.new(
@@ -214,8 +221,13 @@ defmodule ContentForgeMCP.Server do
         "Publish a completed VideoJob to one or more social platforms. The video must have finished encoding (final R2 key present). Downloads from R2, then uploads to each platform.",
         %{
           video_job_id: {:required, :string, description: "VideoJob UUID."},
-          platforms: {:optional, :string, description: "JSON-encoded list of platforms (default: all connected). Options: youtube, twitter, facebook, instagram, linkedin, reddit."},
-          product_id: {:optional, :string, description: "Product UUID (auto-derived from VideoJob if omitted)."}
+          platforms:
+            {:optional, :string,
+             description:
+               "JSON-encoded list of platforms (default: all connected). Options: youtube, twitter, facebook, instagram, linkedin, reddit."},
+          product_id:
+            {:optional, :string,
+             description: "Product UUID (auto-derived from VideoJob if omitted)."}
         }
       ),
       SimpleMCP.Tool.new(
@@ -230,7 +242,10 @@ defmodule ContentForgeMCP.Server do
         "List published posts for a product, optionally filtered by platform.",
         %{
           product_id: {:required, :string, description: "Product UUID."},
-          platform: {:optional, :string, description: "Filter by platform: twitter, linkedin, reddit, facebook, instagram, youtube."},
+          platform:
+            {:optional, :string,
+             description:
+               "Filter by platform: twitter, linkedin, reddit, facebook, instagram, youtube."},
           limit: {:optional, :integer, description: "Max results (default 50, max 200)."}
         }
       )
@@ -839,21 +854,40 @@ defmodule ContentForgeMCP.Server do
 
   # --- cf_publish_text ------------------------------------------------------
 
+  # Phase 16-tail rework: writes through the MCP surface gate
+  # through `Authorization.require/2`. `cf_publish_text` is a
+  # light write (text-only post, reversible by deletion on most
+  # platforms) - `:submitter` is sufficient per the 16.3/16.4
+  # split. The MCP channel resolves via
+  # `:content_forge, :mcp_authz, :default_role`; v1 default is
+  # `"owner"` because the MCP stdio transport is the authz
+  # boundary in single-operator usage.
   defp cf_publish_text(args) do
     with {:ok, product_id} <- require_binary(args, "product_id"),
          {:ok, product} <- fetch_product(product_id),
+         :ok <- Authorization.require(mcp_ctx(product), :submitter),
          {:ok, text} <- require_binary(args, "text") do
       image_url = binary_param(args, "image_url")
-      platforms = case parse_platforms(args, "platforms", Publishing.connected_platforms(product)) do
-        {:ok, p} -> p
-        _ -> Publishing.connected_platforms(product)
-      end
+
+      platforms =
+        case parse_platforms(args, "platforms", Publishing.connected_platforms(product)) do
+          {:ok, p} -> p
+          _ -> Publishing.connected_platforms(product)
+        end
+
       connected = Publishing.connected_platforms(product)
       not_connected = platforms -- connected
-      if not_connected != [], do: Logger.info("cf_publish_text: platforms missing credentials: #{inspect(not_connected)}")
+
+      if not_connected != [],
+        do:
+          Logger.info("cf_publish_text: platforms missing credentials: #{inspect(not_connected)}")
 
       results = Publishing.publish_text(product, text, image_url, platforms)
-      serialized = results |> Enum.map(fn {platform, result} -> serialize_publish_result(platform, result) end) |> Map.new()
+
+      serialized =
+        results
+        |> Enum.map(fn {platform, result} -> serialize_publish_result(platform, result) end)
+        |> Map.new()
 
       ok(%{
         product_id: product_id,
@@ -862,38 +896,138 @@ defmodule ContentForgeMCP.Server do
         total_attempted: map_size(serialized),
         total_succeeded: Enum.count(serialized, fn {_, r} -> r[:status] == "success" end)
       })
+    else
+      {:error, :forbidden} -> error("forbidden", "Insufficient role for cf_publish_text")
+      other -> other
     end
   end
 
   # --- cf_publish_video ------------------------------------------------------
 
+  # Phase 16-tail rework: video publishing is irreversible
+  # (YouTube uploads are durable; cross-posts hit external
+  # platforms that bill per call) and gets the full 16.4
+  # heavy-write treatment: `:owner` Authorization gate + the
+  # two-turn Confirmation envelope.
+  #
+  # First call (no `confirm` arg): returns an MCP-shaped envelope
+  # with `confirmation_required: true`, an `echo_phrase` the
+  # caller reads back, and a `preview` listing target platforms.
+  # Second call (`confirm` arg supplied): validates the phrase
+  # via `Confirmation.confirm/4`, then proceeds with the fan-out.
   defp cf_publish_video(args) do
     with {:ok, video_job_id} <- require_binary(args, "video_job_id"),
          {:ok, video_job} <- fetch_video_job(video_job_id),
-         {:ok, product} <- fetch_product(binary_param(args, "product_id") || video_job.product_id) do
-      platforms = case parse_platforms(args, "platforms", Publishing.connected_platforms(product)) do
-        {:ok, p} -> p
-        _ -> Publishing.connected_platforms(product)
-      end
-
-      results = Publishing.publish_video(video_job, platforms, product)
-      serialized = results |> Enum.map(fn {platform, result} -> serialize_publish_result(platform, result) end) |> Map.new()
-
-      # Update VideoJob with new published platforms
-      Enum.each(results, fn
-        {platform, {:ok, _}} -> Publishing.record_video_published(video_job, platform)
-        _ -> :ok
-      end)
-
-      ok(%{
-        video_job_id: video_job_id,
-        product_id: product.id,
-        results: serialized,
-        all_published_platforms: Enum.uniq(video_job.published_platforms ++ Enum.map(results, fn {p, {:ok, _}} -> p; _ -> nil end) |> Enum.reject(&is_nil/1)),
-        total_attempted: map_size(serialized),
-        total_succeeded: Enum.count(serialized, fn {_, r} -> r[:status] == "success" end)
-      })
+         {:ok, product} <-
+           fetch_product(binary_param(args, "product_id") || video_job.product_id),
+         :ok <- Authorization.require(mcp_ctx(product), :owner) do
+      dispatch_publish_video_turn(args, video_job, product)
+    else
+      {:error, :forbidden} -> error("forbidden", "Insufficient role for cf_publish_video")
+      other -> other
     end
+  end
+
+  defp dispatch_publish_video_turn(args, video_job, product) do
+    platforms = resolve_publish_platforms(args, product, video_job)
+
+    case binary_param(args, "confirm") do
+      nil -> request_publish_video_confirmation(args, video_job, product, platforms)
+      echo -> confirm_publish_video(args, echo, video_job, product, platforms)
+    end
+  end
+
+  defp resolve_publish_platforms(args, product, video_job) do
+    default = Publishing.connected_platforms(product) -- (video_job.published_platforms || [])
+
+    case parse_platforms(args, "platforms", default) do
+      {:ok, p} -> p
+      _ -> default
+    end
+  end
+
+  defp request_publish_video_confirmation(args, video_job, product, platforms) do
+    preview = %{
+      summary:
+        "Publish video #{video_job.id} to #{length(platforms)} platform(s). " <>
+          "Cross-posts hit external APIs and may incur platform-specific costs.",
+      product_id: product.id,
+      platform: Enum.join(platforms, ",")
+    }
+
+    case Confirmation.request("cf_publish_video", mcp_session_ctx(), args, preview) do
+      {:ok, envelope} ->
+        ok(%{
+          confirmation_required: true,
+          echo_phrase: envelope.echo_phrase,
+          expires_at: iso8601(envelope.expires_at),
+          preview: preview,
+          platforms: platforms
+        })
+
+      {:error, reason} ->
+        error("confirmation_request_failed", to_string(reason))
+    end
+  end
+
+  defp confirm_publish_video(args, echo, video_job, product, platforms) do
+    case Confirmation.confirm("cf_publish_video", mcp_session_ctx(), args, echo) do
+      :ok ->
+        do_publish_video(video_job, product, platforms)
+
+      {:error, :confirmation_mismatch} ->
+        error("confirmation_mismatch", "Echo phrase did not match the pending confirmation")
+
+      {:error, :confirmation_not_found} ->
+        error("confirmation_not_found", "No pending confirmation matches that echo phrase")
+
+      {:error, :confirmation_expired} ->
+        error("confirmation_expired", "The pending confirmation has expired; request a new one")
+
+      {:error, reason} ->
+        error("confirmation_failed", to_string(reason))
+    end
+  end
+
+  defp do_publish_video(video_job, product, platforms) do
+    case Publishing.publish_video(video_job, platforms, product) do
+      {:error, reason} ->
+        error("publish_failed", to_string(reason), %{video_job_id: video_job.id})
+
+      results when is_map(results) ->
+        serialized =
+          results
+          |> Enum.map(fn {platform, result} -> serialize_publish_result(platform, result) end)
+          |> Map.new()
+
+        Enum.each(results, fn
+          {platform, {:ok, _}} -> Publishing.record_video_published(video_job, platform)
+          _ -> :ok
+        end)
+
+        succeeded_platforms =
+          results
+          |> Enum.filter(fn {_, r} -> match?({:ok, _}, r) end)
+          |> Enum.map(fn {p, _} -> p end)
+
+        ok(%{
+          video_job_id: video_job.id,
+          product_id: product.id,
+          results: serialized,
+          all_published_platforms:
+            Enum.uniq((video_job.published_platforms || []) ++ succeeded_platforms),
+          total_attempted: map_size(serialized),
+          total_succeeded: length(succeeded_platforms)
+        })
+    end
+  end
+
+  defp mcp_ctx(product) do
+    %{channel: "mcp", sender_identity: "mcp", product: product}
+  end
+
+  defp mcp_session_ctx do
+    %{session_id: "mcp"}
   end
 
   # --- cf_platform_status ---------------------------------------------------
@@ -937,14 +1071,20 @@ defmodule ContentForgeMCP.Server do
 
   defp parse_platforms(args, key, default) do
     case Map.get(args, key) do
-      list when is_list(list) -> {:ok, list}
+      list when is_list(list) ->
+        {:ok, list}
+
       json when is_binary(json) ->
         case JSON.decode(json) do
           {:ok, list} when is_list(list) -> {:ok, list}
           _ -> {:ok, default}
         end
-      nil -> {:ok, default}
-      _ -> {:ok, default}
+
+      nil ->
+        {:ok, default}
+
+      _ ->
+        {:ok, default}
     end
   end
 

@@ -105,8 +105,15 @@ defmodule ContentForge.Publishing.VideoJob do
   def uploaded?(%__MODULE__{status: "uploaded"}), do: true
   def uploaded?(_), do: false
 
-  def published_to?(%__MODULE__{published_platforms: platforms}, platform),
-    do: platform in platforms
+  # Nil-safe: the migration backfills `[]` for pre-existing
+  # rows, but a row loaded from a partial-column select or a
+  # raw insert that bypasses the changeset could still surface
+  # `nil`. Defaulting to `[]` keeps the predicate honest.
+  def published_to?(%__MODULE__{published_platforms: nil}, _platform), do: false
+
+  def published_to?(%__MODULE__{published_platforms: platforms}, platform)
+      when is_list(platforms),
+      do: platform in platforms
 
   def failed?(%__MODULE__{status: "failed"}), do: true
   def failed?(_), do: false

@@ -145,7 +145,10 @@ defmodule ContentForge.Jobs.VideoProducer do
     end
   end
 
-  defp distribute_to_other_platforms(%Publishing.VideoJob{} = video_job, %Products.Product{} = product) do
+  defp distribute_to_other_platforms(
+         %Publishing.VideoJob{} = video_job,
+         %Products.Product{} = product
+       ) do
     connected = Publishing.connected_platforms(product)
     # YouTube is already done in the main path
     others = connected -- ["youtube"]
@@ -153,33 +156,45 @@ defmodule ContentForge.Jobs.VideoProducer do
     if others == [] do
       Logger.info("No other platforms to distribute to for job #{video_job.id}")
     else
-      Logger.info("Distributing to: #{inspect(others)}")
-
-      results = Publishing.publish_video(video_job, others, product)
-
-      Enum.each(results, fn {platform, result} ->
-        case result do
-          {:ok, %{post_id: id, post_url: _url}} ->
-            Logger.info("Distribute: #{platform} -> #{id}")
-            updated = Publishing.record_video_published(video_job, platform)
-            case updated do
-              {:error, _} -> Logger.warning("Failed to record #{platform} on VideoJob")
-              _ -> :ok
-            end
-
-          {:error, reason} ->
-            Logger.warning("Distribute: #{platform} failed: #{reason}")
-        end
-      end)
+      do_distribute(video_job, product, others)
     end
-  rescue
-    e in RuntimeError ->
-      Logger.warning("distribute_to_other_platforms: #{e.message}")
-      :ok
+  end
 
-    e ->
-      Logger.warning("distribute_to_other_platforms: unexpected #{inspect(e)}")
-      :ok
+  # Phase 16-tail rework: removed the two blanket `rescue` clauses
+  # that previously swallowed `MultiPlatform.publish_video`'s
+  # raise into `:ok`. With fix #3 the fan-out returns a
+  # classified `{:error, reason}` tuple instead of raising, and
+  # the constitution prohibits blanket rescues here.
+  defp do_distribute(video_job, product, others) do
+    Logger.info("Distributing to: #{inspect(others)}")
+
+    case Publishing.publish_video(video_job, others, product) do
+      {:error, reason} ->
+        Logger.warning(
+          "distribute_to_other_platforms: fan-out failed for job #{video_job.id}: #{inspect(reason)}"
+        )
+
+      results when is_map(results) ->
+        record_distribution_results(video_job, results)
+    end
+  end
+
+  defp record_distribution_results(video_job, results) do
+    Enum.each(results, fn {platform, result} ->
+      case result do
+        {:ok, %{post_id: id, post_url: _url}} ->
+          Logger.info("Distribute: #{platform} -> #{id}")
+          updated = Publishing.record_video_published(video_job, platform)
+
+          case updated do
+            {:error, _} -> Logger.warning("Failed to record #{platform} on VideoJob")
+            _ -> :ok
+          end
+
+        {:error, reason} ->
+          Logger.warning("Distribute: #{platform} failed: #{inspect(reason)}")
+      end
+    end)
   end
 
   # ============================================
