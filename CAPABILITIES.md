@@ -346,6 +346,25 @@ This document provides comprehensive capabilities of the **content-forge** codeb
 - [ ] `should_trigger_rewrite?/1` evaluates scoreboard to decide if content strategy needs refresh
 - [ ] Feeds back into `ContentBriefGenerator` with performance summary
 
+### 11.5 Per-platform Metrics Fetchers (Phase 17.7 audit, 2026-04-28)
+
+Default reading path on every platform is **Apify**, with the native OAuth API kept as an optional faster + richer fallback when a product has done the platform's approval grind. Rationale: native OAuth approval flows (LinkedIn Marketing Developer Platform, Facebook + Instagram App Review, YouTube OAuth verification, Reddit app, Twitter elevated access) are weeks of friction and rejection risk before any metrics flow at all. Apify ships today on the single `APIFY_TOKEN` already required by 17.1, costs cents per scrape, and is negligible at zero-content volume. The dispatch decision lives entirely inside each platform module's `fetch_metrics/3`; MetricsPoller is unchanged.
+
+| Platform | Status | Apify actor | OAuth fallback | Credential needed |
+|----------|--------|-------------|----------------|-------------------|
+| Twitter / X | apify+native_fallback | `kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest` (`startUrls=[<permalink>], maxItems=1`) | Twitter v2 `/tweets/:id?tweet.fields=public_metrics` | `APIFY_TOKEN` (default) or `twitter_access_token` |
+| LinkedIn | apify+native_fallback | `apify~linkedin-post-scraper` (`urls=[<post_url>]`) | LinkedIn Marketing API `/shareStatistics` | `APIFY_TOKEN` (default) or `linkedin_access_token` |
+| Facebook | apify+native_fallback | `apify~facebook-posts-scraper` via `:metrics_actors` override (`startUrls=[<post_url>]`) | Graph API v18 page object | `APIFY_TOKEN` (default) or `facebook_access_token` |
+| Instagram | apify+native_fallback | `apify~instagram-scraper` (`directUrls=[<permalink>]`) | Graph API media object | `APIFY_TOKEN` (default) or `facebook_access_token` |
+| Reddit | apify+native_fallback | `trudax~reddit-scraper` (`startUrls=[<post_url>]`) | OAuth Reddit `/api/info.json` | `APIFY_TOKEN` (default) or `reddit_access_token` |
+| YouTube | apify+native_fallback | `apify~youtube-scraper` (`startUrls=[<watch_url>], maxItems=1`) | Data API `/videos` + Analytics `/reports` (retention curve) | `APIFY_TOKEN` (default) or `youtube_access_token` |
+
+All six fetchers surface a classified `{:error, _}` tuple on HTTP error - none fall back to a zero-filled `{:ok, %{}}` map. Apify path returns the unified shape `%{"likes", "comments", "shares", "views"}` with `nil` for missing fields (so MetricsPoller can distinguish "not measured" from "measured as zero" in the corrective loop). Native paths preserve their existing platform-specific shapes; `extract_engagement/2` accepts both unified and legacy keys per platform.
+
+Trade-off acknowledged: per-call Apify cost vs. zero approval friction. At current volume the cost is pennies; revisit when an active product's Apify spend starts to dominate the metrics budget. Batching multiple posts into one Apify run is a deferred optimization.
+
+Pinned by `test/content_forge/publishing/metrics_fetcher_regression_test.exs`, `test/content_forge/publishing/twitter_test.exs`, and the per-platform happy-path tests in `test/content_forge/competitor_scraper/apify_adapter_test.exs`.
+
 **Implementation:**
 - `ContentForge.Metrics` - `lib/content_forge/metrics.ex`
 - `ContentForge.Jobs.MetricsPoller` - `lib/content_forge/jobs/metrics_poller.ex`

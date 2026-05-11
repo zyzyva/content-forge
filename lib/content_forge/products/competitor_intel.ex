@@ -10,11 +10,15 @@ defmodule ContentForge.Products.CompetitorIntel do
     field :trending_topics, {:array, :string}
     field :winning_formats, {:array, :string}
     field :effective_hooks, {:array, :string}
+    field :audience_signals, {:array, :string}, default: []
+    field :window, :string
 
     belongs_to :product, ContentForge.Products.Product
 
     timestamps type: :utc_datetime
   end
+
+  @windows ~w(all week month)
 
   def changeset(intel, attrs) do
     intel
@@ -24,8 +28,11 @@ defmodule ContentForge.Products.CompetitorIntel do
       :source_count,
       :trending_topics,
       :winning_formats,
-      :effective_hooks
+      :effective_hooks,
+      :audience_signals,
+      :window
     ])
     |> validate_required([:product_id, :summary])
+    |> validate_inclusion(:window, @windows, allow_nil: true)
   end
 end

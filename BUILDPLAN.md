@@ -699,7 +699,7 @@ Phase exit criteria: a marketer can text a photo in, get it tagged into a produc
   - Bounds + validation: `cadence_days` must be an integer 1..30. Values outside that range return `:invalid_cadence`. `enabled` must be boolean; other types return `:invalid_enabled`.
   - Tests: submitter role = `:forbidden`; owner + change + no confirm = envelope with before/after diff; owner + change + correct confirm = ReminderConfig updated; owner + no-op request short-circuits with `changed: false` and no pending confirmation row; invalid cadence = `:invalid_cadence`; invalid enabled = `:invalid_enabled`; ambiguous product = `:ambiguous_product`. One controller end-to-end.
 
-- **16.4d generate_drafts_from_bundle**
+- **16.4d generate_drafts_from_bundle** ✅ Shipped `7df57c6`.
   - Blocks: none. Blocked by: 16.4a. Independent of 16.4b and 16.4c.
   - Ship `ContentForge.OpenClawTools.GenerateDraftsFromBundle` at `lib/content_forge/open_claw_tools/generate_drafts_from_bundle.ex`. Params: `"bundle_id"` (required UUID), `"product"` (optional, resolver), `"confirm"` (optional echo phrase).
   - Flow: resolve product, resolve bundle scoped to product (`:not_found` on miss or cross-product), `Authorization.require(ctx, :owner)`. Fetch the bundle's asset count and compute an estimated cost via the existing cost model (`ContentForge.Metrics.estimate_generation_cost/1` or the closest equivalent; if no such function exists today, this slice introduces a thin estimator reading from the same provider pricing tables the dashboard already surfaces). Check remaining product budget against `ContentForge.Metrics.remaining_generation_budget(product_id)` (same caveat applies).
@@ -708,19 +708,188 @@ Phase exit criteria: a marketer can text a photo in, get it tagged into a produc
   - Rate limits: the tool does not skip enqueueing when `would_exceed_budget` is true; it surfaces the warning and lets the confirmed owner decide (the existing budget ceiling on the Oban worker is the hard stop). The tool's responsibility is transparency, not enforcement.
   - Tests: submitter role = `:forbidden`; owner + no confirm = envelope with `asset_count`, `estimated_cost_cents`, `remaining_budget_cents`, and `would_exceed_budget` accurately computed against stub budget state; owner + confirm matching = `AssetBundleDraftGenerator` enqueued with the correct args (`assert_enqueued`); owner + confirm mismatching = `:confirmation_mismatch`, no enqueue; cross-product bundle = `:not_found`; unknown bundle = `:not_found`; budget-exhausted path still enqueues (warning in preview, not a block). One controller end-to-end covering the full two-turn HTTP cycle.
 
-- **16.5 Unified tool-invocation audit + dashboard surface**
+- **16.5 Unified tool-invocation audit + dashboard surface** ✅ Shipped `951f8ae`.
   - New `ToolInvocationEvent` schema capturing every tool call across all channels: tool_name, params (hashed if they contain PII), result_status, channel, sender_identity, product_id, invoked_at. Separate from `SmsEvent` because the surface is multi-channel.
   - Every tool module wraps its `call/2` in a `log_invocation` helper so audit is automatic rather than per-tool.
   - New LiveView page at `/dashboard/tool-activity` listing recent invocations per product with channel + sender + result. Filterable by tool, channel, status.
   - API: `GET /api/v1/products/:id/tool-activity` mirrors the dashboard for external inspection.
   - Tests: every shipped tool has an audit row after invocation; hashing of PII-bearing params; the LiveView filters correctly; the API matches the dashboard.
 
-- **16.6 Escalate-to-human as a tool** (promoted from the old 14.5 escalation primitive)
-  - Wire `escalate_to_human` as a first-class tool the agent can call when it detects ambiguity, cost discussions, or complaints. Reuses the existing `Sms.escalate_session/3` primitive from 14.5 but generalizes to any channel — escalation now writes a generic `EscalationEvent` and surfaces on the existing needs-attention dashboard.
-  - The agent's own cue for escalation is instructed in the tool description: "call this when you cannot confidently handle the request or when the user asks to speak to a human."
-  - Tests: agent-originated escalation creates the event; dashboard shows the escalation regardless of channel; subsequent tool calls on an escalated session return `:escalated` and the agent composes a holding reply.
+- **16.6 Escalate-to-human as a tool** ✅ Shipped `be2d068`. (promoted from the old 14.5 escalation primitive)
+  - Blocks: nothing remaining in Phase 16. Blocked by: 16.1 (tool surface), 16.5 (audit; this slice writes through it). Independent of any Phase 17 work.
+  - Wire `escalate_to_human` as a first-class tool the agent self-invokes on ambiguity, cost / pricing discussions, or complaints. Generalizes the SMS-scoped `Sms.escalate_session/3` primitive from 14.5 so any channel (SMS, CLI, future Telegram) can escalate, and so a single dispatcher hook can short-circuit subsequent tool calls on an escalated session until a human resolves it.
+
+  - **New schema** `ContentForge.Escalations.EscalationEvent` at `lib/content_forge/escalations/escalation_event.ex`. Fields: `id` (binary_id PK), `product_id` (binary_id FK, required), `session_id` (string, required), `channel` (string, required, mirrors the audit channel namespace from 16.5: `"sms" | "openclaw_sms" | "openclaw_cli" | "openclaw_<channel>" | "mcp"`), `sender_identity` (string, nullable, hashed for phone-shaped values matching the 16.5 PII pattern), `reason` (text, required, 1..2000 chars), `urgency` (string enum `"low" | "normal" | "high"`, default `"normal"`), `resolved` (boolean, default false), `resolved_at` (utc_datetime_usec, nullable), `resolved_by` (string, nullable; operator label or "auto-expired"), `holding_reply` (text, the templated message the agent shipped to the user; recorded for audit so operators see what the user heard), plus `inserted_at` + `updated_at`. Migration adds the table, an index on `(product_id, inserted_at desc)` for the dashboard recent-list query, an index on `(resolved, inserted_at)` for the open-escalations query, and a partial unique index on `(product_id, session_id) WHERE resolved = false` so a session has at most one open escalation at a time (a re-escalation on an open session updates the existing row's reason rather than creating a new one).
+
+  - **Context module** `ContentForge.Escalations` at `lib/content_forge/escalations.ex` with: `create_or_update_open/1` (idempotent: if an open escalation exists for `(product_id, session_id)`, update its `reason` + `urgency` + `inserted_at` rather than insert), `find_open/2` (`find_open(product_id, session_id)` returns the open `EscalationEvent` or `nil`; backs the dispatcher hook), `list_open_for_product/2` (paginated, newest-first, for dashboard surfacing), `mark_resolved/2` (`mark_resolved(event, resolved_by)` flips `resolved: true`, sets `resolved_at`, records `resolved_by`).
+
+  - **The tool** `ContentForge.OpenClawTools.EscalateToHuman` with `call/2`. Params: `"reason"` (required, 1..2000 chars; the agent's free-form summary of why it cannot handle the request), `"urgency"` (optional, one of `"low" | "normal" | "high"`, default `"normal"`), `"product"` (optional, resolver). Authorization requires `:viewer` (anyone authenticated can ask for help; this is not destructive). Returns `%{event_id, escalated_at, channel, holding_reply, urgency}`. The Node plugin description tells the agent: "Call this tool when you cannot confidently handle the request, when the user asks to speak to a human, when the conversation involves pricing or contract questions, when there is a complaint, or when the user expresses frustration. Do not use it for routine inability-to-help; only when escalation is genuinely warranted." Plugin renderer for the result emits the `holding_reply` text so the agent reads it back to the user verbatim.
+
+  - **Holding reply** is configurable via `:content_forge, :escalations, :holding_reply` (default: "Thanks - I have flagged this for the team and someone will follow up shortly. You can keep messaging here in the meantime."). The reply text gets persisted on the `EscalationEvent` row at creation time, so a future copy change does not retroactively rewrite past escalations' audit trail.
+
+  - **Dispatcher hook (cross-channel short-circuit):** both dispatchers (the OpenClaw HTTP tool dispatcher in `ContentForge.OpenClawTools.dispatch/3` and the MCP dispatcher in `ContentForgeMCP.Server`) gain a pre-check: before delegating to the tool module, if `Escalations.find_open(product_id, session_id)` returns an open escalation that is younger than `:content_forge, :escalations, :session_window_seconds` (default 86_400 / 24 hours), return `{:error, :escalated}` short-circuit. Two exemptions: `escalate_to_human` itself does NOT short-circuit (the agent may legitimately update the reason or escalate again with higher urgency), and `cf_recent_scoreboard` does NOT short-circuit (operator-facing read, harmless on an escalated session). Every other tool returns `:escalated` immediately. The 16.5 audit still records the attempt with `result_status: "blocked_escalated"` so operators see what the agent tried after escalation; this is a single new audit-status string, not a separate audit pipeline.
+
+  - **Holding-reply pattern for dispatcher-blocked calls:** the `:escalated` error reason carries the same `holding_reply` text as the original escalation event so the agent can read it back to the user every time it tries something on an escalated session. The agent's own logic (in OpenClaw or MCP) decides whether to repeat the holding reply or to compose a brief acknowledgement.
+
+  - **Integration with the 14.5 SMS path:** `Sms.escalate_session/3` keeps its existing behavior (updates `ConversationSession.escalated_at`, sets `auto_response_paused: true`, writes an `SmsEvent` row) and additionally writes a generic `EscalationEvent` so the cross-channel dispatcher hook also fires on SMS-originated escalations. The SMS-specific dashboard surface from 14.5 is preserved; it now joins against `EscalationEvent` (with a `channel = "sms"` filter) instead of `ConversationSession.escalated_at`. No regression for the 14.5 needs-attention page.
+
+  - **Dashboard surfacing:** no new LiveView page. The 16.5 `/dashboard/tool-activity` view already shows tool invocations and supports a `tool_name` filter; setting that filter to `escalate_to_human` lists every escalation invocation across every channel. The existing 14.5 SMS needs-attention page (its filter sources an `escalated` view) updates to source from `Escalations.list_open_for_product/2` so it now shows escalations regardless of channel, with a column for channel + reason snippet. A "Mark resolved" form on each row posts to a new `POST /api/v1/escalations/:id/resolve` endpoint that calls `Escalations.mark_resolved/2`.
+
+  - **REST endpoint:** `POST /api/v1/escalations/:id/resolve` under the `:api_auth` pipeline. Body accepts an optional `resolved_by` string (defaults to the consumer label from the bearer token if absent). Returns the updated event. The dashboard form uses the same endpoint via internal call.
+
+  - **Auto-expiry:** an escalation older than the `session_window_seconds` is no longer blocking but stays in the table as an audit record. Operators see "expired" escalations in the dashboard with a distinct visual treatment and can still mark them resolved if they handled them. No cron is needed for v1 since the dispatcher hook computes the window inline.
+
+  - **Configuration:**
+    - `:content_forge, :escalations, :session_window_seconds` (default 86_400)
+    - `:content_forge, :escalations, :holding_reply` (default text above)
+
+  - **Tests:**
+    - `EscalationEvent` schema: required-field rejections, urgency inclusion validation, reason length bounds, default values, partial-unique on `(product_id, session_id)` where `resolved = false` rejects two open rows but allows a new row after the previous is resolved.
+    - `Escalations` context: `create_or_update_open/1` happy path; idempotent re-escalation on the same session updates the existing row; `find_open/2` returns the row vs nil correctly; auto-expiry behavior (find_open with a window param returns nil when the row is older); `mark_resolved/2` flips fields; `list_open_for_product/2` orders by inserted_at desc and excludes resolved.
+    - `EscalateToHuman` tool: happy path creates an event + returns holding reply; reason validation (empty / oversized); urgency validation; product resolution paths (`:product_not_found`, `:ambiguous_product`, `:missing_product_context`); viewer role allowed; cross-channel test (channel="cli" + channel="sms" both work); idempotent re-escalation updates the existing event; holding reply persisted on the row matches what's returned.
+    - Dispatcher hook (both HTTP + MCP): subsequent tool call on an escalated session returns `{:error, :escalated}` with the holding reply included; `escalate_to_human` itself does NOT short-circuit on an escalated session; `cf_recent_scoreboard` does NOT short-circuit; expired escalation (>24h old) is no longer blocking; resolved escalation is no longer blocking.
+    - SMS integration: `Sms.escalate_session/3` now also writes an `EscalationEvent`; the 14.5 needs-attention page lists the escalation via the new generic source.
+    - Audit (16.5 hook): a `blocked_escalated` audit row appears for tool calls that hit the dispatcher short-circuit.
+    - Resolve endpoint: `POST /api/v1/escalations/:id/resolve` returns the updated event; dashboard form submission resolves the row.
+    - Controller end-to-end for `escalate_to_human` exercises the full HTTP pipeline + JSON serialization shape.
+
+  - **Out of scope:**
+    - Outbound notification fan-out (Slack, email, PagerDuty). The 14.5 SMS-side notification mechanism (`notify_channels` opt) stays SMS-only; generalizing it across channels is a tiny follow-up if a non-SMS escalation actually needs to ping someone before they check the dashboard.
+    - Resolution analytics (avg time to resolve, escalations per product per week). Data is captured; surfacing is Phase 15 polish.
+    - Auto-resolution by the agent (e.g., "user said 'never mind'"). The agent can call a future `resolve_escalation` tool if needed; v1 leaves resolution to humans only.
 
 Phase exit criteria: (1) running `openclaw agent --message "give me an upload link for Acme"` from the CLI produces a real link through the tool path; (2) texting the same request via SMS lands the same link via Twilio; (3) an owner can text "approve the winter promo blog post" and the bot walks the confirmation flow, runs the publish gate, and reports the outcome; (4) every tool invocation appears in the audit dashboard; (5) a viewer attempting a write gets a clear refusal. None of these require new channels beyond SMS + CLI to demonstrate.
+
+## Phase 17 - Competitor Research Loop
+
+**Source-of-record:** `RESEARCH_LOOP_PLAN.md` carries the full design narrative, the architectural principles, the open questions with v1 defaults, and the rationale for each phase. This BUILDPLAN section is the swarm-readable slicing of that plan; when the two disagree, this section is authoritative for swarm execution and the source plan should be updated to match. Each slice below cross-references the relevant section in the source doc; coders read both before starting.
+
+**Why this phase:** Lead Intelligence has been doing competitor scraping ad hoc; its Twitter actor went bad; it produces a parallel corpus to Content Forge's `competitor_intel` table; and there is no feedback loop closing the gap between predicted and actual engagement. Content Forge already has the schemas and Oban jobs for all of this. They are just not booted on this machine and not all wired in dev. This phase turns CF into the corpus of record for competitor research, makes synthesis comment-aware, and stands up the corrective loop that lets external competitor wins drive a real signal back into our brief generation.
+
+**Architectural principles (carry over from `RESEARCH_LOOP_PLAN.md`):**
+- Content Forge is the corpus of record for competitor posts, comments, and synthesized intel; lead_intelligence does not duplicate this state.
+- Synthesis works with or without an Anthropic key. With a key the existing `LLMAdapter` does headless synthesis through the Oban job; without, an MCP tool surface lets a Claude session read top posts, including their comment threads, and write back structured intel manually. Both paths produce the same `competitor_intel` row shape.
+- Apify integration is per-platform configurable. When an actor goes bad, swap it in config without code changes.
+- The feedback loop is a first-class deliverable, not v2. MetricsPoller is on a cron by phase end.
+- The corrective signal is external. Our drop alone does not pivot the brief; our drop AND competitor wins in the same window does. Drop without competitor wins is treated as noise.
+- Comments are first-class research data on viral posts. Synthesis without comments is surface pattern-matching; synthesis with comments reasons about resonance.
+- No new "competitor analysis" features land in lead_intelligence. Anything new for research goes here.
+
+**Sequence and parallelism:** 17.0 is independent of every other Phase 17 slice and may ship in parallel with the Phase 16 tail. After 17.0 the critical path is 17.1 -> 17.2 -> 17.3 -> 17.4 -> 17.5 -> 17.6. 17.7 is independent of 17.3-17.6 and may run in parallel with them. 17.8 and 17.9 require human input and are flagged.
+
+- **17.0 Local environment up (launchd plist + dev DB confirm)** ✅ Shipped `d198c32`.
+  - Blocks: 17.6 (the corrective-loop cron needs a long-running Phoenix). Blocked by: none.
+  - Create the `content_forge_dev` Postgres database (currently absent on m4; only `content_forge_test` exists). Run `mix deps.get` and `mix ecto.migrate` against dev. Confirm `mix phx.server` boots clean against dev and the dashboard renders with no 500s.
+  - Install `~/Library/LaunchAgents/com.zyzyva.content-forge.plist` mirroring the lead_intelligence pattern: `KeepAlive` true, `RunAtLoad` true, `WorkingDirectory` set to the repo, `StandardOutPath` and `StandardErrorPath` to `~/Library/Logs/content-forge.log`. The plist runs `mix phx.server` against the dev env; do not bind to a port the test suite uses (test runs on the Phoenix test pipeline, not 4000, so the dev default port is fine but document it explicitly).
+  - Confirm the Oban queue supervisor starts on boot even before any jobs are due; restarting the launchd job picks up where it left off without manual intervention.
+  - Acceptance: `launchctl list | grep com.zyzyva.content-forge` shows the job loaded; the dashboard answers on the configured dev port; killing the Phoenix process triggers a restart within seconds; no Postgres connection storms in the log on restart.
+  - See `RESEARCH_LOOP_PLAN.md` Phase 0 for full detail.
+
+- **17.1 Twitter Apify adapter fix + comment harvesting infra** ✅ Shipped `14defef`.
+  - Blocks: 17.4 (synthesis is comment-aware), 17.5 (importer mirrors the schema), 17.6 (corrective loop reads comment-derived intel). Blocked by: 17.0.
+  - Two work streams in one slice (sized this way because the schema migration plus the actor-config change is one TDD loop and they are tightly coupled):
+    - Post harvesting: route the Twitter platform to the kaitoeasyapi actor identifier in the per-platform `actors` config; extend the input shape so handle-driven scrapes pass a `from` field in addition to the existing `handle/username/screenName/searchTerms` keys (other actors ignore unknown keys, so this is safe); add a defensive filter that drops items carrying a `noResults` marker before normalisation; add a fixture-based unit test exercising the kaitoeasyapi response shape.
+    - Comment harvesting: new `competitor_post_comments` schema and migration with the column set documented in `RESEARCH_LOOP_PLAN.md` Phase 1, including the FK to `competitor_posts` with cascade delete, the unique index on `(competitor_post_id, platform_comment_id)`, and the `raw_payload` jsonb column; viral threshold sourced from `:content_forge, :competitor_research, :viral_threshold` (default `5x rolling avg OR 100k absolute views`); new `ContentForge.Jobs.CompetitorCommentHarvester` Oban worker that takes a `competitor_post_id`, fetches up to `:max_comments_per_viral_post` (default 50) by like count via the configured Apify actor, normalises each, upserts into `competitor_post_comments`. Triggered on (a) initial post ingest crossing the threshold and (b) the 17.6 weekly refresher.
+  - Apify free-plan note: the live integration test (`@tag :live` on the "non-empty list of posts" criterion) cannot run against Twitter until the m4 credit cycle resets 2026-05-05. Code against captured fixtures from `~/projects/lead_intelligence/priv/twitter_scrapes.db` and the recorded kaitoeasyapi response shape; re-verify the live criterion when credit returns.
+  - Tests: post-path normalization fixture; viral-threshold predicate function with three combinations (below, at, above); comment-harvester happy path with stubbed actor + idempotent re-run inserts zero new rows; viral-post detection on initial scrape enqueues the harvester; nested-reply parent linkage via `in_reply_to_id`.
+  - See `RESEARCH_LOOP_PLAN.md` Phase 1 for full detail.
+
+- **17.2 Open the dev/prod config gate** ✅ Shipped `0408035`.
+  - Blocks: 17.3 (MCP tool calls into the synthesizer), 17.6 (cron needs the synthesizer wired). Blocked by: 17.1.
+  - Move `:scraper_adapter` and `:intel_model` bindings out of the `if config_env() == :prod` block in `runtime.exs`. Replace the env gate with presence checks on `APIFY_TOKEN` and `ANTHROPIC_API_KEY` so dev runs of the Oban jobs use the real adapters when keys are present and report a clear `:not_configured` error when not. Document the new behaviour in `CLAUDE.md` and the relevant `CONTENT_FORGE_SPEC.md` integration sections so the prod gate is not re-added.
+  - Acceptance: dev boot with both env vars present runs both jobs end-to-end; dev boot with `APIFY_TOKEN` missing returns a clear `:not_configured` error rather than silently discarding; dev boot with `ANTHROPIC_API_KEY` missing leaves the synthesis in a `pending_manual` state for the 17.4 MCP-driven completion path.
+  - See `RESEARCH_LOOP_PLAN.md` Phase 2 for full detail.
+
+- **17.3 Content Forge MCP server** ✅ Shipped `bfdcba2`.
+  - Blocks: 17.4 (the manual synthesis path uses the MCP tools), 17.5 (the importer is exposed as an MCP tool). Blocked by: 17.0, 17.2.
+  - Add the `SimpleMCP` dependency from the same git source `lead_intelligence` uses. Build a `ContentForgeMCP` server module that exposes the tool set listed in `RESEARCH_LOOP_PLAN.md` Phase 3, with the exact param + return shapes documented there: `cf_create_product`, `cf_list_products`, `cf_add_competitor`, `cf_list_competitors`, `cf_scrape_competitor`, `cf_top_posts_for_synthesis`, `cf_store_intel`, `cf_get_intel`, `cf_import_twitter_sqlite`. All tools return structured `%{...}` or `{:error, %{code, message, details}}` and route through the existing context modules (`Products`, `Metrics`, `ContentGeneration`); no Phoenix or Bandit reach-through.
+  - Stdio transport wrapper following the lead_intelligence pattern. Register the new MCP server in the Claude Code config so sessions can connect to it.
+  - Tests: per-tool happy-path with stubbed context returns; missing-dependency paths (no `APIFY_TOKEN`, unknown product, etc.) return the structured error envelope rather than crashing the stdio process; tool-name dispatch test asserting every documented tool is registered.
+  - See `RESEARCH_LOOP_PLAN.md` Phase 3 for full detail.
+
+- **17.4 With-or-without-key synthesis + comment-aware prompts** ✅ Shipped `3c0ef9d`.
+  - Blocks: 17.5 (importer feeds into the comment-aware shape), 17.6 (corrective loop's week-windowed synthesis uses this path). Blocked by: 17.1, 17.3.
+  - **Scope narrowed at 17.3 acceptance:** the `audience_signals` and `window` columns originally scoped here were pre-empted into 17.3's migration so `cf_store_intel` could persist them honestly today. This slice is now prompt-builder + with/without-key wiring only, not a schema slice.
+  - With-key path: keep the existing `LLMAdapter` contract; update its prompt builder so each top post passed in carries its top-50-by-likes comment thread; populate `audience_signals` (free-form short strings capturing recurring objections, questions, emotional reactions, consensus tropes) and `window` on the resulting row.
+  - Without-key path: when no `ANTHROPIC_API_KEY` is configured, the synthesizer marks the attempt as `pending_manual` against the product, with references to the top posts and their comments. The pending queue is exposed through the Phase 17.3 MCP tools so a Claude session can list pending syntheses, read the bundle, and call `cf_store_intel` with the same row shape the with-key path produces.
+  - Both paths receive the same input bundle shape so behaviour is consistent.
+  - Tests (Req.Test stubs for the LLM client): with-key path produces a `competitor_intel` row autonomously and `audience_signals` is populated when at least one source post has comments; without-key path leaves the synthesis pending and an MCP-driven completion produces an indistinguishable row; comment data makes it into the prompt; `window` round-trips correctly.
+  - See `RESEARCH_LOOP_PLAN.md` Phase 4 for full detail.
+
+- **17.5 Sqlite backfill importer (posts + comments) via MCP** ✅ Shipped `e77447e`.
+  - Blocks: 17.8 (HollerClean bootstrap leans on the existing cleanwithmike sqlite). Blocked by: 17.1, 17.3, 17.4.
+  - The importer is the `cf_import_twitter_sqlite` MCP tool from 17.3; this slice ships its real implementation. Inputs: `sqlite_path`, `product_id`, `competitor_id`, optional `since` / `until`. Reads the standalone scraper's sqlite (`tweets` + `comments` tables), upserts each into `competitor_posts` and `competitor_post_comments` respectively, recomputes the competitor account's rolling engagement average so per-post scores reflect the broader corpus.
+  - Idempotent. Re-running over the same source produces zero new rows for both tables.
+  - Tests: happy-path import against a small fixture sqlite asserting the row counts + the comment foreign-key linkage; idempotent re-run; date-range filtering; missing sqlite returns `not_found` through the MCP error envelope.
+  - See `RESEARCH_LOOP_PLAN.md` Phase 5 for full detail.
+
+- **17.6 MetricsPoller cron + competitor refresher cron + corrective-loop replacement** ✅ Shipped 4e44af2.
+  - Blocks: 17.8 (HollerClean bootstrap needs the loop closing). Blocked by: 17.0, 17.1, 17.4. 17.7 helps but is not blocking.
+  - Three coordinated changes:
+    - Oban cron entry for `MetricsPoller` covering every active product on a 6-hour cadence (v1 default per the plan's open-questions section); "active product" means at least one published post in the last 90 days.
+    - Oban cron entry for a competitor scrape refresher running weekly, fetching only posts newer than what is already in the DB; re-evaluating the viral threshold per scrape and queuing comment harvesting for posts that crossed since the previous run.
+    - Replace `MetricsPoller`'s existing "5 poor performers detected -> force_rewrite" trigger with the two-condition external corrective loop: a brief regeneration enqueues only when (a) our own published content underperformed in the period AND (b) at least one tracked competitor had posts that beat their own rolling average in the same window. The synthesis enqueued by the trigger is week-windowed (passes `window: "week"` per 17.4) so it summarises the corrective signal, not all-time intel. Every other combination is a no-op.
+  - Operator surface (small): a LiveView page or an MCP tool surfacing recent scoreboard outcomes per product so we can verify the loop is closing without trawling the DB.
+  - Tests: each combination of internal-drop x competitor-wins fires or no-ops as documented (four cases); the cron schedule survives a launchd-managed Phoenix restart; refresher cron only enqueues comment harvesting for posts that crossed the threshold since the last run.
+  - See `RESEARCH_LOOP_PLAN.md` Phase 6 for full detail.
+
+- **17.7 All-platforms metrics via Apify (one credential, ship today)** ✅ Shipped `e31e1a8`.
+  - Blocks: nothing strictly (17.6 ships even with stub fetchers, but the loop is only honest once 17.7 runs). Blocked by: 17.0, 17.1 (the ApifyAdapter from 17.1 is the foundation this extends). Independent of 17.3-17.6.
+  - **Premise:** every native social-platform API requires an approval flow before it produces metrics: LinkedIn Marketing Developer Platform takes weeks (often rejected the first round); Facebook + Instagram App Review is the same flavor; YouTube needs OAuth verification; Reddit needs an app approval; Twitter v2 needs OAuth + elevated access. The user is starting from zero content and zero existing OAuth setups, so the cost of going native is "wait a week and beg every platform" before any metrics flow at all. Apify costs cents per scrape, runs through the credential we already have (`APIFY_TOKEN` from 17.1), and ships today. The trade-off is acknowledged: per-call cost vs. zero approval friction. At current volume (zero content) the cost is negligible; revisit if a product reaches volume where Apify spend dominates the metrics budget.
+
+  - **Audit-time finding (master `67617f2`):** all five platform `fetch_metrics/2` implementations are real native-API calls. None are stubs. They will be **replaced**, not repaired. The existing publishing paths (`publish_post`, `publish_thread`, etc.) keep their native OAuth code unchanged; OAuth is genuinely required for posting on every platform, but not for reading public engagement counts on already-published posts.
+
+  - **Apify-for-all rewire:**
+    - Each platform's `fetch_metrics/2` is rewritten to call a new `ContentForge.CompetitorScraper.ApifyAdapter.fetch_metrics_for_post/2` taking `(platform, post_url)` and returning `{:ok, %{"likes", "comments", "shares", "views"}}` or a classified error tuple. The function name is intentionally generic ("for_post" not "for_tweet") because the second-platform adoption is supposed to be trivial.
+    - `fetch_metrics_for_post/2` dispatches to the right Apify actor per platform via the existing `:content_forge, :apify, :actors` config map (already populated by 17.1 with handle-scraping actors; 17.7 either reuses each actor with a per-post input shape OR ships a sibling `:content_forge, :apify, :metrics_actors` map if any platform needs a different actor for per-post fetching than for handle scraping). Coder picks the cleaner of those two layouts at slice time based on what each actor's input schema supports.
+    - **Per-platform input shape (subject to coder live-shape verification at slice time, the same way 17.1 verified the Twitter handle scrape):**
+      - **Twitter** -> `kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest`, input `%{"startUrls" => ["https://x.com/i/status/<tweet_id>"], "maxItems" => 1}`.
+      - **LinkedIn** -> `apify~linkedin-post-scraper`, input `%{"urls" => ["<post_url>"]}`.
+      - **Facebook** -> `apify~facebook-posts-scraper` (or whichever actor is current at slice time; 17.1 mapped the page scraper, the post scraper may be a sibling), input `%{"startUrls" => ["<post_url>"]}`.
+      - **Instagram** -> `apify~instagram-scraper`, input `%{"directUrls" => ["<post_permalink>"]}` for individual posts.
+      - **Reddit** -> `trudax~reddit-scraper`, input `%{"startUrls" => ["<reddit_post_url>"]}`.
+      - **YouTube** -> `apify~youtube-scraper`, input `%{"startUrls" => ["https://youtube.com/watch?v=<video_id>"], "maxItems" => 1}`.
+    - **Result normalization:** per-platform normalizer extracts engagement counts using the same lenient field-priority lookup the 17.1 post-list normalizer uses, extended for views where each actor exposes them: `likes` from `likeCount/numLikes/likes/score/reactions`, `comments` from `replyCount/numComments/commentsCount/comments`, `shares` from `retweetCount/numShares/sharesCount/shares/repostCount`, `views` from `viewCount/numViews/views/playCount`. When a count is genuinely missing in the actor response, default to `nil` rather than `0` so MetricsPoller can distinguish "not measured" from "measured as zero" (matters for corrective-loop signal honesty).
+    - **Native fallback retained but inverted:** if a product happens to have a native OAuth token configured (`twitter_access_token`, `linkedin_access_token`, etc.), the platform module still honors it and uses the native API. This keeps any product that has already done the OAuth grind on the faster + richer native path. New default for products without an OAuth token: Apify. The dispatch lives entirely inside each platform's `fetch_metrics/2`; MetricsPoller's code path is unchanged.
+    - **`PublishedPost.platform_post_url`:** the per-post URL is the input the Apify actors need. The `published_posts` table already carries `platform_post_id`; MetricsPoller currently passes only the id. Each platform module reconstructs the canonical URL from the id (Twitter: `https://x.com/i/status/<id>`, YouTube: `https://youtube.com/watch?v=<id>`, etc.). For Reddit, LinkedIn, Facebook, Instagram where the post id is opaque or not URL-safe, the module pulls the full URL from the `PublishedPost.platform_post_url` field if present and falls back to a constructed URL otherwise. The reviewer flags any case where the URL cannot be reconstructed from existing data and we have to defer that platform.
+
+  - **Concurrency + batching:**
+    - Apify actors generally accept multiple `startUrls`/`urls` per run and return one dataset item per URL. **Batching is a future optimization, not in this slice.** Per-call cost at zero-content volume is pennies; the simpler one-run-per-post code path is easier to test and reason about. If MetricsPoller volume grows into a real cost, a follow-up slice batches by grouping a poll cycle's posts per platform into one Apify run each.
+    - The Apify run lifecycle (POST run, poll status until SUCCEEDED/FAILED, GET dataset items) is reused unchanged from 17.1. The new function adds nothing to the run protocol; it just submits a different input shape.
+
+  - **`CAPABILITIES.md` refresh:**
+    - Per-platform fetcher table: platform, status (`apify | apify+native_fallback | unimplemented`), Apify actor used, OAuth fallback supported (yes for the existing five since their `fetch_metrics/2` retains the native-credentials branch), credential needed (`APIFY_TOKEN` or `APIFY_TOKEN + <platform>_access_token`), last-verified date.
+    - Document the cost-vs-friction trade-off explicitly so a future maintainer knows why we went Apify-first rather than going through five OAuth approvals.
+
+  - **Tests:**
+    - `ApifyAdapter.fetch_metrics_for_post/2` direct tests, one per supported platform: stubbed Apify run lifecycle (POST run, GET status SUCCEEDED, GET dataset items with a representative actor response), assert the returned engagement map matches the expected shape with non-nil counts.
+    - Each platform module's `fetch_metrics/2`: happy path through Apify when no native OAuth token is set; happy path through native API when the OAuth token IS set (preserves existing behavior); `:not_configured` when neither path has its credential; classified error tuple on Apify run failure, not a zero-filled map.
+    - `ApifyAdapter.fetch_metrics_for_post/2` error classes: missing token (`:not_configured`), run-poll timeout, parse failure, transient HTTP error, permanent HTTP error, unsupported-platform when called with a platform not in the actors map.
+    - No live Apify or live native API calls in the suite. All exercised via `Req.Test`.
+
+  - **Out of scope:**
+    - Batching multiple posts into one Apify run. Future optimization; per-call cost at current volume is negligible.
+    - Video-level deep analytics (watch time, retention, audience demographics). The current shape is engagement counts only; deeper analytics live in a future slice if MetricsPoller decides it needs them. Apify YouTube actors generally do not expose retention curves.
+    - Per-product Apify actor overrides. v1 uses one global actors map. If a product needs a different actor for some reason, that is a per-product config follow-up.
+    - Cost surfacing in the dashboard. Apify spend per product is a Phase 15 polish item, not Phase 17.
+
+  - See `RESEARCH_LOOP_PLAN.md` Phase 7 for full detail.
+
+- **17.8 Bootstrap HollerClean as the first product** `requires_human`
+  - Blocks: 17.9. Blocked by: 17.1 through 17.6 (all). 17.7 helpful but not blocking.
+  - Use everything above to do a full pass for HollerClean end to end: create the product with voice profile and any publishing-target credentials; add `@cleanwithmike` plus 2-3 other cleaning-business operator accounts as competitors; run the importer against the existing cleanwithmike sqlite; trigger fresh scrapes for the others; run the synthesizer (headless if key present, MCP-driven if not); verify the resulting `competitor_intel` carries hooks/formats/topics that match the patterns we already documented manually; take whatever drafts CF produces and run them through the multi-model ranker for a baseline prediction.
+  - Acceptance: HollerClean visible in the product list with three or more competitors carrying real posts; one `competitor_intel` row populated for HollerClean; at least one draft generated by the brief generator using that intel and ranked by the multi-model ranker; nothing in the workflow required leaving the MCP surface plus the CF dashboard.
+  - Requires human input: voice profile content, competitor handle list, publishing credentials (if any). Architect or coder pauses for human confirmation before the first synthesis run if the voice profile is empty.
+  - See `RESEARCH_LOOP_PLAN.md` Phase 8 for full detail.
+
+- **17.9 Lead Intelligence cleanup follow-up** `requires_human`
+  - Blocks: nothing. Blocked by: 17.8.
+  - Once CF is doing the work, decide whether to deprecate `analyze_video` and `analyze_channel_videos` in lead_intelligence's MCP (redirect to CF) or keep them as a dev-time scratch pad with a clear note. If deprecating, extend the redirect helper, mirror the description prefix, update lead_intelligence's `CLAUDE.md`. Audit the lead_intelligence Content context for code with no production caller anymore. Decide whether the standalone scraper script `lead_intelligence/priv/scripts/scrape_twitter.exs` belongs in CF instead.
+  - Acceptance: the two repos have a clear documented division of labour (research and content production in CF; lead and outreach state in lead_intelligence); no MCP tool in either claims to do something it cannot; both `CLAUDE.md` files reflect the post-cleanup state.
+  - Requires human input: keep-vs-delete decisions on lead_intelligence code with no production caller.
+  - See `RESEARCH_LOOP_PLAN.md` Phase 9 for full detail.
+
+Phase exit criteria: (1) HollerClean has competitor_intel populated from the corpus-of-record path; (2) MetricsPoller is on a cron and the corrective loop fires only on the our-drop + competitor-wins combination; (3) the MCP server lets a Claude session walk a full research loop without leaving stdio; (4) the kaitoeasyapi adapter survives the next time an upstream actor goes bad without a code change; (5) lead_intelligence and CF have a documented, non-overlapping division of labour.
 
 ## Phase 15 — Polish
 

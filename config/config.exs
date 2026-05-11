@@ -17,6 +17,18 @@ config :content_forge,
 # path records the reason + state snapshot at approval.
 config :content_forge, :seo, publish_threshold: 18
 
+# Phase 16.6 escalation defaults. `session_window_seconds` bounds
+# how long an open escalation continues to short-circuit
+# subsequent tool calls on the same session before it auto-expires
+# (rows stay in the table as audit). `holding_reply` is the
+# message persisted on every new escalation row so a future copy
+# change does not retroactively rewrite past audit trails.
+config :content_forge, :escalations,
+  session_window_seconds: 86_400,
+  holding_reply:
+    "Thanks - I have flagged this for the team and someone will follow up shortly. " <>
+      "You can keep messaging here in the meantime."
+
 # Configure the endpoint
 config :content_forge, ContentForgeWeb.Endpoint,
   url: [host: "localhost"],
@@ -79,7 +91,22 @@ config :content_forge, Oban,
        # Hourly reminder sweep: iterates products with enabled
        # ReminderConfig and enqueues a ReminderDispatcher per eligible
        # phone. Cadence/pause/quiet-hours gates live in the worker.
-       {"0 * * * *", ContentForge.Jobs.ReminderScheduler}
+       {"0 * * * *", ContentForge.Jobs.ReminderScheduler},
+
+       # Phase 17.6 corrective-loop scheduler: every 6 hours, fan
+       # out a MetricsPoller job per active product (>=1 published
+       # post in the last 90 days). Each MetricsPoller run also
+       # owns the corrective trigger (drop + competitor wins ->
+       # week-windowed synthesis + brief regen).
+       {"0 */6 * * *", ContentForge.Jobs.MetricsPollerScheduler},
+
+       # Phase 17.6 competitor scrape refresher: weekly per
+       # product with active competitor accounts. Each scraper run
+       # re-evaluates the viral threshold per post and queues
+       # CompetitorCommentHarvester for posts that crossed since
+       # the last run. Runs Mondays at 03:00 UTC to avoid clashing
+       # with the start-of-day metrics polls.
+       {"0 3 * * 1", ContentForge.Jobs.CompetitorScrapeRefresher}
      ]}
   ]
 

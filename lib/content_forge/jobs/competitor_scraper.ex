@@ -5,8 +5,8 @@ defmodule ContentForge.Jobs.CompetitorScraper do
 
   Gated behind two pieces of configuration:
 
-    * `:apify_token` — Apify API token.
-    * `:scraper_adapter` — module implementing `fetch_posts/1` per platform.
+    * `:apify_token` - Apify API token.
+    * `:scraper_adapter` - module implementing `fetch_posts/1` per platform.
 
   When either is missing the job is discarded (no retries, no synthetic
   output). Real adapter implementations land in Phase 11; see `BUILDPLAN.md`.
@@ -15,6 +15,9 @@ defmodule ContentForge.Jobs.CompetitorScraper do
 
   require Logger
 
+  alias ContentForge.CompetitorResearch
+  alias ContentForge.Jobs.CompetitorCommentHarvester
+  alias ContentForge.Jobs.CompetitorIntelSynthesizer
   alias ContentForge.Products
   alias ContentForge.Products.CompetitorAccount
 
@@ -74,13 +77,15 @@ defmodule ContentForge.Jobs.CompetitorScraper do
     case adapter.fetch_posts(account) do
       {:ok, posts} ->
         avg_engagement = calculate_average_engagement(posts)
+        rolling_avg_views = CompetitorResearch.rolling_avg_views(posts)
 
         {stored, failed} =
           Enum.reduce(posts, {0, 0}, fn post, {ok_count, fail_count} ->
             score = calculate_relative_score(post, avg_engagement)
 
             case store_post(account, post, score) do
-              {:ok, _} ->
+              {:ok, persisted} ->
+                maybe_enqueue_comment_harvest(persisted, post, rolling_avg_views)
                 {ok_count + 1, fail_count}
 
               {:error, changeset} ->
@@ -100,6 +105,20 @@ defmodule ContentForge.Jobs.CompetitorScraper do
       {:error, reason} ->
         Logger.error("Failed to scrape #{account.handle}: #{inspect(reason)}")
         {:error, reason}
+    end
+  end
+
+  # Phase 17.1 viral trigger. Enqueues `CompetitorCommentHarvester`
+  # for any post that crosses the threshold defined in
+  # `CompetitorResearch.viral?/2`. Non-viral posts are a no-op so the
+  # cron's pricing footprint stays bounded.
+  defp maybe_enqueue_comment_harvest(persisted, raw_post, rolling_avg_views) do
+    if CompetitorResearch.viral?(raw_post, rolling_avg_views) do
+      %{"competitor_post_id" => persisted.id}
+      |> CompetitorCommentHarvester.new()
+      |> Oban.insert()
+    else
+      :ok
     end
   end
 
@@ -133,17 +152,17 @@ defmodule ContentForge.Jobs.CompetitorScraper do
       likes_count: post.likes_count,
       comments_count: post.comments_count,
       shares_count: post.shares_count,
+      views_count: Map.get(post, :views_count, 0),
+      conversation_id: Map.get(post, :conversation_id),
       engagement_score: score,
       posted_at: post.posted_at,
-      raw_data: post
+      raw_data: Map.get(post, :raw_data) || post
     })
   end
 
   defp schedule_intel_synthesis(product_id) do
     %{"product_id" => product_id}
-    |> ContentForge.Jobs.CompetitorIntelSynthesizer.new(
-      scheduled_at: DateTime.add(DateTime.utc_now(), 5, :second)
-    )
+    |> CompetitorIntelSynthesizer.new(scheduled_at: DateTime.add(DateTime.utc_now(), 5, :second))
     |> Oban.insert()
   end
 

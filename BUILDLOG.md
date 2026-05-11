@@ -82,6 +82,422 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 16.6: Escalate-to-human as a cross-channel tool
+
+Status: DONE
+Merged: master @ `be2d068` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 1221-0, credo 23 vs 44 baseline (zero new in slice-touched files). Coverage `EscalateToHuman` 96%, `EscalationController` 83%, `EscalationEvent` 80%, `Escalations` 71%. Zero emdashes. Dispatcher hook is sound on both surfaces: `escalate_to_human` exempted (re-escalation must succeed); `cf_recent_scoreboard` exempted on MCP (operator monitoring). Idempotent re-escalation enforced both at DB (partial unique on `resolved = false`) and via `Escalations.create_or_update_open`. Auto-expiry via `:max_age_seconds` in `find_open` returns nil after the window without deleting the row. Phone-shaped `sender_identity` hashed via the same 16.5 `ToolAudit.hash_pii` helper for consistency. ToolAudit gains a new `blocked_escalated` status separating dispatcher short-circuits from genuine errors. **Phase 16 closed.**
+Note: Branch: `swarmforge-coder` (pending commit hash on handoff). Gate: compile (warnings-as-errors) green, format check green, mix test 1221-0 (46 new tests across context + tool + dispatcher hook + SMS integration + resolve endpoint), credo --strict diff vs `.credo_baseline.txt` zero new findings. New surface: `ContentForge.Escalations` context, `ContentForge.Escalations.EscalationEvent` schema + migration with partial unique index, `ContentForge.OpenClawTools.EscalateToHuman` tool, cross-channel dispatcher hooks on both `ContentForge.OpenClawTools.dispatch/3` and `ContentForgeMCP.Server.handle_tool_call/2`, `Sms.escalate_session/3` integration, `POST /api/v1/escalations/:id/resolve` endpoint, and a channel-agnostic `/dashboard/sms` (formerly SMS-only) page.
+
+Note: Phase 16 closer. Gives the agent a first-class self-escalation path and stops it from continuing to act on a session that has already been handed off to a human. Closes the Phase 16 exit criteria item "the bot escalates to a human when uncertain" with a generic primitive that any future channel can reuse.
+
+Implementation:
+
+- `ContentForge.Escalations.EscalationEvent` (table `escalation_events`): `product_id` (FK with `nilify_all` so audit survives product deletion), `session_id`, `channel` (mirrors the 16.5 audit channel namespace: `"sms" | "openclaw_<channel>" | "mcp"`), `sender_identity` (PII-hashed at write time when phone-shaped, via `ToolAudit.hash_pii/1`), `reason` (text 1..2000), `urgency` (`low | normal | high`, default `normal`), `resolved` (default false), `resolved_at`, `resolved_by`, `holding_reply`. Indexes: `(product_id, inserted_at)`, `(resolved, inserted_at)`, plus a partial unique on `(product_id, session_id) WHERE resolved = false` so a session has at most one open escalation.
+- `ContentForge.Escalations` context: `create_or_update_open/1` is the only insert path; if an open row exists for `(product_id, session_id)`, the call updates `reason`, `urgency`, `holding_reply` (and `sender_identity` when present) in place rather than inserting a duplicate. `find_open/3` accepts `:max_age_seconds` so the dispatcher hook treats expired escalations as no-ops while still surfacing them on the operator dashboard. `list_open_for_product/2` and `list_open/1` back the dashboard. `mark_resolved/2` + `get/1` round out the read API.
+- `ContentForge.OpenClawTools.EscalateToHuman` tool: gated by `:viewer` (anyone authenticated can ask for help), validates `reason` length (1..2000) and `urgency` inclusion, resolves product via `ProductResolver`, persists the configured `holding_reply` on the row at creation time so future copy changes do not rewrite the audit trail. Returns `%{event_id, product_id, product_name, channel, escalated_at, holding_reply, urgency}` so the agent can read the holding reply back to the user verbatim.
+- Cross-channel dispatcher hook (the heart of the slice):
+  - `OpenClawTools.dispatch/3` runs a pre-check. When the resolved `(product_id, session_id)` has an open escalation that is not older than the configured window, the dispatcher returns `{:error, {:escalated, %{holding_reply: ...}}}` instead of calling the tool. `escalate_to_human` itself is exempt (re-escalation must always succeed). product_id is resolved best-effort from `params["product_id"]`, then `params["product"]` via `ProductResolver`, then the channel-specific session lookup; when none resolves, the dispatcher passes through (the tool will fail naturally with `:missing_product_context`).
+  - `ContentForgeMCP.Server.handle_tool_call/2` does the same with `session_id = "mcp"` (MCP has no per-client session concept) and `channel = "mcp"`. Two exemptions: a future `escalate_to_human` MCP tool name and `cf_recent_scoreboard` (operator-facing read; harmless on an escalated session). The MCP error envelope shape is `{:error, %{code: "escalated", message: holding_reply, details: %{}}}` to match the existing MCP convention.
+  - `ToolAudit.normalize_result/1` extended to map the new `:escalated` reason (and the MCP `code: "escalated"` envelope) to `result_status: "blocked_escalated"` so operators can distinguish a genuine tool error from a "blocked while session is awaiting a human" no-op. `"blocked_escalated"` added to `ToolInvocationEvent`'s allowed `result_status` set.
+- SMS integration: `Sms.escalate_session/3` keeps every 14.5 behavior (sets `escalated_at`, pauses auto-response, writes the `SmsEvent` audit row) and additionally calls `Escalations.create_or_update_open/1` with `channel = "sms"` and `session_id = session.id`. The 14.5 dashboard previously sourced from `ConversationSession.escalated_at`; it now sources from `Escalations.list_open/1` and gained a `Channel` column so OpenClaw and MCP escalations show up alongside SMS ones. Resolving an SMS-channel row from the dashboard or REST also calls `Sms.resolve_session/1` to clear the paused-auto-response flag.
+- `POST /api/v1/escalations/:id/resolve` REST endpoint under the `:api_auth` pipeline. Body accepts an optional `resolved_by`; defaults to the API key label when omitted. For `channel: "sms"` rows, also unpauses the matching `ConversationSession` so the operator does not have to resolve in two places.
+- Configuration in `config/config.exs`: `:content_forge, :escalations, session_window_seconds: 86_400, holding_reply: "..."` so a future deployment can adjust the window or the user-facing copy without code changes.
+- Tests added: `test/content_forge/escalations_test.exs` (14 schema + context tests including idempotent re-escalation, auto-expiry via `:max_age_seconds`, partial-unique behavior, PII hashing); `test/content_forge/open_claw_tools/escalate_to_human_test.exs` (11 tool tests covering happy paths, urgency, idempotent re-escalation, validation, viewer auth gate, cli channel namespacing); `test/content_forge/open_claw_tools_dispatch_escalation_test.exs` (5 dispatcher hook tests including expired/resolved/different-session = no block, escalate_to_human exempt); `test/content_forge_mcp/server_dispatch_escalation_test.exs` (5 MCP dispatcher tests including cf_recent_scoreboard exempt); `test/content_forge/sms_escalation_event_integration_test.exs` (3 tests asserting `Sms.escalate_session/3` writes an `EscalationEvent` and preserves the 14.5 paused-auto-response behavior); `test/content_forge_web/controllers/escalation_controller_test.exs` (7 REST tests including auth, SMS unpause, double-resolve no-op); plus an updated `test/content_forge_web/live/dashboard/sms/needs_attention_live_test.exs` covering the channel-agnostic surface.
+
+Out of scope (deferred per spec):
+
+- Outbound notification fan-out (Slack, email, PagerDuty). The 14.5 SMS-side `notify_channels` opt remains SMS-only.
+- Resolution analytics (avg time to resolve, escalations per product per week). Data captured on the row; surfacing is Phase 15 polish.
+- Auto-resolution by the agent. v1 leaves resolution to humans only.
+
+### Phase 16.5: Unified tool-invocation audit + dashboard surface
+
+Status: DONE
+Merged: master @ `951f8ae` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 1175-0, credo 23 vs 44 baseline (zero new in slice-touched files). Coverage `ToolInvocationEvent` 100%, `ToolActivityJSON` 100%, `Live.Dashboard.ToolActivity.Live` 89%, `ToolActivityController` 88%, `ToolAudit` 87%. Zero emdashes. Audit wraps both dispatchers (OpenClaw HTTP + MCP) correctly: dispatch result is captured before the audit fires so log-failures cannot affect tool behavior. Channel namespaced as `openclaw_<original>` vs `mcp` to keep cross-surface analytics clean. PII redaction sound: phone-shaped `sender_identity` (E.164 regex) hashed via SHA-256/base64url with `sha256:` prefix; param redaction by configurable per-tool key list (defaults `phone_number`, `phone`, `email`, `sender_identity`). REST gated by `:api_auth` bearer token; LiveView wrapped in `:require_authenticated_user`. Mobile-first markup with semantic HTML + ARIA.
+Note: Branch: `swarmforge-coder` (pending commit hash on handoff). Gate: compile (warnings-as-errors) green, format check green, mix test 1175-0 (48 new tests added across audit unit + dispatch coverage + LiveView + REST), credo --strict diff vs `.credo_baseline.txt` zero new findings. New surface: `ContentForge.ToolAudit` (writer + read API), `ContentForge.ToolAudit.ToolInvocationEvent` schema + migration, `/dashboard/tool-activity` LiveView, `GET /api/v1/products/:product_id/tool-activity` REST endpoint.
+
+Note: Phase 16 polish slice (Phase 17 critical path is done). Gives every tool surface a single audit row per call, pre-redacted for PII, observable via the LiveView dashboard or via the REST API for external inspection. Closes the "every tool invocation appears in the audit dashboard" item from the Phase 16 exit criteria.
+
+Implementation:
+
+- `ContentForge.ToolAudit.ToolInvocationEvent` (insert-only schema, table `tool_invocation_events`): `tool_name`, `channel`, `sender_identity` (PII-hashed when it looks like a phone number), `params` (redacted via `:default_pii_keys` plus a per-tool override config map at `:content_forge, :tool_audit, :pii_keys_per_tool`), `result_status` (`ok | error | confirmation_required | unknown_tool`), `result_summary` (short error tag), `duration_ms`, `invoked_at`, `product_id` (nullable + `nilify_all` so the audit row survives product deletion). Indexes on `(product_id, invoked_at)`, `tool_name`, `channel`, `invoked_at`.
+- `ContentForge.ToolAudit.log_invocation/5` writes one row per call. Helpers `hash_pii/1`, `redact/2`, `normalize_result/1` are public so other surfaces can reuse the redaction + classification rules. Result classification handles the OpenClaw envelope shapes (`{:ok, map}`, `{:ok, :confirmation_required, envelope}`, `{:error, atom | tuple}`) plus the MCP error envelope (`{:error, %{code: code, ...}}`). Product id is extracted from the result body, then the params, with UUID-cast validation so a malformed `args["product_id"]` (e.g. `"not-a-uuid"`) does not crash the audit insert.
+- Dispatch wrapping is centralized at the two natural chokepoints, not per-tool: `ContentForge.OpenClawTools.dispatch/3` wraps the `module.call/2` (or unknown-tool short-circuit) with timing + `log_invocation/5`; the channel from `ctx[:channel]` is namespaced as `openclaw_<channel>` (or `openclaw_unknown` when missing) so OpenClaw rows are distinguishable from MCP rows. `ContentForgeMCP.Server.handle_tool_call/2` becomes a thin wrapper around `call_tool/2` that does the same timing + log, with `channel = "mcp"`. Both cover unknown-tool fall-throughs so the audit table sees attempted-but-unrecognized tool calls.
+- `ContentForge.ToolAudit.list_for_product/2` and `list_recent/1` provide the read surface, both filterable by `:tool`, `:channel`, `:status`, with `:limit` (default 100). Filter handling is keyword-list-based and ignores nil/empty values so the LiveView form's "All ..." options work without special-casing.
+- `/dashboard/tool-activity` LiveView lists the most recent 100 invocations, refreshes on a 30-second `Process.send_after` timer, and offers tool/channel/status select dropdowns wired through `phx-change="filter"`. Mobile-first: semantic table with `caption sr-only`, `<th scope="col">`, ARIA-labeled selects, status `<span class="badge ...">` with platform-appropriate variant. Tool option list is the union of `OpenClawTools.registered_tools/0` and the MCP tool registry (kept inline in the LiveView so a future tool addition just needs the registry update).
+- REST API `GET /api/v1/products/:product_id/tool-activity` mirrors the LiveView columns. Bearer-token auth via the existing `:api_auth` pipeline. Query params: `tool`, `channel`, `status`, `limit` (clamped to `[1, 200]`, default 50). Response shape: `%{data: %{product_id, product_name, filters, events: [...], total_count}}`. JSON view delegates to `ToolActivityController.serialize_event/1` so the on-wire shape stays in one place.
+- Tests: `test/content_forge/tool_audit_test.exs` covers `hash_pii`/`redact`/`normalize_result` plus `log_invocation` happy paths (PII hashed, ok/error/confirmation_required classification, product_id extraction from result, params, or nil); `test/content_forge/open_claw_tools_audit_test.exs` parametrizes over `OpenClawTools.registered_tools/0` to assert every shipped tool produces an audit row through `dispatch/3`, plus channel-namespacing, sender hashing, PII params redaction, and unknown-tool short-circuit logging; `test/content_forge_mcp/server_audit_test.exs` does the same for the 11 cf_* tools (all assert `channel == "mcp"`); `test/content_forge_web/live/dashboard/tool_activity_live_test.exs` exercises filters + empty state + status-badge classes; `test/content_forge_web/controllers/tool_activity_controller_test.exs` exercises auth, filter parity, response shape parity with the LiveView, and 404 for unknown product.
+
+Out of scope (deferred per spec):
+
+- 16.6 escalate-to-human as a tool. Lands as the next slice if the architect routes there.
+- Per-product Apify spend / cost surfacing in the dashboard. Phase 15 polish item.
+
+### Phase 17.7: All-platforms metrics via Apify (one credential, ship today)
+
+Status: DONE
+Merged: master @ `e31e1a8` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 1127-0, credo 23 vs 44 baseline (zero new in slice-touched files; 17.6 already dropped 25 -> 23). Zero emdashes anywhere in 17.7 additions. Per-platform `fetch_metrics/3` dispatch is consistent: function-head pattern match on OAuth credential presence, then nil-URL guard for the four platforms whose post ids are not URL-safe (LinkedIn / Facebook / Reddit / Instagram), then Apify fallback. Twitter and YouTube reconstruct canonical URL from id. `ApifyAdapter.fetch_metrics_for_post/2` fails closed on missing token / unknown platform with classified errors. Coverage on the new code paths is solid via `Req.Test` stubs (`twitter_test.exs` + `metrics_fetcher_regression_test.exs`); the publishing-module file aggregates look low only because the pre-existing `post()` flows remain untested. **Deferred verification item:** live Apify input shapes were not validated against running actors at slice time; if a shape mismatch surfaces in the first MetricsPoller cron run, the fix is local to `ApifyAdapter.build_metrics_input/2` with no behavioral coupling outside that module. Worth a manual smoke run once HollerClean (17.8) seeds the first published post per platform; the BUILDLOG should record any per-platform shape adjustments at that point. Phase 17 critical path now complete; 17.8 (HollerClean bootstrap, requires_human) is unblocked.
+Note: Branch: `swarmforge-coder` (pending commit hash on handoff). Gate: compile (warnings-as-errors) green, format check green, test 1127-0, credo --strict diff vs `.credo_baseline.txt` zero new findings (ignoring line-shift drift in already-baselined issues). New tests: 21 added across `apify_adapter_test.exs` (per-platform happy paths + input-shape verifications + error classes for `fetch_metrics_for_post/2`), `twitter_test.exs` (OAuth vs Apify dispatch + URL reconstruction), and `metrics_fetcher_regression_test.exs` (5-platform error-tuple regression sweep, signature-bumped to 3-arg). Existing 1106 tests preserved.
+
+Note: Critical-path Phase 17 slice. Pivots from the original Twitter-only spec to apify-for-all because every native social-platform OAuth approval flow (LinkedIn MDP, FB/IG App Review, YouTube verification, Reddit app, Twitter elevated access) is weeks of friction and rejection risk; Apify ships today on the single `APIFY_TOKEN` from 17.1 and costs cents per call at zero-content volume. Trade-off documented in `CAPABILITIES.md` 11.5; revisit batching when an active product's Apify spend dominates the metrics budget.
+
+Implementation:
+
+- `ContentForge.CompetitorScraper.ApifyAdapter.fetch_metrics_for_post/2` takes `(platform, post_url)` and dispatches to the right Apify actor + per-platform input shape. Twitter and YouTube use `startUrls=[<url>], maxItems=1`; LinkedIn uses `urls=[<url>]`; Instagram uses `directUrls=[<url>]`; Facebook and Reddit use `startUrls=[<url>]`. Per-platform actor selection looks up `:metrics_actors` first (so a platform can use a different per-post actor than its handle-scraping actor without disturbing 17.1) then falls back to the existing `:actors` map. Test-time the slice ships a `:metrics_actors` override only for Facebook (the 17.1 default `apify~facebook-pages-scraper` is not the per-post scraper); other platforms reuse 17.1 actors as-is.
+- Each platform's `fetch_metrics/3` (signature bumped from /2 to /3 to carry `post_url`) dispatches by credential presence: when the OAuth token is in the credentials map, native API path runs; otherwise Apify. Twitter and YouTube reconstruct the canonical URL from id when `post_url` is nil; the other four return `{:error, :no_post_url}` on a nil URL with no OAuth (their post ids are not URL-safe).
+- `MetricsPoller.fetch_platform_metrics/2` now passes `post.platform_post_url` alongside the id to each platform module. `MetricsPoller.get_credentials/2` returns `%{}` for an enabled-but-OAuth-less platform so the Apify dispatch path is reachable; disabled or missing config still returns nil so the poller skips the platform entirely.
+- `extract_engagement/2` extended to read the unified Apify shape (`likes/comments/shares/views`) with legacy keys (twitter `retweets/replies`, reddit `score`) preserved as fallback to keep existing weights honest.
+- Result normalisation uses the lenient field-priority lookup from 17.1, extended for views (`viewCount/numViews/views/playCount`). Missing counts default to `nil` not `0`, so the corrective loop in 17.6 can distinguish "not measured" from "measured as zero".
+- Native-API HTTP paths (Twitter v2, LinkedIn shareStatistics, Facebook Graph, Reddit OAuth, YouTube Data + Analytics) gain a small `req_options` config seam so tests can stub via `Req.Test`. No behavior change in production - the seam reads `[]` by default. The constitution's "every external call goes behind a stubbable module" gate is now honored on the metrics path.
+
+Live actor input shape verification: this slice does not touch live Apify (no live calls in the test suite). The shapes shipped match the spec's documented per-platform input shapes; coder did not run a live verification at slice time. If a shape mismatch shows up against the live actors, the fix is local to `build_metrics_input/2` and has no behavioral coupling outside `ApifyAdapter`. Reviewer should flag this as a deferred verification item rather than a blocker.
+
+Out of scope (deferred per spec):
+
+- Batching multiple posts into one Apify run. Per-call cost at current volume is pennies; revisit when MetricsPoller volume grows.
+- Video-level deep analytics (watch time, retention, audience demographics). The Apify path returns engagement counts only; YouTube native OAuth path retains its retention curve.
+- Per-product Apify actor overrides. v1 ships a single global `:metrics_actors` map.
+- Cost surfacing in the dashboard.
+
+### Phase 17.6: MetricsPoller cron + competitor refresher cron + corrective-loop replacement
+
+Status: DONE
+Merged: directly on master @ 4e44af2 (architect-shipped after the coder session stalled mid-slice with substantial WIP on disk; coder /clear'd by user, architect cherry-picked the high-quality WIP forward and finished the missing pieces). Gate: compile/format/test 1100-0, credo 23 vs 44 baseline (two pre-existing nested-module findings in `metrics_poller.ex` resolved by the alias hoist for the new `trigger_corrective_loop`; baseline drops 25 -> 23). Zero emdashes anywhere. The coder's WIP that came forward unchanged: `Metrics.competitor_wins_in_window?/2` predicate, the two-condition `check_rewrite_trigger/1` rewrite (cond chain on internal-drop x competitor-wins), `trigger_corrective_loop/1` enqueueing a week-windowed `CompetitorIntelSynthesizer` followed by a `force_rewrite` `ContentBriefGenerator`, both new scheduler workers (`MetricsPollerScheduler` + `CompetitorScrapeRefresher`) with their `active_product_ids/0` and `product_ids_with_active_competitors/0` exposed for tests + the operator surface, and the four-combination corrective-trigger test suite in `metrics_poller_test.exs`. Architect added on top: cron entries in `config/config.exs` (every 6 hours for the metrics scheduler, weekly Mondays 03:00 UTC for the scrape refresher, both pinned alongside the existing reminder cron), the new `cf_recent_scoreboard` MCP tool (11th in the registry; product-scoped or active-products-wide; returns recent winners + losers, last_polled_at, corrective_trigger_fired predicate computed against week-windowed CompetitorIntel insertions in the last 24 hours), the dispatch-coverage test pinned to the 11-tool registry, and standalone test files for both schedulers (active-products gating, no-op log paths, Oban-unique idempotency).
+Note: Closes the Phase 17 critical path before HollerClean bootstrap. The corrective loop is now wired end-to-end: every 6 hours the scheduler enumerates active products and fans out a MetricsPoller per product; each poll runs the two-condition check; on (drop AND competitor wins) it enqueues a week-windowed synthesis + a brief regen, both bounded by Oban unique args so the same poll cycle does not stack jobs. Operator can run `cf_recent_scoreboard` from any Claude Code session to verify the loop is closing per product. Cron entries are passive on first launchd boot since no products exist yet on m4; the cron will start producing visible enqueues once 17.8 (HollerClean bootstrap) seeds the first product.
+
+### Phase 17.5: Sqlite backfill importer (posts + comments) via MCP
+
+Status: DONE
+Merged: master @ `e77447e` (fast-forward; architect ran `mix deps.get` post-merge to fetch the new `exqlite` dep; restored a small formatter drift on master before merging). Reviewer ACCEPT (one reviewer-only commit `e77447e` swept three emdashes that slipped into the 17.5 BUILDLOG entry, keeping the recent fresh-additions discipline; historical BUILDLOG content untouched). Gate: compile/format/test 1082-0, credo 25 vs 44 baseline (zero new in slice-touched files). Coverage SqliteImporter 85%. Two deviations from spec accepted as coherent: (1) insert-when-missing rather than literal upsert preserves any metric refinement the live scraper made since the original capture (a literal upsert would have clobbered fresher engagement numbers with stale sqlite values); (2) ISO-8601 text comparison for `since` / `until` is mathematically sound (lex order equals chrono order for ISO dates), avoiding a needless date-parse step. Parameterized queries throughout, sqlite opened readonly, `Stream.resource` cleanup on connection close. Idempotency proven by test.
+Note: Critical-path Phase 17 slice. Replaces 17.3's `cf_import_twitter_sqlite` placeholder with a real importer that backfills from the standalone scraper's sqlite (`tweets` + `comments` tables; canonical shape lives at `~/projects/lead_intelligence/priv/twitter_scrapes.db`). Idempotent re-runs report zero new rows; `since` / `until` ISO dates bound the import; rolling-average engagement gets recomputed against the broader corpus after a successful backfill. Unblocks 17.8 (HollerClean bootstrap leans on the existing cleanwithmike sqlite).
+
+**New dep** (`mix.exs` + `mix.lock`): `{:exqlite, "~> 0.27"}` locked at `0.36.0` - pure NIF for the sqlite read path, no Ecto adapter integration needed for one-shot reads.
+
+**Migration** (`priv/repo/migrations/20260513120000_unique_index_on_competitor_posts.exs`):
+- `unique_index(:competitor_posts, [:competitor_account_id, :post_id])` named `competitor_posts_account_post_id_index`. The pre-existing scraper job did its own in-memory dedupe before insert, so this index lands without a backfill conflict; the importer leans on it for the natural-key check via `existing_post/2`.
+
+**Context helpers** (`lib/content_forge/products.ex`):
+- `Products.upsert_competitor_post/1` - pre-checks `(competitor_account_id, post_id)`. Returns `{:ok, %{row, status: :inserted | :skipped}}` so callers can count fresh imports vs already-known rows. The status distinction is what makes the importer's response shape (`posts_imported` / `posts_skipped`) honest.
+- `Products.recompute_engagement_scores_for_account/1` - loads every post for the account, computes the corpus average via `likes + comments * 2 + shares * 3`, and updates each post's `engagement_score` to the relative ratio. Returns `{updated_count, average_engagement}`. The importer calls this after the post + comment passes so the scores reflect the full backfilled set rather than the pre-import slice.
+
+**Importer module** (`lib/content_forge/competitor_scraper/sqlite_importer.ex`):
+- Public entry point `import_twitter_sqlite/1` takes `%{sqlite_path, competitor, since: optional, until: optional}`. Returns `{:ok, %{posts_imported, posts_skipped, comments_imported, comments_skipped, rolling_avg_engagement}}` or a classified error.
+- File-existence pre-check returns `{:error, :sqlite_not_found}` so the MCP layer can render `not_found` cleanly without an Exqlite open attempt.
+- Streams tweets via `Exqlite.Sqlite3.prepare/bind/step` wrapped in a `Stream.resource` so memory stays bounded for the 6,800-row cleanwithmike file. Same pattern for comments.
+- ISO-8601 text comparison on `posted_at` (lexicographic == chronological for ISO dates) handles the `since` / `until` filter without any unix-timestamp drift between the source's `posted_unix` column and the input ISO date.
+- Comments without a parent tweet in the corpus (the source sqlite can carry orphan replies) are silently `:ignored` during the comment pass; only comments whose parent landed in `competitor_posts` get inserted.
+- Each pass tallies `:inserted` vs `:skipped` so the response counts are explicit. Existing comments are detected via `existing_comment?/2` against the `(competitor_post_id, platform_comment_id)` partial unique from 17.1; existing posts via `existing_post/2` against the new 17.5 unique index.
+- After the row passes complete, calls `Products.recompute_engagement_scores_for_account/1` and surfaces the new `rolling_avg_engagement` in the response so callers can see the corpus shift in one round trip.
+
+**MCP wiring** (`lib/content_forge_mcp/server.ex`):
+- `cf_import_twitter_sqlite` placeholder body replaced with the real importer call. Validates `sqlite_path` and `competitor_id` as required binaries; threads optional `since` / `until` ISO dates through. Resolves the competitor through `fetch_competitor/1` (existing helper) so an unknown id returns `not_found` via the standard envelope before the importer ever opens the file.
+- Importer error classification:
+  - `:sqlite_not_found` -> `not_found` envelope with `details.sqlite_path` so the agent can ask the user for the right path.
+  - `{:sqlite_open_failed, reason}` -> `dependency_error` envelope.
+  - Anything else -> `dependency_error` envelope with `inspect/1`'d reason.
+
+**Tests** (12 new):
+- `test/content_forge/competitor_scraper/sqlite_importer_test.exs` (9): builds a fixture sqlite in `System.tmp_dir!()` per test using `Exqlite.Sqlite3` directly with the standalone scraper's exact column shape. Three tweets across Jan/Feb/Mar 2026 + two real comments + one orphan comment whose parent never lands. Asserts: happy import populates rows + counts match; comments link to the right parent; engagement_score recomputed against corpus average; idempotent re-run = zero new rows; `since=2026-02-01` excludes Jan; `until=2026-03-01` excludes Mar; both bounds together yield only Feb; non-existent sqlite returns `:sqlite_not_found`; orphan comments are silently dropped.
+- `test/content_forge_mcp/server_test.exs` (3 new): missing sqlite returns `not_found` via the MCP envelope; unknown competitor returns `not_found`; happy path walks the full HTTP-style call into the importer with a tiny inline fixture sqlite and asserts `posts_imported: 1` end-to-end.
+
+**Spec deviations**:
+- The spec said "Reads the standalone scraper's sqlite (tweets + comments tables), upserts each into competitor_posts and competitor_post_comments". Shipped as **insert-when-missing** rather than literal upsert: re-running over the same source preserves any metric refinement the live scraper has done since the original import, which matches the spec's idempotency criterion (zero new rows on re-run). Updating already-known rows would require explicit re-import after delete; documented in the importer moduledoc.
+- The since/until filter compares against `posted_at` text rather than `posted_unix` integer because ISO-8601 strings sort lexicographically the same way they sort chronologically. This avoids carrying date-to-unix conversion logic for both the input and the source data.
+
+**What this slice explicitly does NOT do** (only 17.6 remains on the critical path):
+- 17.6 adds the cron entries (`MetricsPoller` + competitor refresher) and replaces the existing trigger with the two-condition external corrective loop.
+
+**Gate**: `mix compile --warnings-as-errors` clean, `mix format --check-formatted` clean, `mix test` 1082/0 (12 new), `mix credo --strict` baseline-diff empty for slice-touched files. Zero emdashes in slice-touched files. Migration applied to both `MIX_ENV=test` and `MIX_ENV=dev`.
+
+### Phase 17.4: With-or-without-key synthesis + comment-aware prompts + pending_manual route
+
+Status: DONE
+Merged: master @ `3c0ef9d` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 1071-0, credo 25 vs 44 baseline (zero new in slice-touched files). Coverage PendingIntelSynthesis 100%, CompetitorIntelSynthesizer 89%, LLMAdapter 96%. Zero emdashes. Three additions outside the literal spec, all accepted as coherent extensions of the without-key route: (1) new `pending_intel_syntheses` queue table makes the without-key route observable to agents instead of being a dead-letter state; (2) `cf_list_pending_syntheses` (10th MCP tool) is the natural discovery surface for the queue; (3) resolve-on-store keeps the queue bounded automatically when `cf_store_intel` lands a row that matches a pending one. Synthesizer correctly `:discards` on `:not_configured` so Oban does not retry a permanent misconfiguration; transient errors still propagate for retry. Comments preloaded into the LLM prompt so `audience_signals` extraction has source material.
+Note: Critical-path Phase 17 slice. Closes the loop opened by 17.2 (adapter-layer downgrade on missing key) + 17.3 (MCP surface). The with-key path now runs comment-aware prompts and persists `audience_signals` + `window`; the without-key path drops a pending row that the MCP surface (`cf_list_pending_syntheses`) exposes for manual completion via `cf_store_intel`. Schema for the pending queue is the only new persistence; the `audience_signals`/`window` columns themselves were pre-empted into 17.3 so this slice is prompt + wiring + new MCP tool only.
+
+**Pending queue** (`priv/repo/migrations/20260512120000_*` + `lib/content_forge/products/pending_intel_synthesis.ex`):
+- New `pending_intel_syntheses` table with `id`, `product_id` (fk cascade), `window` (string nullable), `source_post_ids` (`{:array, :binary_id}`, default `[]`), `note` (string), `utc_datetime` timestamps. Indexes on `product_id` and `(product_id, window)` so the MCP queue read is O(rows-per-product) and the per-window resolution is fast.
+- Schema validates `window` against `~w(all week month)` with `allow_nil: true`. `Products.create_pending_intel_synthesis/1`, `list_pending_intel_syntheses_for_product/1`, and `resolve_pending_intel_syntheses/2` ship as the context surface; `resolve` deletes by `(product_id, window)` and is what `cf_store_intel` calls when a manual synthesis lands.
+
+**LLMAdapter comment-aware prompt** (`lib/content_forge/competitor_intel_synthesizer/llm_adapter.ex`):
+- System prompt asks for `audience_signals` (recurring objections, questions, emotional reactions, consensus tropes from comment threads) alongside the existing `summary` / `trending_topics` / `winning_formats` / `effective_hooks` fields. Explicit guidance: when no comments are present `audience_signals` may be empty, but the model must NOT invent signals from the post body alone.
+- User prompt builder now formats each post block with a "Top comments (by likes):" section listing up to 50 top comments by like count. Posts without preloaded comments emit no comments block (the prompt stays clean).
+- Parser extracts `audience_signals` via a tolerant `coerce_optional_string_list/1` that defaults to `[]` when the LLM omits the key - older models or replies that ignore the new field still produce a valid intel row rather than failing the synthesis.
+
+**Synthesizer wiring** (`lib/content_forge/jobs/competitor_intel_synthesizer.ex`):
+- `perform/1` accepts an optional `"window"` arg defaulting to `"all"`. The corrective loop (17.6) will pass `"week"` to drive week-windowed syntheses.
+- `fetch_top_posts/1` now `Repo.preload(:comments)` so the adapter receives bundles ready for the comment-aware prompt.
+- New `:not_configured` clause in the `else` arm: creates a `pending_intel_syntheses` row referencing the top post ids, then returns `{:discard, :not_configured}` so Oban does not retry against a permanent misconfiguration. Unknown adapter (env never wired) flows through the same pending route.
+- `store_intel/4` persists the new `audience_signals` (defaulting to `[]` when the analysis omits it) + the persisted window string, then calls `Products.resolve_pending_intel_syntheses/2` so a successful with-key run cleans up any pending rows for the same `(product_id, window)`.
+
+**MCP surface** (`lib/content_forge_mcp/server.ex` + `docs/mcp-runbook.md`):
+- New tool `cf_list_pending_syntheses { product_id }` returns oldest-first pending rows with `pending_id`, `product_id`, `window`, `source_post_ids`, `note`, `created_at`. Tenth tool overall (the dispatch-coverage test in `server_test.exs` was updated to require exactly 10 names; future additions or removals trip it).
+- `cf_store_intel` now calls `Products.resolve_pending_intel_syntheses/2` after a successful insert. The MCP path's resolve and the synthesizer's resolve share the same context function so behaviour is identical regardless of which surface lands the manual completion.
+- Runbook gains the new tool in the catalogue table + a step-by-step description of the without-key flow (list pending → read bundle → reason → store_intel resolves the row).
+
+**Tests** (14 new; 1085 total):
+- `test/content_forge/competitor_intel_synthesizer/llm_adapter_test.exs` (5 new under "Phase 17.4 comment-aware prompt + audience_signals"): comment threads land in the user prompt with `Top comments (by likes):` markers + per-comment `@handle (N likes): text` lines; system prompt asks for `audience_signals`; LLM-supplied signals make it into the parsed intel; missing-field tolerance defaults to `[]`; post without comments emits no Top-comments block.
+- `test/content_forge/jobs/competitor_intel_synthesizer_test.exs` (5 new under "Phase 17.4 paths"): with-key persists `audience_signals` + `window`; with-key defaults `window` to `"all"` when the arg is omitted; with-key resolves matching pending rows on success (and leaves rows for other windows alone); without-key (`:not_configured`) creates a pending row + `:discard`s; no-adapter-wired boot also routes to pending_manual.
+- `test/content_forge_mcp/server_test.exs` (4 new): `cf_list_pending_syntheses` lists oldest-first; empty list when none; not_found on unknown product; `cf_store_intel` deletes pending rows for the same `(product, window)` while leaving other windows alone.
+
+**What this slice explicitly does NOT do** (next 17.x slices):
+- 17.5 ships the real `cf_import_twitter_sqlite` implementation (the dispatch table is already in place).
+- 17.6 adds the cron entries (MetricsPoller + competitor refresher) and replaces the existing trigger with the two-condition external corrective loop. The loop will pass `window: "week"` so the corrective syntheses are week-windowed.
+
+**Spec deviations + small additions outside the literal spec**:
+- The pending-queue schema (`pending_intel_syntheses`) is new; the spec said "the pending queue is exposed through the Phase 17.3 MCP tools" but did not mandate a specific schema. A small new table is the cleanest persistence; alternatives (overloading `competitor_intel` with a status column, a JSONB queue on the product row) all blur the semantics worse.
+- A new MCP tool `cf_list_pending_syntheses` ships in 17.4 because the spec's "expose the pending queue through the MCP tools" needed a concrete tool to query the queue. The dispatch-coverage test pins the count at 10.
+- Pending-row resolution lives in two places (synthesizer success + `cf_store_intel`) because either path can land the canonical intel row; both call the shared `Products.resolve_pending_intel_syntheses/2` so behaviour stays consistent.
+
+**Gate**: `mix compile --warnings-as-errors` clean, `mix format --check-formatted` clean, `mix test` 1071/0 (14 new), `mix credo --strict` baseline-diff empty for slice-touched files. Zero emdashes in slice-touched files. Migration applied to both `MIX_ENV=test` and `MIX_ENV=dev` so the launchd Phoenix picks up the new schema on its next restart.
+
+### Phase 17.3: Content Forge MCP server
+
+Status: DONE
+Merged: master @ `bfdcba2` (fast-forward; architect ran `mix deps.get` post-merge to fetch the new `simple_mcp` dep before the gate). Reviewer ACCEPT. Gate: compile/format/test 1057-0, credo 25 vs 44 baseline (zero new in slice-touched files). Coverage Server 92%; StdioServer 0% (thin process loop, tool dispatch fully covered through Server). Zero emdashes anywhere. `simple_mcp` pulled cleanly from `zyzyva/simple_mcp` at `aa2017e`. Three deviations from spec accepted by both reviewer and architect: (1) `voice_profile` defaults to `"professional"` so `cf_create_product` avoids forcing a schema migration in this slice; (2) `cf_scrape_competitor` enqueues the existing batch `CompetitorScraper` rather than inventing a per-account job, keeping the slice scope tight; (3) the `audience_signals` and `window` columns from 17.4 were pre-empted into 17.3's migration so `cf_store_intel` can persist every documented param honestly today; this leaves 17.4 narrower (prompt builder + with/without-key paths only, no schema work). Dispatch-coverage test pins the nine-tool registry so a future addition or removal cannot drift unnoticed.
+Note: Critical-path Phase 17 slice. Ships the full nine-tool MCP server + stdio transport + the schema pre-emption that lets `cf_store_intel` persist every documented param honestly. Unblocks 17.4 (the without-key MCP completion path lands against this surface) and 17.5 (the sqlite importer is exposed as `cf_import_twitter_sqlite` and wired here as a placeholder pending the 17.5 implementation).
+
+**Dependency** (`mix.exs`): `{:simple_mcp, github: "zyzyva/simple_mcp"}` - same git source `lead_intelligence` uses so the two MCP servers share their dispatch shape and the SimpleMCP behaviour stays one-place-to-update across the ecosystem. Locked to `aa2017efba38c6be97bacec0840ae643858997fc` in `mix.lock`.
+
+**Schema pre-emption** (`priv/repo/migrations/20260511120000_*` + `lib/content_forge/products/competitor_intel.ex`):
+- `alter table(:competitor_intel)` adds `audience_signals` (`{:array, :string}`, `null: false, default: []`) and `window` (`:string`, nullable, indexed, allowed values `"all" | "week" | "month"`).
+- These columns originally belonged to Phase 17.4; pre-empting them in 17.3 means `cf_store_intel` can persist every documented param without silently dropping caller data on the floor. The 17.4 synthesizer will populate them autonomously when comment-aware syntheses ship.
+- `CompetitorIntel.changeset/2` casts both new fields and validates `window` against the allowed list (with `allow_nil: true` since the field is optional).
+
+**MCP server** (`lib/content_forge_mcp/server.ex`):
+- `use SimpleMCP`. `server_info/0` returns `{"Content Forge", "1.0.0"}`. `tools/0` lists exactly nine tool definitions matching the 17.3 spec verbatim; the `registers exactly the nine documented tools` test catches drift.
+- `handle_tool_call/2` is a per-tool pattern-matched dispatcher (no big case statement; one head per tool name plus a `not_found` catch-all). Each clause delegates to a private `cf_*` function so the body of each tool is small and readable.
+- Every tool returns either `{:ok, success_map}` or `{:error, %{code, message, details}}` via the `ok/1` and `error/2,3` envelope helpers. Standard codes: `not_found`, `unauthorized` (reserved for later), `not_configured`, `validation_failed`, `dependency_error`, `not_implemented`.
+- All routes go through `ContentForge.Products` and `ContentForge.Jobs.*` context modules; no Phoenix or Bandit reach-through. The MCP surface and the LiveView dashboard share the same data source.
+- Per-tool notes:
+  - `cf_create_product`: name required + voice_profile defaulted to `"professional"` when omitted (the schema requires it, the spec marks the param optional). `publishing_targets` accepts a JSON-encoded object string and decodes via `JSON.decode/1`.
+  - `cf_list_products`: aggregates competitor_count via `Repo.aggregate` + reads `latest_intel_at` from `Products.get_latest_competitor_intel_for_product/1`.
+  - `cf_add_competitor`: validates platform against `~w(twitter linkedin reddit facebook instagram youtube)`.
+  - `cf_list_competitors`: per-account `(count, max(inserted_at))` via a single grouped query so the post_count + last_scraped_at come from one round trip.
+  - `cf_scrape_competitor`: looks up the competitor's product_id, enqueues the existing `CompetitorScraper` Oban job (which scrapes ALL competitors for that product). Returns `%{job_id, status: "enqueued"}`. Per-account scrape jobs are out of scope; the existing batch job is the existing infrastructure.
+  - `cf_top_posts_for_synthesis`: respects `n` (default 10, capped at 50) and `window` (`all`/`week`/`month`). Window filter computes a cutoff at call time (`now - 7d` / `now - 30d`); preloads `:comments` so the agent reads top-by-likes replies inline.
+  - `cf_store_intel`: routes through `Products.create_competitor_intel/1` with all eight params including the new `audience_signals` + `window`. Array params accept either a list or a JSON-encoded list string for ergonomic CLI use.
+  - `cf_get_intel`: `latest: true` (default) returns the newest single row; `latest: false` returns up to five.
+  - `cf_import_twitter_sqlite`: registered with the documented param schema but dispatches to a placeholder that returns `{:error, %{code: "not_implemented", details: %{phase: "17.5"}}}`. Phase 17.5 swaps in the real importer without touching the dispatch table.
+
+**Stdio transport** (`lib/content_forge_mcp/stdio_server.ex`):
+- Mirrors the lead_intelligence pattern: disables the Phoenix endpoint at start so a launchd-managed Phoenix on the same box does not collide; reads JSON-RPC requests on stdin, writes responses on stdout, stderr carries the boot message.
+- One material divergence from lead_intelligence: tool errors render as JSON envelopes in the text content slot (no `Error: ` prefix). Claude sessions parse the content text directly into the documented `%{code, message, details}` shape.
+- Standard JSON-RPC handlers: `initialize`, `notifications/initialized`, `tools/list`, `tools/call`. Unknown methods return `-32601 Method not found`. Malformed JSON returns `-32700 Parse error`.
+
+**Tests** (30 new, all in `test/content_forge_mcp/server_test.exs`):
+- `server_info/0` + `tools/0` registry: nine tools match the documented set exactly; unknown tool returns the structured `not_found` envelope.
+- `cf_create_product` (4): happy path, missing-name validation_failed, malformed publishing_targets validation_failed, full happy path with voice_profile + JSON publishing_targets persisted.
+- `cf_list_products` (1): aggregates competitor_count + latest_intel_at across multiple products.
+- `cf_add_competitor` (4): happy, unknown platform validation_failed, unknown product not_found, malformed UUID not_found.
+- `cf_list_competitors` (3): happy with post_count + last_scraped_at, empty list, unknown product not_found.
+- `cf_scrape_competitor` (3): happy with `assert_enqueued`, unknown competitor not_found, malformed UUID not_found.
+- `cf_top_posts_for_synthesis` (4): happy with comments preloaded + ordering, unknown window validation_failed, non-positive n validation_failed, week-window filter excludes 365-day-old posts.
+- `cf_store_intel` (4): happy with audience_signals + window persisted, JSON-encoded list params, non-list trending_topics validation_failed, unknown window validation_failed.
+- `cf_get_intel` (3): latest=true returns newest (with back-dated older row to defeat second-precision ties), latest=false returns up to five, no intel returns not_found.
+- `cf_import_twitter_sqlite` (1): registered + returns the documented not_implemented envelope pointing at 17.5.
+
+**Runbook** (`docs/mcp-runbook.md`):
+- Tool catalogue table.
+- Hand-driven stdio invocation snippet.
+- `claude_desktop_config.json` registration snippet (mirrors the asdf-shim PATH the launchd plist uses).
+- Round-trip verification walk-through.
+- Why-a-separate-stdio-server explanation (Phoenix endpoint disabled at start so the launchd Phoenix on `:4000` does not collide).
+- Why the without-key fallback path matters (17.4 marks attempts as `pending_manual`; the MCP server is how a Claude session completes them by hand).
+- Maintenance guidance for adding a tenth tool.
+
+**Spec deviations + small additions outside the literal spec**:
+- `cf_create_product` defaults `voice_profile: "professional"` when omitted because the underlying schema requires it. The spec marked the param optional; this default keeps the spec contract intact without scope-creeping a schema change.
+- `cf_scrape_competitor` enqueues the existing batch `CompetitorScraper` job (scrapes all accounts for the product), not a per-account job that does not exist today. The spec's `%{job_id, status: "enqueued"}` shape is honored.
+- Added `audience_signals` + `window` columns in 17.3 rather than 17.4 so `cf_store_intel` is honest about its persistence promise. 17.4's synthesizer changes still own the autonomous-population work.
+- Stdio error rendering omits the `Error: ` prefix lead_intelligence uses; the spec calls for a structured envelope and a JSON-only text slot is the cleanest way to deliver it.
+
+**What this slice explicitly does NOT do** (next 17.x slices):
+- 17.4 makes the synthesizer comment-aware (LLMAdapter prompt change to include comments) and adds the `pending_manual` route for the without-key case. The MCP server's `cf_top_posts_for_synthesis` and `cf_store_intel` are the surfaces 17.4 leans on.
+- 17.5 ships the real `cf_import_twitter_sqlite` implementation against a captured fixture sqlite. The dispatch table does not change; only the placeholder body swaps.
+- 17.6 adds the cron entries + the corrective loop. The MCP server is unaffected.
+
+**Gate**: `mix compile --warnings-as-errors` clean, `mix format --check-formatted` clean, `mix test` 1057/0 (30 new), `mix credo --strict` baseline-diff empty for slice-touched files. Zero emdashes in slice-touched files (server, stdio, schema, migration, runbook, mix.exs, test).
+
+### Phase 17.2: Open the dev/prod config gate
+
+Status: DONE
+Merged: master @ `0408035` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 1027-0, credo 25 vs 44 baseline (zero new in slice-touched files). Zero emdashes in 17.2 additions across CLAUDE.md, SPEC, BUILDLOG, BUILDPLAN, runtime.exs, and the new pinning test. Adapter-layer gating is sound: missing `APIFY_TOKEN` returns `:not_configured` with zero HTTP, same for missing `ANTHROPIC_API_KEY` at the LLM layer. `runtime_config_test.exs` pins the wiring across envs so a future refactor cannot silently re-add the prod-only gate.
+Note: Smallest critical-path slice in Phase 17. Moves the `:scraper_adapter` and `:intel_model` Application config out of `if config_env() == :prod` in `runtime.exs` so dev runs of the Oban jobs exercise the real adapters. The adapters themselves remain the source of truth for "credentials present?" - they return `{:error, :not_configured}` when the relevant env var is absent, with zero HTTP I/O. Unblocks 17.3 (the MCP server's tool surface lands against the dev wiring) and 17.6 (cron entries need the adapters wired in dev too).
+
+**Config change** (`config/runtime.exs`):
+- The `if config_env() == :prod do ... end` block that previously gated `:apify_token` + `:scraper_adapter` + `:intel_model` is removed.
+- All three keys are now set unconditionally. `apify_token: System.get_env("APIFY_TOKEN")` returns nil in dev/test when the env var is absent; `:scraper_adapter` and `:intel_model` are constant module references that the jobs reach for via `Application.get_env`.
+- The block is replaced with a long comment documenting the rationale + the failure modes so a future cleanup cannot quietly re-add the gate.
+
+**Behavior matrix after the gate opens**:
+
+| Env | APIFY_TOKEN | ANTHROPIC_API_KEY | Scraper job | Synthesizer job |
+|-----|-------------|-------------------|-------------|-----------------|
+| dev | present | present | runs end-to-end | runs end-to-end |
+| dev | absent | present | adapter `:not_configured` (clear, not silent) | runs end-to-end (no posts -> `:skipped`) |
+| dev | present | absent | runs end-to-end | LLMAdapter `:not_configured`; 17.4 routes to `pending_manual` |
+| dev | absent | absent | adapter `:not_configured` | LLMAdapter `:not_configured` |
+| test | unset | unset | adapter `:not_configured` (test path stays observable) | same |
+| prod | required | required | runs end-to-end | runs end-to-end |
+
+The pre-existing job-level `apify_token` short-circuit in `CompetitorScraper.perform/1` is unchanged; it still returns `{:discard, :apify_not_configured}` when the token is absent so the operator sees a single loud signal rather than per-account log spam. The adapter's `:not_configured` is the canonical contract; the job's pre-check is a defensive optimisation that aligns with it.
+
+**Documentation**:
+- `CLAUDE.md` gains a new `## Adapter wiring across Mix envs` section spelling out the matrix above plus the test pin.
+- `CONTENT_FORGE_SPEC.md` Feature 3.5 (Competitor Content Monitoring) gains a closing paragraph that names the adapter wiring contract and points at the regression-pinning test so a future reviewer can spot a re-introduced prod gate immediately.
+
+**Tests**:
+- `test/content_forge/runtime_config_test.exs` (3 new): asserts `:scraper_adapter` is wired to `ApifyAdapter` regardless of env, asserts `:intel_model` is wired to `LLMAdapter` regardless of env, asserts the adapter's `status/0` matches the env's actual `APIFY_TOKEN` presence (so the test stays correct in dev with a token and in test without one).
+- The full pre-existing test suite (1024 tests) continues to pass without modification because the existing `setup` blocks override `:scraper_adapter` and `:intel_model` per-test where they need stubs; the new defaults do not interfere.
+
+**What this slice explicitly does NOT do** (next 17.x slices):
+- 17.3 ships `ContentForgeMCP` server with the tool catalogue (now possible to wire against the dev adapters).
+- 17.4 makes the synthesizer comment-aware and adds the `pending_manual` state for the without-key path.
+- 17.6 adds the MetricsPoller cron + corrective loop. The dev launchd Phoenix will pick up the new cron entries on its next restart.
+
+**Gate**: `mix compile --warnings-as-errors` clean, `mix format --check-formatted` clean, `mix test` 1027/0 (3 new), `mix credo --strict` baseline-diff empty for slice-touched files (one in-slice nested-module finding on the runtime test resolved by aliasing). Zero emdashes in slice-touched lines (pre-existing emdashes in CLAUDE.md / CONTENT_FORGE_SPEC.md are unchanged and out of scope).
+
+### Phase 17.1: Twitter Apify adapter fix + comment harvesting infra
+
+Status: DONE
+Merged: master @ `14defef` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 1024-0, credo 25 vs 44 baseline (one finding RESOLVED in slice-touched files; zero new). Coverage CompetitorResearch 95%, CompetitorCommentHarvester 90%, CompetitorPostComment 100%, ApifyAdapter 75%. Zero emdashes anywhere. Implementation notes: `viral?/2` predicate is config-driven (5x rolling avg OR 100k absolute floor), tunable per deployment under `:content_forge, :competitor_research, :viral_threshold`. Harvester upserts via partial unique on `(competitor_post_id, platform_comment_id)` so re-runs are genuinely idempotent. Scraper enqueue is a no-op for non-viral posts to keep the pricing footprint bounded. Twitter actor unpinned to `kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest` with `APIFY_ACTOR_TWITTER` env override available for future swaps. Live integration tests (`@tag :live`) deferred to the 2026-05-05 Apify credit reset on m4; stub coverage carries the slice in the meantime.
+Note: Two coupled work streams shipped in one slice (post-path fix + comment corpus) per BUILDPLAN's explicit sizing. Unblocks 17.4 (synthesis is comment-aware), 17.5 (importer mirrors the schema), and 17.6 (corrective loop reads comment-derived intel).
+
+**Schema + migration** (`priv/repo/migrations/20260510120000_create_competitor_post_comments_and_columns.exs`):
+- `alter table(:competitor_posts)` adds `views_count` (integer, not-null, default 0) and `conversation_id` (string, nullable, indexed). Both are needed by the viral predicate and the comment harvester respectively; bundled into one migration since they're a single logical change.
+- New table `competitor_post_comments` with FK cascade to `competitor_posts`, the spec-listed column set (`platform_comment_id`, `author_handle`, `text`, `posted_at`, `likes_count`, `replies_count`, `retweets_count`, `views_count`, `in_reply_to_id`, `conversation_id`, `raw_payload` jsonb), index on `competitor_post_id`, and a unique index on `(competitor_post_id, platform_comment_id)` named `competitor_post_comments_post_id_platform_comment_id_index` - this is what makes the harvester re-run idempotent.
+- Migrated cleanly against both `MIX_ENV=test` and `MIX_ENV=dev` so the launchd Phoenix can pick up the new schema on its next restart.
+
+**`CompetitorPost` schema** (`lib/content_forge/products/competitor_post.ex`):
+- Casts the new `views_count` + `conversation_id` columns; existing required-field validation unchanged.
+- New `has_many :comments` association so the synthesizer (17.4) can preload comment threads on top posts in one query.
+
+**`CompetitorPostComment` schema** (`lib/content_forge/products/competitor_post_comment.ex`, new):
+- Required fields `competitor_post_id` + `platform_comment_id`; everything else optional.
+- `unique_constraint` points at the partial index name with a human message ("already captured for this post") so a duplicate insert surfaces a structured changeset error rather than a raw Postgres exception.
+- All count fields default to 0 at the schema level.
+
+**Context helpers** (`lib/content_forge/products.ex`):
+- `upsert_competitor_post_comment/1` does a single `Repo.insert` with `on_conflict: {:replace, update_keys}` + `conflict_target: [:competitor_post_id, :platform_comment_id]` so re-runs refresh counts/text/raw_payload in place. Returns `{:ok, row}` or `{:error, changeset}`. The harvester's idempotency guarantee depends on this single call.
+- `list_comments_for_post/1` returns rows ordered `desc: likes_count, asc: posted_at` so the synthesizer reads the highest-resonance replies first.
+
+**Viral predicate + helper module** (`lib/content_forge/competitor_research.ex`, new):
+- `viral?/2` is pure: returns `true` when `views >= viral_views_floor` (default 100k) OR `views >= rolling_avg * viral_views_multiplier` (default 5x). Non-positive views never trip; the multiplier path requires a positive rolling average.
+- `rolling_avg_views/1` averages views across a post list (treats nil as 0).
+- `max_comments_per_viral_post/0` reads the harvester ceiling from config (default 50).
+- All thresholds are config-driven at `:content_forge, :competitor_research` so per-product tuning lands without code changes.
+
+**Apify adapter changes** (`lib/content_forge/competitor_scraper/apify_adapter.ex`):
+- Twitter default actor swapped from broken `apify~twitter-scraper` to `kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest`. Override per-environment via `APIFY_ACTOR_TWITTER`.
+- `build_run_input/1` now passes `from: handle` alongside the existing handle keys. Other actors ignore unknown keys (per Apify SDK behavior), so this is safe defense-in-depth.
+- New defensive `no_results_marker?/1` filter strips `%{"noResults" => true}` placeholders before normalisation. Two helper edges: an all-noResults dataset returns `{:ok, []}` cleanly (cleanly-empty handle is not a parse failure), while a dataset with mixed real items + noResults markers normalises only the real items.
+- `normalise_item/2` now surfaces `views_count` (from `viewCount` / `viewsCount` / `views`), `conversation_id` (from `conversationId` / `conversation_id`), and `raw_data` (the full source item) so the scraper job can persist all three.
+- New public `fetch_comments/2` function pulls top-N replies on a viral post by `conversation_id`. Accepts `:limit` + `:platform` opts. Returns `{:error, :missing_conversation_id}` when the post has none, `{:error, :not_configured}` / `{:error, :unsupported_platform}` matching the post path, or a normalised list of comment-attrs maps shaped for `Products.upsert_competitor_post_comment/1`. The list is sorted desc-by-likes and capped at `:limit` so the harvester pays for top-N resonance only.
+
+**Comment harvester worker** (`lib/content_forge/jobs/competitor_comment_harvester.ex`, new):
+- Oban worker on the `:competitor` queue, max_attempts 3.
+- `perform/1` loads the post (with `competitor_account` preloaded for platform context), classifies adapter failures: `:not_configured` and `:missing_conversation_id` and permanent errors `{:cancel, ...}`, transient errors `{:error, ...}` (Oban retries), success calls `Products.upsert_competitor_post_comment/1` per comment with per-row error logging so a malformed comment does not abort the whole batch.
+- Missing post id, malformed UUID, or unknown post all collapse to `{:cancel, :post_not_found}` so a stale enqueue from before a post deletion cleans up rather than retrying forever.
+
+**`CompetitorScraper` viral trigger** (`lib/content_forge/jobs/competitor_scraper.ex`):
+- After computing `rolling_avg_views/1` once per account, `maybe_enqueue_comment_harvest/3` runs the viral predicate per post on the persisted record. Crossing posts enqueue `CompetitorCommentHarvester` with `%{competitor_post_id: id}`; non-crossing posts are a no-op so the cron's pricing footprint stays bounded.
+- `store_post/3` now passes `views_count`, `conversation_id`, and the original `raw_data` map through to `Products.create_competitor_post/1` so the harvester has the conversation id available without an extra round trip.
+
+**Tests** (43 new):
+- `test/content_forge/products/competitor_post_comment_test.exs` (9): upsert happy path with all fields, conflict-target refresh in place, scoping across posts, required-field validation, list ordering by likes, list scoping, new column casting + defaults on CompetitorPost, has_many :comments preload.
+- `test/content_forge/competitor_research_test.exs` (13): viral?/2 below both axes, at floor, above multiplier, ignores multiplier when avg is 0, non-positive views, custom multiplier, custom floor, plain-map post; max_comments_per_viral_post default + override; rolling_avg_views empty list, mixed views, nil-views.
+- `test/content_forge/competitor_scraper/apify_adapter_test.exs` (4 new + the existing 23 unchanged): kaitoeasyapi normalisation surfaces views + conversation + raw_data; noResults markers filtered; all-noResults returns empty; `from` key in run input; `fetch_comments/2` happy path with top-N by likes + noResults filter; `fetch_comments/2` returns `:missing_conversation_id`.
+- `test/content_forge/jobs/competitor_comment_harvester_test.exs` (12): happy path upsert, platform threaded from account, limit override, idempotent re-run inserts zero, missing arg / unknown id / malformed id all `:cancel`, missing adapter `:cancel`, adapter `:not_configured` `:cancel`, adapter `:missing_conversation_id` `:cancel`, transient adapter error returns `:error` for Oban retry, permanent adapter error `:cancel`.
+- `test/content_forge/jobs/competitor_scraper_test.exs` (5 + 1 new viral-trigger test): viral post enqueues harvester, quiet post does not, harvester args carry the persisted post id.
+
+**Apify free-plan note** (BUILDPLAN explicit): the live integration test (`@tag :live`) against Twitter cannot run until the m4 credit cycle resets 2026-05-05. This slice codes against the captured kaitoeasyapi response shape via fixtures; live verification is deferred but documented in the test file's describe-block comment.
+
+**Spec deviations + small additions outside the literal spec**:
+- The plan asked for the `viral_threshold` config under `:content_forge, :competitor_research, :viral_threshold`. Shipped as two separate keys (`:viral_views_multiplier` + `:viral_views_floor`) because the predicate honors both axes independently and config is easier to read this way. Same end-to-end behavior; documented in `CompetitorResearch` moduledoc.
+- Added a `CompetitorResearch` module that owns the predicate + the rolling-average helper + the harvester ceiling accessor, rather than scattering these across `Products` and the scraper. Single point of tuning, single point of test coverage.
+- Adapter's `fetch_comments/2` accepts an explicit `:platform` opt rather than peeking at `post.competitor_account` so the adapter stays Repo-free. The harvester preloads the account and threads platform through.
+
+**What this slice explicitly does NOT do** (next 17.x slices):
+- 17.2 opens the dev/prod config gate so `:scraper_adapter` + `:intel_model` are wired in dev when env vars are present.
+- 17.3 adds the `ContentForgeMCP` server.
+- 17.4 makes the synthesizer comment-aware and adds the `audience_signals` + `window` columns.
+- 17.6 adds the cron entries that periodically run the scraper + the comment refresher and replaces the existing trigger with the two-condition external corrective loop.
+
+**Gate**: `mix compile --warnings-as-errors` clean, `mix format --check-formatted` clean, `mix test` 1024/0 (43 new), `mix credo --strict` baseline-diff empty for slice-touched files (one in-slice nested-module finding on the new `CompetitorIntelSynthesizer.new` call resolved by aliasing). Zero emdashes in slice-touched files (cleaned the two pre-existing emdashes in `competitor_scraper.ex`'s moduledoc on the way through).
+
+### Phase 17.0: Local environment up (launchd plist + dev DB)
+
+Status: DONE
+Merged: master @ `d198c32` (fast-forward). Reviewer ACCEPT. Gate: compile/format/test 983-0 (unchanged, no Elixir code touched), credo 26 vs 44 baseline (unchanged). Zero emdashes in plist or runbook. Environment verified post-merge: `content_forge_dev` Postgres database present alongside `_test`; `~/Library/LaunchAgents/com.zyzyva.content-forge.plist` installed; `launchctl list` shows `com.zyzyva.content-forge` loaded and running. Plist mirrors the lead_intelligence pattern (KeepAlive + RunAtLoad, asdf shim PATH, dev MIX_ENV, log to `~/Library/Logs/content-forge.log`). Runbook covers install / verify / SIGTERM-restart / uninstall / update flows.
+Note: Foundation slice for Phase 17. Stands Content Forge up as a long-running local daemon on m4 so the corrective-loop cron (17.6) and the MCP server (17.3) have a process to attach to. Independent of Phase 16; ran in parallel with the 16.4 tail.
+
+**Database**:
+- Created `content_forge_dev` Postgres database via `MIX_ENV=dev mix ecto.create`. Previously only `content_forge_test` existed on m4.
+- Ran `MIX_ENV=dev mix ecto.migrate`; all migrations through `20260509120000_create_pending_confirmations` applied cleanly. `mix ecto.migrations` shows the full migration ladder including the operator + product memory + pending confirmation set we shipped during 16.3 + 16.4.
+
+**Launchd artifact** (`priv/launchd/com.zyzyva.content-forge.plist`):
+- Mirrors the `lead_intelligence` pattern verbatim: label `com.zyzyva.content-forge`, `KeepAlive: true`, `RunAtLoad: true`, `WorkingDirectory: /Users/sales_king/projects/contentforge_ecosystem/content-forge` (the canonical master checkout, not the worktree), `MIX_ENV=dev`, logs to `/Users/sales_king/Library/Logs/content-forge.log`. PATH points at `~/.asdf/shims` so the shim resolves `mix` against the project's `.tool-versions`.
+- Repo carries the authoritative copy so a fresh checkout can re-install via `cp` + `launchctl bootstrap`. Updates land via PR + merge; the runbook documents the bootout/cp/bootstrap dance launchd needs to pick up edits.
+
+**Runbook** (`docs/launchd-runbook.md`):
+- Step-by-step: prerequisites, one-time DB setup, install, verify, restart-behaviour exercise, uninstall, update flow. Includes the curl probe (`curl -s -o /dev/null -w 'status=%{http_code}\n' http://127.0.0.1:4000/dashboard`) operators run to confirm the dashboard is alive.
+- "Why a stable port" section calls out the OpenClaw plugin's hardcoded `localhost:4000` baseUrl so future port changes do not silently break the agent tool surface.
+
+**Live install + verification on m4** (persists across reboots):
+- Plist copied to `~/Library/LaunchAgents/com.zyzyva.content-forge.plist`.
+- `launchctl bootstrap gui/$(id -u) ...` started Phoenix (PID 45538). Dashboard returned 200 in 1s of boot at `http://127.0.0.1:4000/dashboard`.
+- KeepAlive verified: `kill -TERM 45538` triggered an automatic restart to PID 45657 within 5s. The reborn Phoenix served the dashboard at 200 immediately.
+- Log at `~/Library/Logs/content-forge.log` shows clean boot sequence; no Postgres connection storm (the Repo's pool reconnects gracefully under launchd's restart cadence). The pre-existing `lead_intelligence` daemon on port 4010 was unaffected.
+
+**Port allocation note**: Content Forge owns `127.0.0.1:4000` (Phoenix dev default). lead_intelligence runs on 4010; no other zyzyva daemon currently uses 4000. If a future ecosystem service needs 4000 the OpenClaw plugin's `baseUrl` config plus this runbook plus `docs/openclaw-plugin-runbook.md` all need synchronized updates.
+
+**Acceptance criteria from BUILDPLAN 17.0 (all green)**:
+- `mix phx.server` boots clean against `content_forge_dev` (smoke-tested both via standalone foreground run and via launchd).
+- Dashboard answers at `http://127.0.0.1:4000/dashboard` with status 200.
+- `launchctl list | grep com.zyzyva.content-forge` shows the job loaded.
+- Killing the Phoenix process triggers a restart within seconds (verified with PID delta 45538 -> 45657).
+- No Postgres connection storms in the launchd log on restart.
+
+**What this slice explicitly does NOT do** (Phase 17 sub-slices ahead):
+- 17.1 Twitter Apify adapter fix + comment harvesting (the next critical-path slice).
+- 17.2-17.6 + 17.7 carry the rest of the corrective loop and the MCP server.
+- 17.8 / 17.9 are flagged `requires_human` in the plan.
+
+**Gate**: `mix compile --warnings-as-errors` clean, `mix format --check-formatted` clean, `mix test` 983/0 (no new tests in this slice; environment work is verified by manual acceptance criteria above), `mix credo --strict` baseline-diff empty for slice-touched files (no Elixir source files touched). Zero emdashes in the runbook or the plist.
+
+### Phase 16.4d: generate_drafts_from_bundle (closes the 16.4 wave)
+
+Status: DONE
+Merged: master @ `7df57c6` (fast-forward; coder rebased master `c06cfd3` into the worktree as merge `2635755`). Reviewer ACCEPT. Gate: compile/format/test 983-0, credo 26 vs 44 baseline (zero new in slice-touched files). Coverage GenerateDraftsFromBundle 92%, GenerationBudget 100%. Zero emdashes in code/tests/runbook. Phase 16.4 wave complete: all four heavy-write tools ship through the confirmation envelope; over-budget is warning-only as spec'd, not a block. Reviewer flagged the 32 emdashes carried in `RESEARCH_LOOP_PLAN.md` (user-authored doc imported this session) as inconsistent with the recent emdash-clean discipline; swept in the same handoff cycle.
+Note: Last heavy-write slice. Third consumer of the 16.4a confirmation envelope. Introduces a thin `ContentForge.Metrics.GenerationBudget` helper so the tool's preview can carry concrete `estimated_cost_cents` + `remaining_budget_cents` numbers; the dashboard had no first-class cost model to reuse. Budget is transparency-only per spec: an over-budget request still enqueues on confirm, the preview just adds a `warning` string for the agent to read verbatim.
+
+**Budget helper** (`lib/content_forge/metrics/generation_budget.ex`):
+- Two public functions. `estimate_generation_cost/1` takes a keyword list (`:asset_count`, `:platform_count`, `:variants_per_platform`) and returns `asset_count * platform_count * variants * cost_per_variant_cents`. `remaining_generation_budget/1` takes a `product_id` and returns a static ceiling; real per-product accounting lands alongside the 16.5 audit ledger.
+- Configuration at `:content_forge, :generation_budget` with keys `monthly_cents` (default 10_000), `cost_per_variant_cents` (default 5), `default_platforms` (default `["twitter", "linkedin"]`), `default_variants_per_platform` (default 3). Defaults keep the tool usable out of the box; production can override per-environment.
+- Signature takes a `product_id` even though consumption is not yet per-product; this avoids a breaking signature change when the ledger lands.
+
+**Tool** (`lib/content_forge/open_claw_tools/generate_drafts_from_bundle.ex`):
+- `with` chain: resolve product → scoped bundle lookup (`get_bundle/1` rescued from `Ecto.Query.CastError` → cross-product / unknown / malformed all collapse to `:not_found`) → `Authorization.require(..., :owner)`.
+- `build_plan/3` centralizes the cost computation into a struct-like map (`%{bundle, platforms, variants, asset_count, estimate, remaining, would_exceed}`) so `request_turn/3` and `confirm_turn/4` each take only three arguments. Arity stays under credo's 8-param ceiling.
+- `request_turn` calls `Confirmation.request/4` with a preview carrying the budget numbers + `would_exceed_budget` flag + (when over budget) a human-readable `warning` string. `confirm_turn` pipes `Confirmation.confirm/4` into `AssetBundleDraftGenerator.new(args) |> Oban.insert()`; success returns `%{enqueued: true, bundle_id, estimated_cost_cents, remaining_budget_cents, job_args}`. Insert failure flattens to `:enqueue_failed`.
+- Platforms and variants default from `GenerationBudget`; the agent can override both via params when the user asks for a subset.
+
+**Dispatch + plugin + runbook** (`lib/content_forge/open_claw_tools.ex` + `~/.openclaw/plugins/content-forge/index.js` + `docs/openclaw-plugin-runbook.md`):
+- `@tools` grows to eleven entries - every spec-listed tool now registered.
+- Node plugin adds `renderGenerateDraftsConfirmation` + `renderGenerateDraftsResult`. The confirmation renderer explicitly surfaces the cost + budget lines and threads the `warning` string through when present. The execute handler uses `invokeConfirmable` and branches on `envelope.status`.
+- Runbook catalogue gains the `generate_drafts_from_bundle` entry calling out the transparency-not-enforcement stance on budgets.
+
+**Tests** (17 new):
+- `test/content_forge/metrics/generation_budget_test.exs` (6 tests): cost math with explicit + default platform/variant counts, zero-asset edge case, config-driven per-variant cost, ceiling read back, default ceiling when config absent.
+- `test/content_forge/open_claw_tools/generate_drafts_from_bundle_test.exs` (10 tests, uses `Oban.Testing`): submitter = `:forbidden` with zero pending rows + `refute_enqueued`, cross-product bundle = `:not_found`, unknown bundle = `:not_found`, malformed bundle_id = `:not_found`, first-turn preview carries exact computed cost + budget (`3 assets * 2 platforms * 3 variants * 5 cents = 90`), over-budget request flips `would_exceed_budget` + populates `warning`, idempotent same-bundle ask returns same phrase + single pending row, correct confirm enqueues `AssetBundleDraftGenerator` with `args: %{bundle_id: ...}` via `assert_enqueued`, wrong echo = `:confirmation_not_found` with `refute_enqueued`, over-budget still enqueues on confirm (warning is not a block).
+- `test/content_forge_web/controllers/open_claw_tool_controller_test.exs` (1 new): full two-turn HTTP cycle. First POST returns `200 confirmation_required` with `preview.estimated_cost_cents == 30` (one asset * default 2 platforms * default 3 variants * 5 cents); second POST with `params.confirm = echo_phrase` returns `200 ok` with `result.enqueued: true` and an `assert_enqueued` on the Oban worker.
+
+**Phase 16.4 wave summary**:
+- All four sub-slices (16.4a infra + 16.4b approve_draft + 16.4c schedule_reminder_change + 16.4d generate_drafts_from_bundle) shipped clean, every heavy-write tool runs through `Confirmation.request/4` + `Confirmation.confirm/4`, every first-turn preview carries explicit context for the agent to read verbatim, every second-turn confirm is single-use + atomic. 16.5 (unified tool-invocation audit) is the next natural slice, then 16.6 (escalate-to-human) closes Phase 16.
+
+**Gate**: `mix compile --warnings-as-errors` clean, `mix format --check-formatted` clean, `mix test` 983/0 (17 new), `mix credo --strict` baseline-diff empty for slice-touched files (one in-slice credo finding on function arity was resolved by refactoring to a plan-map argument). Zero emdashes in slice-touched files, the plugin, or the runbook.
+
 ### Phase 16.4c: schedule_reminder_change
 
 Status: DONE

@@ -6,6 +6,8 @@ defmodule ContentForge.Publishing.Facebook do
 
   require Logger
 
+  alias ContentForge.CompetitorScraper.ApifyAdapter
+
   @base_url "https://graph.facebook.com/v18.0"
   @max_retries 3
   @retry_delay 5000
@@ -153,17 +155,38 @@ defmodule ContentForge.Publishing.Facebook do
 
   @doc """
   Fetch engagement metrics for a published Facebook post.
-  """
-  @spec fetch_metrics(String.t(), map()) :: {:ok, map()} | {:error, String.t()}
-  def fetch_metrics(post_id, %{facebook_access_token: token} = _credentials) do
-    url = "#{@base_url}/#{post_id}"
 
+  Phase 17.7 dispatch: native Graph API path runs when the
+  credentials map carries `:facebook_access_token`. When the
+  OAuth token is absent (default for products that have not
+  completed Facebook App Review), routes through Apify so the
+  system runs on `APIFY_TOKEN` alone.
+
+  `post_url` is required for the Apify path; missing URL with no
+  OAuth returns `{:error, :no_post_url}`.
+  """
+  @spec fetch_metrics(String.t(), String.t() | nil, map()) :: {:ok, map()} | {:error, term()}
+  def fetch_metrics(post_id, _post_url, %{facebook_access_token: _} = credentials) do
+    fetch_metrics_via_oauth(post_id, credentials)
+  end
+
+  def fetch_metrics(_post_id, nil, _credentials_without_oauth), do: {:error, :no_post_url}
+
+  def fetch_metrics(_post_id, post_url, _credentials_without_oauth) do
+    ApifyAdapter.fetch_metrics_for_post("facebook", post_url)
+  end
+
+  defp fetch_metrics_via_oauth(post_id, %{facebook_access_token: token}) do
     params = [
       access_token: token,
       fields: "reactions.summary(true),comments.summary(true),shares"
     ]
 
-    case Req.get(url, params: params) do
+    [url: "/#{post_id}", base_url: base_url(), params: params]
+    |> Kernel.++(req_options())
+    |> Req.new()
+    |> Req.get()
+    |> case do
       {:ok, %{status: status, body: body}} when status in 200..299 ->
         likes = get_in(body, ["reactions", "summary", "total_count"]) || 0
         comments = get_in(body, ["comments", "summary", "total_count"]) || 0
@@ -179,15 +202,45 @@ defmodule ContentForge.Publishing.Facebook do
     end
   end
 
+  defp base_url do
+    Application.get_env(:content_forge, :facebook, []) |> Keyword.get(:base_url, @base_url)
+  end
+
+  defp req_options do
+    Application.get_env(:content_forge, :facebook, []) |> Keyword.get(:req_options, [])
+  end
+
   @doc """
   Fetch engagement metrics for a published Instagram post.
+
+  Phase 17.7 dispatch: native Graph API path runs when the
+  credentials map carries `:facebook_access_token`. When OAuth is
+  absent (the common case before Instagram Graph API approval),
+  routes through Apify with the post permalink.
+
+  `post_url` (the IG permalink) is required for the Apify path.
   """
-  @spec fetch_instagram_metrics(String.t(), map()) :: {:ok, map()} | {:error, String.t()}
-  def fetch_instagram_metrics(media_id, %{facebook_access_token: token} = _credentials) do
-    url = "#{@base_url}/#{media_id}"
+  @spec fetch_instagram_metrics(String.t(), String.t() | nil, map()) ::
+          {:ok, map()} | {:error, term()}
+  def fetch_instagram_metrics(media_id, _post_url, %{facebook_access_token: _} = credentials) do
+    fetch_instagram_via_oauth(media_id, credentials)
+  end
+
+  def fetch_instagram_metrics(_media_id, nil, _credentials_without_oauth),
+    do: {:error, :no_post_url}
+
+  def fetch_instagram_metrics(_media_id, post_url, _credentials_without_oauth) do
+    ApifyAdapter.fetch_metrics_for_post("instagram", post_url)
+  end
+
+  defp fetch_instagram_via_oauth(media_id, %{facebook_access_token: token}) do
     params = [access_token: token, fields: "like_count,comments_count"]
 
-    case Req.get(url, params: params) do
+    [url: "/#{media_id}", base_url: base_url(), params: params]
+    |> Kernel.++(req_options())
+    |> Req.new()
+    |> Req.get()
+    |> case do
       {:ok, %{status: status, body: body}} when status in 200..299 ->
         {:ok,
          %{

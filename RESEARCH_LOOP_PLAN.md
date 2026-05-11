@@ -1,13 +1,23 @@
-# Competitor Research Loop — Build Plan
+# Competitor Research Loop - Build Plan
 
 A swarmforge-ready build plan for standing up content-forge as the corpus
 of record for competitor research, the synthesis brain that turns raw
 posts into structured intel, and the feedback loop that closes the
 prediction-vs-actual gap on our own published content.
 
+**Integrated 2026-04-25 as Phase 17 in `BUILDPLAN.md`.** This document
+remains the source-of-record narrative for the wave; `BUILDPLAN.md`
+Phase 17 is the swarm-readable slicing the coder + reviewer flow runs
+against. When the two disagree, BUILDPLAN is authoritative for slice
+execution and this doc should be updated to match. New cross-cutting
+spec content lives in `CONTENT_FORGE_SPEC.md` Feature 14 (research
+corpus), Feature 15 (corrective loop), and Integration 6 (MCP server).
+
 **Status:** Greenfield. No phases of this plan are running yet.
 content-forge has the schemas and Oban jobs but is not booted on this
-machine.
+machine. Phase 17 in BUILDPLAN starts after the current Phase 16 wave
+clears; 17.0 (launchd + dev DB) is independent of Phase 16 and may run
+in parallel.
 
 ## Why this exists
 
@@ -46,13 +56,13 @@ have somewhere to go once this plan is at least partially executed.
    another scraper.
 5. **The corrective signal is external, not internal.** When our content
    underperforms, we do not auto-rewrite the brief from internal data
-   alone — internal underperformance can be noise (algorithm change,
+   alone - internal underperformance can be noise (algorithm change,
    holiday lull, news cycle). Instead we check whether competitors won
    that same week. Our drop + competitor wins = real signal, pivot
    toward what is working in market right now. Our drop + competitor
    drops = market noise, do nothing.
 6. **Comments are first-class research data, not optional flavour.**
-   For posts that perform well, the comment thread tells us why — what
+   For posts that perform well, the comment thread tells us why - what
    the audience valued, what they asked, what they pushed back on.
    Synthesis without comments is pattern-matching on the surface
    only. Synthesis with comments is reasoning about resonance.
@@ -91,7 +101,7 @@ tests are unacceptable on merge.
 
 ---
 
-## Phase 0 — Local environment up
+## Phase 0 - Local environment up
 
 **Scope.** content-forge is not currently booted on m4. There is no
 content_forge_dev database, no launchd plist, no Phoenix server
@@ -119,7 +129,7 @@ running. Bring it up.
 
 ---
 
-## Phase 1 — Fix the Twitter Apify adapter and harvest comments
+## Phase 1 - Fix the Twitter Apify adapter and harvest comments
 
 **Scope.** content-forge's Apify adapter is configurable per platform
 but the documented default for Twitter is a generic `apify~twitter-scraper`
@@ -155,7 +165,7 @@ patterns.
   (string), `text` (text), `posted_at` (utc_datetime), `likes_count`
   (integer, default 0), `replies_count` (integer, default 0),
   `retweets_count` (integer, default 0), `views_count` (integer,
-  default 0), `in_reply_to_id` (string, nullable — for nested
+  default 0), `in_reply_to_id` (string, nullable - for nested
   replies), `conversation_id` (string), `raw_payload` (jsonb,
   preserves the actor response verbatim), `inserted_at` and
   `updated_at` timestamps. Add an index on `competitor_post_id` and
@@ -194,7 +204,7 @@ patterns.
 
 ---
 
-## Phase 2 — Open the dev/prod config gate
+## Phase 2 - Open the dev/prod config gate
 
 **Scope.** Today, the scraper adapter and the LLM adapter are only
 wired in `:prod`. Dev runs of the Oban jobs see `nil` adapters and
@@ -224,7 +234,7 @@ loop we are about to drive.
 
 ---
 
-## Phase 3 — MCP server in content-forge
+## Phase 3 - MCP server in content-forge
 
 **Scope.** content-forge currently has no MCP server. Lead intelligence
 has redirected its scraping/analysis tools to "use content-forge",
@@ -239,28 +249,28 @@ actually use. Build a focused one.
   are listed below; field names use snake_case to match the rest of
   the MCP surface.
 
-  **`cf_create_product`** — params: `name` (required string),
+  **`cf_create_product`** - params: `name` (required string),
   `voice_profile` (optional string), `publishing_targets` (optional
   map). Returns: `%{product_id, name}`.
 
-  **`cf_list_products`** — params: none. Returns: list of
+  **`cf_list_products`** - params: none. Returns: list of
   `%{product_id, name, competitor_count, latest_intel_at}`.
 
-  **`cf_add_competitor`** — params: `product_id` (required string),
+  **`cf_add_competitor`** - params: `product_id` (required string),
   `platform` (required string, one of: twitter, linkedin, reddit,
   facebook, instagram, youtube), `handle` (required string).
   Returns: `%{competitor_id, product_id, platform, handle}`.
 
-  **`cf_list_competitors`** — params: `product_id` (required string).
+  **`cf_list_competitors`** - params: `product_id` (required string).
   Returns: list of `%{competitor_id, platform, handle, post_count,
   last_scraped_at}`.
 
-  **`cf_scrape_competitor`** — params: `competitor_id` (required
+  **`cf_scrape_competitor`** - params: `competitor_id` (required
   string). Enqueues an Oban CompetitorScraper job. Returns:
   `%{job_id, status: "enqueued"}`. Async; results land in
   competitor_posts asynchronously.
 
-  **`cf_top_posts_for_synthesis`** — params: `product_id` (required
+  **`cf_top_posts_for_synthesis`** - params: `product_id` (required
   string), `n` (optional integer, default 10), `window` (optional
   string, one of "all", "week", "month", default "all"). Returns
   posts scored against their account average within the window:
@@ -269,7 +279,7 @@ actually use. Build a focused one.
   shares, comments: [%{platform_comment_id, author_handle, text,
   likes_count, posted_at}, ...]}, ...]}`.
 
-  **`cf_store_intel`** — params: `product_id` (required string),
+  **`cf_store_intel`** - params: `product_id` (required string),
   `summary` (required string), `trending_topics` (required list of
   strings), `winning_formats` (required list of strings),
   `effective_hooks` (required list of strings), `audience_signals`
@@ -279,14 +289,14 @@ actually use. Build a focused one.
   cf_top_posts_for_synthesis). Returns: `%{intel_id, product_id,
   created_at}`.
 
-  **`cf_get_intel`** — params: `product_id` (required string),
+  **`cf_get_intel`** - params: `product_id` (required string),
   `latest` (optional boolean, default true). Returns the latest
   competitor_intel record as `%{intel_id, summary, trending_topics,
   winning_formats, effective_hooks, audience_signals, source_count,
   window, created_at}`. When `latest` is false, returns a list of
   the last five.
 
-  **`cf_import_twitter_sqlite`** — params: `sqlite_path` (required
+  **`cf_import_twitter_sqlite`** - params: `sqlite_path` (required
   string), `competitor_id` (required string), `since` (optional ISO
   date), `until` (optional ISO date). Reads the standalone scraper's
   sqlite (tweets + comments tables) and upserts into competitor_posts
@@ -322,7 +332,7 @@ actually use. Build a focused one.
 
 ---
 
-## Phase 4 — With-or-without-key synthesis, comment-aware
+## Phase 4 - With-or-without-key synthesis, comment-aware
 
 **Scope.** The competitor intel synthesizer should produce the same
 output regardless of whether an Anthropic key is configured. The
@@ -359,7 +369,7 @@ output reflects audience resonance, not just post pattern matching.
 - Add an `audience_signals` column to the `competitor_intel` table:
   `{:array, :string}`, default `[]`, not null. The field holds short
   free-form strings the same way `effective_hooks` does, each one
-  capturing a pattern observed in the comment threads — recurring
+  capturing a pattern observed in the comment threads - recurring
   objections, recurring questions, emotional reactions, consensus
   tropes. Add a corresponding cast in the changeset and update
   every place that selects from competitor_intel to include the
@@ -388,7 +398,7 @@ output reflects audience resonance, not just post pattern matching.
 
 ---
 
-## Phase 5 — Backfill from lead_intelligence's sqlite (posts + comments)
+## Phase 5 - Backfill from lead_intelligence's sqlite (posts + comments)
 
 **Scope.** We already paid Apify to scrape ~6,800 tweets from
 @cleanwithmike into `priv/twitter_scrapes.db` inside lead_intelligence.
@@ -429,10 +439,10 @@ the live scraper produces), Phase 3 (MCP entry point).
 
 ---
 
-## Phase 6 — Schedule the metrics poller and the corrective loop
+## Phase 6 - Schedule the metrics poller and the corrective loop
 
 **Scope.** MetricsPoller exists as an Oban worker but is not on a
-schedule. There is also no scheduled refresh of competitor data —
+schedule. There is also no scheduled refresh of competitor data -
 existing scrapes are one-shot. Both must run on schedules, and they
 must be tied together by the corrective-loop logic so a drop in our
 own performance triggers a fresh look at what competitors are doing
@@ -447,7 +457,7 @@ right now.
   all three at the right moments per published post.
 - Decide what "active product" means for cron purposes (probably:
   any product with at least one published post in the last 90 days).
-- Add a small operator surface — a LiveView page or an MCP tool —
+- Add a small operator surface - a LiveView page or an MCP tool -
   showing recent scoreboard outcomes per product so we can verify
   the loop is closing.
 
@@ -467,8 +477,8 @@ right now.
     2. Did any of our tracked competitors have posts that beat
        their own rolling average in the same window?
 - Only when both are true, enqueue a synthesis specifically scoped
-  to the "competitors-this-week" winners — a week-windowed input
-  rather than the all-time top 10 — and feed that fresh intel to a
+  to the "competitors-this-week" winners - a week-windowed input
+  rather than the all-time top 10 - and feed that fresh intel to a
   brief regeneration. Document this scoping clearly so the
   synthesizer knows the input window.
 - Both conditions false: do nothing this period.
@@ -501,10 +511,10 @@ anything).
 
 ---
 
-## Phase 7 — Audit per-platform metrics fetchers
+## Phase 7 - Audit per-platform metrics fetchers
 
-**Scope.** Each publishing platform module — twitter, linkedin,
-facebook, reddit, youtube — has a metrics-fetch path. Some are
+**Scope.** Each publishing platform module - twitter, linkedin,
+facebook, reddit, youtube - has a metrics-fetch path. Some are
 likely stubs. MetricsPoller's loop is only as honest as those
 fetchers are.
 
@@ -532,7 +542,7 @@ fetchers are.
 
 ---
 
-## Phase 8 — Bootstrap HollerClean as the first product `requires_human`
+## Phase 8 - Bootstrap HollerClean as the first product `requires_human`
 
 **Scope.** Use everything above to do a full pass for HollerClean,
 end to end, so the loop is not just running but producing useful
@@ -566,13 +576,13 @@ output.
   CF dashboard. No ad-hoc scripts had to be invoked.
 
 **Dependencies.** Phases 1 through 6 must all be in place. Phase 7
-helps but is not blocking — drafts can be ranked even if metrics
+helps but is not blocking - drafts can be ranked even if metrics
 fetchers are stubs; the scoreboard half of the loop just produces no
 real signal until they aren't.
 
 ---
 
-## Phase 9 — Lead Intelligence cleanup follow-up `requires_human`
+## Phase 9 - Lead Intelligence cleanup follow-up `requires_human`
 
 **Scope.** Once content-forge is doing the work, lead_intelligence's
 remaining content/video pipeline becomes redundant. Decide whether
@@ -633,7 +643,7 @@ need re-litigation once we have a few weeks of real data.
    `views >= max(5 * account_rolling_avg_views, 100000)`. The
    threshold is configured as `:viral_threshold` under the
    `:content_forge, :competitor_research` config key. Revisit
-   per-product after the first month — small-follower competitors
+   per-product after the first month - small-follower competitors
    may need a lower absolute floor.
 5. **Comment volume per viral post.** Default for v1: top 50 by
    like count. Configured as `:max_comments_per_viral_post` under

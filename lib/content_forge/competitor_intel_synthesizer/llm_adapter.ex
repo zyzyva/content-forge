@@ -4,16 +4,23 @@ defmodule ContentForge.CompetitorIntelSynthesizer.LLMAdapter do
   `ContentForge.Jobs.CompetitorIntelSynthesizer` dispatches to via the
   `:intel_model` config.
 
-  Given a list of `%ContentForge.Products.CompetitorPost{}` structs, the
-  adapter asks `ContentForge.LLM.Anthropic.complete/2` to return a
-  structured JSON object matching the `CompetitorIntel` schema shape:
+  Given a list of `%ContentForge.Products.CompetitorPost{}` structs
+  (with `:comments` preloaded when available), the adapter asks
+  `ContentForge.LLM.Anthropic.complete/2` to return a structured JSON
+  object matching the `CompetitorIntel` schema shape:
 
       %{
         summary: binary(),
         trending_topics: [binary()],
         winning_formats: [binary()],
-        effective_hooks: [binary()]
+        effective_hooks: [binary()],
+        audience_signals: [binary()]
       }
+
+  Phase 17.4 made the prompt comment-aware: each post block carries its
+  top-50-by-likes comment thread (when comments are loaded), and the
+  system prompt asks the LLM to extract `audience_signals` (recurring
+  objections, questions, emotional reactions, consensus tropes).
 
   Parsing mirrors the `MultiModelRanker` pattern: `JSON.decode` first,
   then a fenced-block regex fallback for replies that wrap JSON in a
@@ -24,7 +31,8 @@ defmodule ContentForge.CompetitorIntelSynthesizer.LLMAdapter do
   Downgrade semantics:
 
     * `{:error, :not_configured}` from the LLM passes through unchanged.
-      The synthesizer already discards on that return.
+      The synthesizer routes this to the without-key `pending_manual`
+      path defined in Phase 17.4.
     * Transient HTTP errors (5xx, 429, timeout, network) propagate so
       Oban retries the whole job.
     * Permanent HTTP errors (4xx, unexpected_status) propagate so the
@@ -36,6 +44,7 @@ defmodule ContentForge.CompetitorIntelSynthesizer.LLMAdapter do
 
   alias ContentForge.LLM.Anthropic
   alias ContentForge.Products.CompetitorPost
+  alias ContentForge.Products.CompetitorPostComment
 
   require Logger
 
@@ -43,8 +52,11 @@ defmodule ContentForge.CompetitorIntelSynthesizer.LLMAdapter do
           summary: String.t(),
           trending_topics: [String.t()],
           winning_formats: [String.t()],
-          effective_hooks: [String.t()]
+          effective_hooks: [String.t()],
+          audience_signals: [String.t()]
         }
+
+  @comments_per_post 50
 
   @doc "Synthesises competitor intel from a list of top-performing posts."
   @spec summarize([CompetitorPost.t()]) :: {:ok, intel()} | {:error, term()}
@@ -64,19 +76,26 @@ defmodule ContentForge.CompetitorIntelSynthesizer.LLMAdapter do
   defp system_prompt do
     """
     You are a competitive-content analyst. Given a ranked list of top
-    competitor posts (with engagement numbers), synthesise a compact
-    intel brief that downstream content generation can bias toward.
-    Respond with a JSON object and nothing else, in exactly this shape:
+    competitor posts (with engagement numbers, plus their top reply
+    threads when available), synthesise a compact intel brief that
+    downstream content generation can bias toward. Respond with a JSON
+    object and nothing else, in exactly this shape:
 
     {
       "summary": "<2-4 sentence plain-English synthesis>",
       "trending_topics": ["<topic>", "<topic>", ...],
       "winning_formats": ["<format>", "<format>", ...],
-      "effective_hooks": ["<hook>", "<hook>", ...]
+      "effective_hooks": ["<hook>", "<hook>", ...],
+      "audience_signals": ["<signal>", "<signal>", ...]
     }
 
-    All four fields are required. The three array fields must each be a
+    All five fields are required. The four array fields must each be a
     JSON array of short strings.
+
+    `audience_signals` should capture recurring objections, questions,
+    emotional reactions, and consensus tropes that appear in the
+    comment threads. When no comments are present the array may be
+    empty (`[]`); never invent signals from the post body alone.
     """
   end
 
@@ -96,10 +115,36 @@ defmodule ContentForge.CompetitorIntelSynthesizer.LLMAdapter do
   end
 
   defp format_post(%CompetitorPost{} = post, idx) do
+    header =
+      "#{idx}. [likes=#{post.likes_count || 0}, comments=#{post.comments_count || 0}, shares=#{post.shares_count || 0}, score=#{post.engagement_score || 0.0}]"
+
+    body = post.content || ""
+
     """
-    #{idx}. [likes=#{post.likes_count || 0}, comments=#{post.comments_count || 0}, shares=#{post.shares_count || 0}, score=#{post.engagement_score || 0.0}]
-    #{post.content}
+    #{header}
+    #{body}
+    #{format_comments(post)}
     """
+  end
+
+  defp format_comments(%CompetitorPost{comments: comments})
+       when is_list(comments) and comments != [] do
+    top =
+      comments
+      |> Enum.sort_by(&(&1.likes_count || 0), :desc)
+      |> Enum.take(@comments_per_post)
+
+    lines = Enum.map(top, &format_comment/1)
+    "Top comments (by likes):\n" <> Enum.join(lines, "\n")
+  end
+
+  defp format_comments(_post), do: ""
+
+  defp format_comment(%CompetitorPostComment{} = c) do
+    handle = c.author_handle || "anonymous"
+    likes = c.likes_count || 0
+    text = (c.text || "") |> String.trim()
+    "  - @#{handle} (#{likes} likes): #{text}"
   end
 
   # --- JSON parsing --------------------------------------------------------
@@ -142,22 +187,26 @@ defmodule ContentForge.CompetitorIntelSynthesizer.LLMAdapter do
     end
   end
 
-  defp coerce_intel(%{
-         "summary" => summary,
-         "trending_topics" => topics,
-         "winning_formats" => formats,
-         "effective_hooks" => hooks
-       })
+  defp coerce_intel(
+         %{
+           "summary" => summary,
+           "trending_topics" => topics,
+           "winning_formats" => formats,
+           "effective_hooks" => hooks
+         } = json
+       )
        when is_binary(summary) and summary != "" do
     with {:ok, topics} <- coerce_string_list(topics),
          {:ok, formats} <- coerce_string_list(formats),
-         {:ok, hooks} <- coerce_string_list(hooks) do
+         {:ok, hooks} <- coerce_string_list(hooks),
+         {:ok, signals} <- coerce_optional_string_list(json["audience_signals"]) do
       {:ok,
        %{
          summary: summary,
          trending_topics: topics,
          winning_formats: formats,
-         effective_hooks: hooks
+         effective_hooks: hooks,
+         audience_signals: signals
        }}
     end
   end
@@ -169,4 +218,12 @@ defmodule ContentForge.CompetitorIntelSynthesizer.LLMAdapter do
   end
 
   defp coerce_string_list(_), do: :error
+
+  # `audience_signals` is required in the system prompt but the
+  # parser tolerates an absent field by defaulting to []; older
+  # LLM responses (or models that ignore the new requirement)
+  # still produce a valid intel row rather than failing the whole
+  # synthesis.
+  defp coerce_optional_string_list(nil), do: {:ok, []}
+  defp coerce_optional_string_list(values), do: coerce_string_list(values)
 end

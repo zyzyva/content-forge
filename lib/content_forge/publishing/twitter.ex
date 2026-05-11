@@ -6,6 +6,8 @@ defmodule ContentForge.Publishing.Twitter do
 
   require Logger
 
+  alias ContentForge.CompetitorScraper.ApifyAdapter
+
   @base_url "https://api.twitter.com/2"
   @max_retries 3
   @retry_delay 5000
@@ -142,9 +144,32 @@ defmodule ContentForge.Publishing.Twitter do
 
   @doc """
   Fetch engagement metrics for a published tweet.
+
+  Phase 17.7 dispatch: when the credentials map carries
+  `:twitter_access_token`, the original Twitter v2
+  `/tweets/:id?tweet.fields=public_metrics` path is preserved so
+  any product that already configured native OAuth credentials
+  keeps its existing behavior. When the OAuth token is absent, the
+  call is rerouted through
+  `ContentForge.CompetitorScraper.ApifyAdapter.fetch_metrics_for_post/2`,
+  so the system can run on a single credential (`APIFY_TOKEN`)
+  instead of needing the platform OAuth + the scraper token. See
+  BUILDPLAN section 17.7.
+
+  `post_url` is the canonical published-post URL. When `nil`, a
+  permalink is reconstructed from the tweet id.
   """
-  @spec fetch_metrics(String.t(), map()) :: {:ok, map()} | {:error, String.t()}
-  def fetch_metrics(tweet_id, %{twitter_access_token: _token} = credentials) do
+  @spec fetch_metrics(String.t(), String.t() | nil, map()) :: {:ok, map()} | {:error, term()}
+  def fetch_metrics(tweet_id, _post_url, %{twitter_access_token: _token} = credentials) do
+    fetch_metrics_via_oauth(tweet_id, credentials)
+  end
+
+  def fetch_metrics(tweet_id, post_url, _credentials_without_oauth) do
+    url = post_url || "https://x.com/i/status/#{tweet_id}"
+    ApifyAdapter.fetch_metrics_for_post("twitter", url)
+  end
+
+  defp fetch_metrics_via_oauth(tweet_id, credentials) do
     case twitter_request(:get, "/tweets/#{tweet_id}?tweet.fields=public_metrics", credentials) do
       {:ok, %{"data" => %{"public_metrics" => m}}} ->
         {:ok,
@@ -165,10 +190,13 @@ defmodule ContentForge.Publishing.Twitter do
   end
 
   defp twitter_request(:get, path, credentials) do
-    url = @base_url <> path
     headers = [{"Authorization", "Bearer #{credentials.twitter_access_token}"}]
 
-    case Req.get(url, headers: headers) do
+    [url: path, base_url: base_url(), headers: headers]
+    |> Kernel.++(req_options())
+    |> Req.new()
+    |> Req.get()
+    |> case do
       {:ok, %{status: status, body: body}} when status in 200..299 ->
         {:ok, body}
 
@@ -179,6 +207,14 @@ defmodule ContentForge.Publishing.Twitter do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp base_url do
+    Application.get_env(:content_forge, :twitter, []) |> Keyword.get(:base_url, @base_url)
+  end
+
+  defp req_options do
+    Application.get_env(:content_forge, :twitter, []) |> Keyword.get(:req_options, [])
   end
 
   defp twitter_request(method, path, credentials, body) do

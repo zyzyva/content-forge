@@ -16,7 +16,10 @@ defmodule ContentForge.CompetitorScraper.ApifyAdapter do
         likes_count: non_neg_integer(),
         comments_count: non_neg_integer(),
         shares_count: non_neg_integer(),
-        posted_at: DateTime.t()
+        views_count: non_neg_integer(),
+        conversation_id: binary() | nil,
+        posted_at: DateTime.t(),
+        raw_data: map()
       }
 
   ## Actor ids chosen at 11.3a slice time
@@ -27,13 +30,18 @@ defmodule ContentForge.CompetitorScraper.ApifyAdapter do
   `:actors` config map.
 
       %{
-        "twitter"   => "apify~twitter-scraper",
+        "twitter"   => "kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest",
         "linkedin"  => "apify~linkedin-post-scraper",
         "reddit"    => "trudax~reddit-scraper",
         "facebook"  => "apify~facebook-pages-scraper",
         "instagram" => "apify~instagram-scraper",
         "youtube"   => "apify~youtube-scraper"
       }
+
+  Phase 17.1 swapped the Twitter default from
+  `apify~twitter-scraper` (broken) to the kaitoeasyapi
+  pay-per-result scraper. Override per env via
+  `APIFY_ACTOR_TWITTER`.
 
   If a platform has no actor mapping the adapter short-circuits with
   `{:error, :unsupported_platform}` and issues no HTTP request.
@@ -72,6 +80,7 @@ defmodule ContentForge.CompetitorScraper.ApifyAdapter do
   require Logger
 
   alias ContentForge.Products.CompetitorAccount
+  alias ContentForge.Products.CompetitorPost
 
   @config_app :content_forge
   @config_key :apify
@@ -91,6 +100,293 @@ defmodule ContentForge.CompetitorScraper.ApifyAdapter do
   @spec fetch_posts(CompetitorAccount.t()) :: {:ok, [map()]} | {:error, term()}
   def fetch_posts(%CompetitorAccount{} = account) do
     dispatch(account, fetch_token(), actor_for(account.platform))
+  end
+
+  @doc """
+  Fetches comments on a competitor post by `conversation_id`.
+
+  Phase 17.1 corpus enrichment: when a post crosses the viral
+  threshold (`ContentForge.CompetitorResearch.viral?/2`), the
+  scraper enqueues `ContentForge.Jobs.CompetitorCommentHarvester`
+  which calls this function to pull the top-N replies.
+
+  `limit` caps the number of comments at the source so we do
+  not pay for thousands of low-resonance noise replies. Default
+  matches `CompetitorResearch.max_comments_per_viral_post/0`.
+
+  Returns `{:ok, [comment_map]}` where each `comment_map` is
+  shaped for `Products.upsert_competitor_post_comment/1`.
+  Returns the same `:not_configured` / `:unsupported_platform`
+  / classified-error tuples as `fetch_posts/1`.
+  """
+  @spec fetch_comments(CompetitorPost.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  def fetch_comments(%CompetitorPost{} = post, opts \\ []) do
+    limit = Keyword.get(opts, :limit, default_comment_limit())
+    platform = Keyword.get(opts, :platform) || infer_platform(post)
+    dispatch_comments(post, limit, fetch_token(), comment_actor_for(platform))
+  end
+
+  @doc """
+  Phase 17.7 all-platforms metrics rewire: looks up engagement
+  counts for a single published post by spinning up a one-shot
+  scrape against the per-platform Apify actor.
+
+  Returns:
+
+      {:ok, %{
+        "likes"    => non_neg_integer() | nil,
+        "comments" => non_neg_integer() | nil,
+        "shares"   => non_neg_integer() | nil,
+        "views"    => non_neg_integer() | nil
+      }}
+
+  The map is intentionally platform-agnostic ("comments" not
+  "replies", "shares" not "retweets") so MetricsPoller and the
+  corrective loop can read engagement uniformly across platforms.
+  Counts default to `nil` (not `0`) when the actor response does
+  not include the field, so callers can distinguish "not measured"
+  from "measured as zero" (matters for corrective-loop signal
+  honesty).
+
+  Per-platform dispatch:
+
+    * `"twitter"`  -> kaitoeasyapi tweet-by-id actor, `startUrls`
+    * `"linkedin"` -> apify linkedin-post-scraper, `urls`
+    * `"facebook"` -> apify facebook posts scraper, `startUrls`
+    * `"instagram"`-> apify instagram-scraper, `directUrls`
+    * `"reddit"`   -> trudax reddit-scraper, `startUrls`
+    * `"youtube"`  -> apify youtube-scraper, `startUrls`
+
+  Per-platform actor selection: looks up `:metrics_actors` first
+  (so a platform can use a different per-post actor than its
+  handle-scraping actor without disturbing 17.1), then falls back
+  to the `:actors` map populated by 17.1.
+
+  Same error taxonomy as `fetch_posts/1`:
+
+    * `{:error, :not_configured}` - no `APIFY_TOKEN`
+    * `{:error, :unsupported_platform}` - actor not mapped for platform
+    * `{:error, {:transient, status, body}}` / `{:error, {:http_error, status, body}}`
+    * `{:error, {:apify_run_failed, status}}`
+    * `{:error, :apify_run_poll_timeout}`
+    * `{:error, :apify_parse_failure}` (zero items in dataset)
+  """
+  @spec fetch_metrics_for_post(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def fetch_metrics_for_post(platform, post_url)
+      when is_binary(platform) and is_binary(post_url) do
+    dispatch_metrics(platform, post_url, fetch_token(), metrics_actor_for(platform))
+  end
+
+  defp dispatch_metrics(_platform, _url, nil, _actor), do: {:error, :not_configured}
+  defp dispatch_metrics(_platform, _url, "", _actor), do: {:error, :not_configured}
+  defp dispatch_metrics(_platform, _url, _token, nil), do: {:error, :unsupported_platform}
+
+  defp dispatch_metrics(platform, url, token, actor) do
+    with {:ok, run} <- start_metrics_run(platform, url, actor, token),
+         {:ok, finished} <- poll_until_done(run, token, poll_max_attempts()),
+         {:ok, items} <- fetch_items(finished["defaultDatasetId"], token) do
+      normalise_metrics(items)
+    end
+  end
+
+  defp start_metrics_run(platform, url, actor, token) do
+    body = build_metrics_input(platform, url)
+
+    actor
+    |> build_req("/v2/acts/#{actor}/runs", token)
+    |> Req.post(json: body)
+    |> classify()
+    |> extract_data()
+  end
+
+  # Per-platform input shapes per BUILDPLAN section 17.7. Twitter
+  # and YouTube cap maxItems=1 because their actors are otherwise
+  # paginating crawlers and we only want the one published post.
+  # LinkedIn and Instagram use platform-specific keys (`urls`,
+  # `directUrls`) per their actor schemas.
+  defp build_metrics_input("twitter", url),
+    do: %{"startUrls" => [url], "maxItems" => 1}
+
+  defp build_metrics_input("youtube", url),
+    do: %{"startUrls" => [url], "maxItems" => 1}
+
+  defp build_metrics_input("linkedin", url), do: %{"urls" => [url]}
+  defp build_metrics_input("instagram", url), do: %{"directUrls" => [url]}
+  defp build_metrics_input(_platform, url), do: %{"startUrls" => [url]}
+
+  defp normalise_metrics(items) when is_list(items) do
+    items
+    |> Enum.reject(&no_results_marker?/1)
+    |> List.first()
+    |> metrics_from_item()
+  end
+
+  defp normalise_metrics(_), do: {:error, :apify_parse_failure}
+
+  defp metrics_from_item(nil), do: {:error, :apify_parse_failure}
+
+  # Lenient field-priority lookup, extending the 17.1 post-list
+  # normalizer with views. Keys cover the common shapes across the
+  # six configured actors. `optional_integer/2` returns `nil` when
+  # the field is absent or unparseable; callers must not assume
+  # zero on missing.
+  defp metrics_from_item(item) when is_map(item) do
+    {:ok,
+     %{
+       "likes" =>
+         optional_integer(item, [
+           "likeCount",
+           "likesCount",
+           "numLikes",
+           "likes",
+           "score",
+           "ups",
+           "reactions"
+         ]),
+       "comments" =>
+         optional_integer(item, [
+           "replyCount",
+           "repliesCount",
+           "numComments",
+           "commentsCount",
+           "comments",
+           "numberOfComments",
+           "num_comments"
+         ]),
+       "shares" =>
+         optional_integer(item, [
+           "retweetCount",
+           "retweetsCount",
+           "numShares",
+           "sharesCount",
+           "shares",
+           "repostCount",
+           "reposts"
+         ]),
+       "views" =>
+         optional_integer(item, [
+           "viewCount",
+           "viewsCount",
+           "numViews",
+           "views",
+           "playCount",
+           "videoViews"
+         ])
+     }}
+  end
+
+  defp metrics_actor_for(platform) do
+    config(:metrics_actors, %{}) |> Map.get(platform) || actor_for(platform)
+  end
+
+  defp dispatch_comments(_post, _limit, nil, _actor), do: {:error, :not_configured}
+  defp dispatch_comments(_post, _limit, "", _actor), do: {:error, :not_configured}
+  defp dispatch_comments(_post, _limit, _token, nil), do: {:error, :unsupported_platform}
+
+  defp dispatch_comments(%CompetitorPost{conversation_id: nil}, _limit, _token, _actor),
+    do: {:error, :missing_conversation_id}
+
+  defp dispatch_comments(%CompetitorPost{} = post, limit, token, actor) do
+    with {:ok, run} <- start_comment_run(post, actor, token, limit),
+         {:ok, finished} <- poll_until_done(run, token, poll_max_attempts()),
+         {:ok, items} <- fetch_items(finished["defaultDatasetId"], token) do
+      {:ok, normalise_comments(items, post, limit)}
+    end
+  end
+
+  defp start_comment_run(%CompetitorPost{} = post, actor, token, limit) do
+    body = build_comment_input(post, limit)
+
+    actor
+    |> build_req("/v2/acts/#{actor}/runs", token)
+    |> Req.post(json: body)
+    |> classify()
+    |> extract_data()
+  end
+
+  defp build_comment_input(%CompetitorPost{conversation_id: conv_id, post_url: url}, limit) do
+    # Same conservative-superset shape as build_run_input/1 - actors
+    # ignore unknown keys, so passing a few common id keys plus the
+    # original URL covers the actors that vary in their input schema.
+    %{
+      conversationId: conv_id,
+      conversation_id: conv_id,
+      tweetId: conv_id,
+      tweet_id: conv_id,
+      postUrl: url,
+      url: url,
+      onlyComments: true,
+      maxItems: limit,
+      mode: "replies"
+    }
+  end
+
+  defp normalise_comments(items, %CompetitorPost{} = post, limit) when is_list(items) do
+    items
+    |> Enum.reject(&no_results_marker?/1)
+    |> Enum.map(&normalise_comment(&1, post))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.sort_by(& &1[:likes_count], :desc)
+    |> Enum.take(limit)
+  end
+
+  defp normalise_comments(_other, _post, _limit), do: []
+
+  defp normalise_comment(item, %CompetitorPost{} = post) when is_map(item) do
+    comment_id = first_present(item, ["id", "commentId", "tweetId", "replyId"])
+
+    if is_binary(comment_id) and comment_id != "" do
+      author = item["author"] || %{}
+
+      %{
+        competitor_post_id: post.id,
+        platform_comment_id: comment_id,
+        author_handle: first_present(author, ["userName", "screen_name", "handle"]),
+        text: first_present(item, ["text", "fullText", "content"]) || "",
+        posted_at:
+          item
+          |> first_present(["createdAt", "postedAt", "publishedAt", "timestamp"])
+          |> parse_datetime(),
+        likes_count: integer_field(item, ["likeCount", "likesCount", "likes"]),
+        replies_count: integer_field(item, ["replyCount", "repliesCount", "replies"]),
+        retweets_count: integer_field(item, ["retweetCount", "retweetsCount", "retweets"]),
+        views_count: integer_field(item, ["viewCount", "viewsCount", "views"]),
+        in_reply_to_id: first_present(item, ["inReplyToId", "in_reply_to_id"]),
+        conversation_id:
+          first_present(item, ["conversationId", "conversation_id"]) || post.conversation_id,
+        raw_payload: item
+      }
+    end
+  end
+
+  defp normalise_comment(_item, _post), do: nil
+
+  defp comment_actor_for(nil), do: nil
+
+  defp comment_actor_for(platform) when is_binary(platform) do
+    Map.get(comment_actor_map(), platform) || actor_for(platform)
+  end
+
+  defp comment_actor_map do
+    config(:comment_actors, %{})
+  end
+
+  defp infer_platform(%CompetitorPost{post_url: url}) when is_binary(url) do
+    cond do
+      url =~ ~r/x\.com|twitter\.com/ -> "twitter"
+      url =~ ~r/linkedin\.com/ -> "linkedin"
+      url =~ ~r/reddit\.com/ -> "reddit"
+      url =~ ~r/facebook\.com/ -> "facebook"
+      url =~ ~r/instagram\.com/ -> "instagram"
+      url =~ ~r/youtube\.com|youtu\.be/ -> "youtube"
+      true -> nil
+    end
+  end
+
+  defp infer_platform(_), do: nil
+
+  defp default_comment_limit do
+    ContentForge.CompetitorResearch.max_comments_per_viral_post()
   end
 
   # --- dispatch -------------------------------------------------------------
@@ -187,12 +483,14 @@ defmodule ContentForge.CompetitorScraper.ApifyAdapter do
 
   defp build_run_input(%CompetitorAccount{handle: handle, url: url, platform: platform}) do
     # Apify actors accept different input shapes per actor. We pass a
-    # conservative superset: handle under a few common keys, and the
-    # url if present. Actors ignore keys they do not know.
+    # conservative superset: handle under several common keys, plus
+    # the `from` key kaitoeasyapi requires for handle-driven Twitter
+    # scrapes (Phase 17.1). Other actors ignore keys they do not know.
     %{
       handle: handle,
       username: handle,
       screenName: handle,
+      from: handle,
       searchTerms: [handle],
       startUrls: (url && [%{url: url}]) || [],
       maxItems: 25,
@@ -233,8 +531,14 @@ defmodule ContentForge.CompetitorScraper.ApifyAdapter do
   # --- normalisation -------------------------------------------------------
 
   defp normalise_items(items, platform) when is_list(items) do
+    # Defensive filter: kaitoeasyapi (and any actor that adopts the
+    # same convention) returns a `noResults: true` placeholder when
+    # the requested handle has no posts. Drop those before counting,
+    # otherwise an empty handle would look like a parse failure.
+    filtered = Enum.reject(items, &no_results_marker?/1)
+
     {posts, skipped} =
-      Enum.reduce(items, {[], 0}, fn item, {acc, skipped} ->
+      Enum.reduce(filtered, {[], 0}, fn item, {acc, skipped} ->
         case normalise_item(item, platform) do
           {:ok, post} -> {[post | acc], skipped}
           :skip -> {acc, skipped + 1}
@@ -247,20 +551,29 @@ defmodule ContentForge.CompetitorScraper.ApifyAdapter do
       )
     end
 
-    case posts do
-      [] ->
-        Logger.error(
-          "ApifyAdapter: parse failure - zero items normalised from #{length(items)} raw items for platform #{platform}"
-        )
-
-        {:error, :apify_parse_failure}
-
-      _ ->
-        {:ok, Enum.reverse(posts)}
-    end
+    classify_normalised(posts, filtered, items, platform)
   end
 
   defp normalise_items(_other, _platform), do: {:error, :apify_parse_failure}
+
+  # When every raw item carried a `noResults` marker we return an
+  # empty list rather than `:apify_parse_failure` - the actor told
+  # us cleanly there is nothing to ingest.
+  defp classify_normalised([], [], _raw, _platform), do: {:ok, []}
+
+  defp classify_normalised([], _filtered, raw_items, platform) do
+    Logger.error(
+      "ApifyAdapter: parse failure - zero items normalised from #{length(raw_items)} raw items for platform #{platform}"
+    )
+
+    {:error, :apify_parse_failure}
+  end
+
+  defp classify_normalised(posts, _filtered, _raw, _platform), do: {:ok, Enum.reverse(posts)}
+
+  defp no_results_marker?(%{"noResults" => true}), do: true
+  defp no_results_marker?(%{noResults: true}), do: true
+  defp no_results_marker?(_), do: false
 
   defp normalise_item(item, _platform) when is_map(item) do
     post_id = first_present(item, ["id", "postId", "urn", "url", "videoId"])
@@ -278,6 +591,8 @@ defmodule ContentForge.CompetitorScraper.ApifyAdapter do
       ])
 
     shares = integer_field(item, ["retweetCount", "numShares", "sharesCount", "shares"])
+    views = integer_field(item, ["viewCount", "viewsCount", "views"])
+    conversation_id = first_present(item, ["conversationId", "conversation_id"])
 
     posted_at =
       item
@@ -293,7 +608,10 @@ defmodule ContentForge.CompetitorScraper.ApifyAdapter do
          likes_count: likes,
          comments_count: comments,
          shares_count: shares,
-         posted_at: posted_at
+         views_count: views,
+         conversation_id: conversation_id,
+         posted_at: posted_at,
+         raw_data: item
        }}
     else
       :skip
@@ -313,6 +631,22 @@ defmodule ContentForge.CompetitorScraper.ApifyAdapter do
   end
 
   defp integer_field(item, keys), do: integer_field_value(first_present(item, keys))
+
+  # Variant for Phase 17.7 metrics: missing fields return nil (not 0)
+  # so MetricsPoller can distinguish "not measured" from "measured as zero".
+  defp optional_integer(item, keys), do: optional_integer_value(first_present(item, keys))
+
+  defp optional_integer_value(n) when is_integer(n), do: n
+  defp optional_integer_value(n) when is_float(n), do: trunc(n)
+
+  defp optional_integer_value(n) when is_binary(n) do
+    case Integer.parse(n) do
+      {int, _} -> int
+      :error -> nil
+    end
+  end
+
+  defp optional_integer_value(_), do: nil
 
   defp integer_field_value(n) when is_integer(n), do: n
   defp integer_field_value(n) when is_float(n), do: trunc(n)
