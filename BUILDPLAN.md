@@ -760,6 +760,32 @@ Phase exit criteria: a marketer can text a photo in, get it tagged into a produc
 
 Phase exit criteria: (1) running `openclaw agent --message "give me an upload link for Acme"` from the CLI produces a real link through the tool path; (2) texting the same request via SMS lands the same link via Twilio; (3) an owner can text "approve the winter promo blog post" and the bot walks the confirmation flow, runs the publish gate, and reports the outcome; (4) every tool invocation appears in the audit dashboard; (5) a viewer attempting a write gets a clear refusal. None of these require new channels beyond SMS + CLI to demonstrate.
 
+- **16.7 cf_publish_text Draft-pipeline integration**
+  - Blocks: nothing. Blocked by: 16.6 (the tool exists post-PR#2 but bypasses the Draft pipeline).
+  - **Why this slice:** PR #2 added `cf_publish_text` as a heavy-write MCP tool that fans out free-form agent-authored text to multiple platforms. Today the tool's `record_publish/4` calls silently drop because `PublishedPost.draft_id` is NOT NULL and `cf_publish_text` has no originating Draft. This means cf_publish_text posts are invisible to the entire feedback loop (ScoreboardEntry comparison, MetricsPoller corrective trigger, WinnerRepurposingEngine, multi-model ranker). The user's stated principle: every published thing has an originating Draft, even agent-authored ones, so they can flow into the unified ranking + scoreboard pipeline same as AI-generated content. This slice realizes that principle.
+  - **Auto-create-Draft pattern.** Inside `cf_publish_text`, before any platform fan-out, create one `Draft` row per requested platform with:
+    - `product_id`: resolved from the tool's product param
+    - `platform`: one Draft per platform in the fan-out list
+    - `content_type`: `"post"`
+    - `angle`: optional caller-supplied tool param; default `"direct"`
+    - `content`: the text the caller passed in
+    - `generating_model`: `"agent:cf_publish_text:" <> ctx.sender_identity` (so multi-agent review chains can be traced to the originating agent identity)
+    - `status`: `"approved"` (the agent's decision-to-call-cf_publish_text IS the approval; PRE-publish review must happen upstream of this tool, by the caller's choice not by Draft pipeline mechanics)
+  - **Thread draft_ids through.** Pass each per-platform `draft_id` to `MultiPlatform.publish_text/4` (signature gains a `draft_ids_by_platform: %{platform => draft_id}` keyword). `record_publish/4` already accepts a `draft_id` per the PR #2 rework; this slice just ensures it's always present and non-nil.
+  - **Result shape.** Tool return adds a `drafts: %{platform => draft_id}` field alongside the existing `results: %{platform => {:ok, _} | {:error, _}}` so the agent can echo back which Draft rows were created. Useful for the agent's own conversation memory and for downstream tools that want to reference the same drafts (cf_approve_draft has no effect since drafts are pre-approved, but the ids are still surfaced for traceability).
+  - **Idempotency wrinkle to resolve.** PR #2's video path is idempotent via `video_job.published_platforms`; the text path is NOT idempotent today. With Drafts in the picture, the natural idempotency primitive becomes: a Draft already in `status: "approved"` AND with an existing `PublishedPost` row for the requested platform is a no-op (already published, do not re-create the row, do not re-call the platform API). Implementation: before creating a Draft, check if the caller passed an existing `draft_id` (new optional param); if so, look up its publish state and short-circuit per platform. If no `draft_id` was passed, always create fresh (no auto-dedup on content text alone; the agent is responsible for not re-calling cf_publish_text with identical text if they want idempotency).
+  - **Schema invariant preserved.** `PublishedPost.draft_id` stays NOT NULL. No migration in this slice. The moduledoc note inside `MultiPlatform` that flagged "make draft_id nullable" gets removed / replaced with a pointer to this slice's actual fix.
+  - **Tests:**
+    - cf_publish_text happy path: free-form text + two platforms creates two Draft rows with status="approved" + generating_model populated + two PublishedPost rows with the correct draft_ids.
+    - Authorization preserved: viewer role still :forbidden, submitter+ proceeds (16.3 contract from PR #2's rework).
+    - Idempotent re-call with the same `draft_id` param skips per-platform publishing for platforms already in PublishedPost; non-published platforms still get their fan-out call.
+    - Idempotent re-call with no `draft_id` param creates a new Draft + duplicates the publish (documented behavior; agent owns dedup).
+    - The corrective loop end-to-end: an agent-authored post that underperforms while a competitor wins triggers the corrective synthesis (proves the Draft flows into the scoreboard the same as an AI-generated post).
+    - Moduledoc update on `MultiPlatform`: no longer claims draft_id will be made nullable.
+  - **Out of scope:**
+    - Multi-agent review pipeline. The user mentioned "agent pipeline where it can be reviewed multiple times before being published automatically." That is a sibling future slice (16.8+) that introduces an agent-review state machine on top of Draft.status. This slice only enables the FIRST step (every cf_publish_text creates a Draft). Once Drafts exist for agent-authored text, the multi-agent review pipeline can hook in via the existing Draft state transitions without further schema work.
+    - cf_publish_video. Same shape applies (video posts need Drafts too) but the video tool already records for YouTube and the test failure mode is different. Address in a follow-up if it bites.
+
 ## Phase 17 - Competitor Research Loop
 
 **Source-of-record:** `RESEARCH_LOOP_PLAN.md` carries the full design narrative, the architectural principles, the open questions with v1 defaults, and the rationale for each phase. This BUILDPLAN section is the swarm-readable slicing of that plan; when the two disagree, this section is authoritative for swarm execution and the source plan should be updated to match. Each slice below cross-references the relevant section in the source doc; coders read both before starting.
