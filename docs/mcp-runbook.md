@@ -8,9 +8,15 @@ touching the LiveView dashboard.
 ## What ships in 17.3
 
 - `lib/content_forge_mcp/server.ex` - the SimpleMCP server
-  module with nine tools, all routing through the existing
-  `ContentForge.Products` / `ContentForge.Jobs.*` context
-  modules. Behavior stays consistent with the dashboard.
+  module with fifteen tools today (nine shipped at 17.3,
+  `cf_list_pending_syntheses` added in 17.4,
+  `cf_recent_scoreboard` added in 17.6, and the four publishing
+  tools `cf_publish_text` / `cf_publish_video` /
+  `cf_platform_status` / `cf_list_published_posts` added in
+  PR #2). All routing through the existing
+  `ContentForge.Products` / `ContentForge.Jobs.*` /
+  `ContentForge.Publishing.*` context modules. Behavior stays
+  consistent with the dashboard.
 - `lib/content_forge_mcp/stdio_server.ex` - the stdio transport
   wrapper. JSON-RPC requests on stdin, responses on stdout.
   Errors render as JSON envelopes (no `Error: ` prefix).
@@ -18,25 +24,42 @@ touching the LiveView dashboard.
   17.4's schema change so `cf_store_intel` can persist
   `audience_signals` + `window` honestly.
 
-## Tool catalogue
+## Tool catalogue (15 tools as of PR #2)
 
-| Tool | Purpose |
-|------|---------|
-| `cf_create_product` | mint a product |
-| `cf_list_products` | product index with competitor + intel counts |
-| `cf_add_competitor` | register a competitor account on a product |
-| `cf_list_competitors` | per-product competitor index |
-| `cf_scrape_competitor` | enqueue Oban scrape (async) |
-| `cf_top_posts_for_synthesis` | top N posts + comments by window |
-| `cf_store_intel` | persist a manual synthesis (without-key path) |
-| `cf_get_intel` | latest competitor intel or last five |
-| `cf_list_pending_syntheses` | without-key route's pending queue (17.4) |
-| `cf_import_twitter_sqlite` | sqlite backfill (posts + comments) via the standalone scraper's `tweets` + `comments` tables (17.5) |
+**Research loop (Phase 17):**
+
+| Tool | Purpose | Shipped |
+|------|---------|---------|
+| `cf_create_product` | mint a product | 17.3 |
+| `cf_list_products` | product index with competitor + intel counts | 17.3 |
+| `cf_add_competitor` | register a competitor account on a product | 17.3 |
+| `cf_list_competitors` | per-product competitor index | 17.3 |
+| `cf_scrape_competitor` | enqueue Oban scrape (async) | 17.3 |
+| `cf_top_posts_for_synthesis` | top N posts + comments by window | 17.3 |
+| `cf_store_intel` | persist a manual synthesis (without-key path) | 17.3 |
+| `cf_get_intel` | latest competitor intel or last five | 17.3 |
+| `cf_list_pending_syntheses` | without-key route's pending queue | 17.4 |
+| `cf_import_twitter_sqlite` | sqlite backfill (posts + comments) via the standalone scraper's `tweets` + `comments` tables | 17.5 |
+| `cf_recent_scoreboard` | operator surface for the corrective loop; recent winners + losers + whether the trigger fired | 17.6 |
+
+**Publishing fan-out (PR #2):**
+
+| Tool | Purpose | Auth | Notes |
+|------|---------|------|-------|
+| `cf_publish_text` | fan out a free-form text post to multiple social platforms | `:submitter` | No Draft auto-create today; follow-up slice 16.7 wires this through the Draft pipeline so posts flow into the feedback loop |
+| `cf_publish_video` | fan out an encoded video to multiple social platforms | `:owner` + two-turn confirmation | Heavy write; uses the 16.4 Confirmation envelope |
+| `cf_platform_status` | per-platform configuration / availability state for a product | `:viewer` | Read-only |
+| `cf_list_published_posts` | recent `PublishedPost` rows for a product, filterable by platform / status | `:viewer` | Read-only |
 
 Every tool returns either a structured success map or a
 `%{code, message, details}` error envelope. Standard codes:
-`not_found`, `unauthorized`, `not_configured`,
-`validation_failed`, `dependency_error`, `not_implemented`.
+`not_found`, `unauthorized`, `not_configured`, `forbidden`
+(authorization rejection from 16.3), `validation_failed`,
+`dependency_error`, `not_implemented`, `escalated` (16.6
+dispatcher short-circuit on an open escalation),
+`confirmation_required` / `confirmation_mismatch` /
+`confirmation_expired` / `confirmation_not_found` (16.4
+two-turn flow).
 
 ## Run the stdio server by hand
 
@@ -85,7 +108,7 @@ have registered (lead_intelligence, etc.).
 ## Verify
 
 Open a Claude Code session, list tools (the protocol's
-`tools/list` request), and confirm all nine `cf_*` entries
+`tools/list` request), and confirm all fifteen `cf_*` entries
 show. Then walk the round-trip from the spec:
 
 1. `cf_create_product { "name": "TestProduct" }` -> note the
@@ -154,6 +177,8 @@ Adding a new tool means:
 4. Update this runbook's tool catalogue table.
 
 The `tools/0` registry is the source of truth; the dispatch
-clause + the handler must agree with it (the
-`registers exactly the nine documented tools` test catches
-drift).
+clause + the handler must agree with it (the dispatch-coverage
+test in `test/content_forge_mcp/server_test.exs` pins the
+exact tool-name set and catches drift; the test description is
+`registers exactly the N documented tools` and the N updates
+each time a tool ships).
