@@ -82,6 +82,38 @@ Status: DONE
 Merged: master @ `b89d89c` (merge commit over `swarmforge-coder@9894dfe` and the intervening role-prompts parallelism edit `ea33b3e`). Reviewer ACCEPT at `9894dfe`. Gate: compile/format/test 144-0 green; credo 40 vs 44 baseline (5 resolved). Architect decisions recorded below: dashboard label "Blocked (Awaiting Image)" accepted; credo baseline-diff rule clarified to tolerate line-shift of unchanged findings.
 Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type = "post") that reach publishing without an image. New `enforce_image_required/1` guard runs in both `perform/1` clauses (the product_id+platform path and the draft_id path). When a social post has `image_url` nil or empty, the worker logs "publish blocked: missing image for draft <id>", marks the draft `status: "blocked"` via `ContentGeneration.mark_draft_blocked/1`, and returns `{:cancel, reason}` without touching the platform client. Non-social drafts (blog, video_script) are unaffected. Added `"blocked"` to the Draft status inclusion list and `ContentGeneration.list_blocked_drafts/1` for dashboard surfacing. Added `"blocked"` to the shared `status_badge` component (maps to `badge-error`). Drafts review LiveView got a "Blocked" filter tab (piggybacks on existing `list_drafts_by_status` fallback, so no extra routing logic). Schedule LiveView got a "Blocked (Awaiting Image)" section listing blocked drafts with a distinct BLOCKED status badge; shows "No blocked drafts" when empty. New test files: `test/content_forge/jobs/publisher_missing_image_test.exs` (8 tests: 5 per-platform blocker cases, 1 product_id+platform path, 1 happy path asserting the gate lets image-bearing drafts through, 1 non-social unaffected). Dashboard tests added in `dashboard_live_test.exs`: Blocked filter tab exposed on review page, blocked draft renders with BLOCKED badge, schedule page surfaces blocked drafts. Gate: compile --warnings-as-errors clean, format clean, full test 144/0. Credo --strict by content is strictly better than baseline: 5 baseline findings resolved (the 2 image_generator.ex findings from 10.2 plus 3 more on publisher.ex - nesting depth and alias ordering dropped due to this refactor; `build_post_opts` cyclomatic-19 preserved, shifted from line 224:8 to 253:8 only because code was added above it, function body unchanged). No new findings on any file.
 
+### Phase 16.7: cf_publish_text Draft-pipeline integration
+
+Status: IN REVIEW
+Branch: `swarmforge-coder` (pending commit hash on handoff). Gate: compile (warnings-as-errors) green, format check green, mix test 1288-0 (8 new tests for the Draft-pipeline path + moduledoc assertion), credo --strict diff vs `.credo_baseline.txt` zero new findings.
+
+Note: Closes the gap PR #2 left open. cf_publish_text now creates one `Draft` per platform (status `"approved"`, `generating_model: "agent:cf_publish_text:<sender>"`, content_type `"post"`, angle `"direct"` by default), threads the per-platform draft_ids through `MultiPlatform.publish_text/5`, and `PublishedPost` rows now land for every successful free-form agent publish. Posts authored through cf_publish_text are visible to the scoreboard, the MetricsPoller corrective trigger, WinnerRepurposingEngine, and the multi-model ranker - same pipeline as AI-generated content.
+
+Implementation:
+
+- `MultiPlatform.publish_text/5` (was /4) accepts a final `opts` keyword. `opts[:draft_ids_by_platform]` maps each platform string to its Draft id; `record_publish/4` threads the id onto the new PublishedPost row. When a platform is absent from the map (or maps to nil), the platform-side publish still runs but the PublishedPost insert is skipped - preserves the no-tracking path for any direct caller that wants the fan-out without the database row.
+- `Publishing.publish_text/5` delegates with the same opts.
+- `cf_publish_text` resolves Drafts two ways: explicit `args["draft_id"]` reuses a single existing Draft across all requested platforms (validated to belong to the product); no `draft_id` auto-creates one Draft per platform with the documented attrs. Result shape gains `drafts: %{platform => draft_id}` so the agent can echo which Draft rows were created.
+- Idempotency lives at the tool layer: with an explicit `draft_id`, any `(draft_id, platform)` pair already represented in `PublishedPost` is short-circuited (the per-platform result reads `status: "skipped_already_published"` and no platform HTTP call fires). Without a `draft_id` every call creates fresh Drafts and duplicates the publish - documented behavior; the agent owns dedup in that branch.
+- `Draft` schema accepts `"direct"` as a valid angle alongside the existing marketing-flavored values, so the auto-create-Draft default does not trip validation.
+- `MultiPlatform`'s moduledoc replaces the prior "make `draft_id` optional" follow-up note with a pointer to 16.7. `PublishedPost.draft_id` stays NOT NULL; no migration in this slice.
+
+Tests added in `test/content_forge_mcp/server_publish_test.exs`:
+
+- happy path: free-form text + two platforms creates two Drafts with the documented attrs and two PublishedPost rows linked to them
+- caller-supplied angle propagates onto each Draft
+- missing sender_identity falls back to `"unknown"` in `generating_model`
+- explicit `draft_id` reuses the same Draft across platforms
+- idempotent re-call with the same `draft_id` skips already-published platforms; non-published platforms still publish; result map includes a `skipped_already_published` per-platform status
+- no `draft_id` param: each re-call creates fresh Drafts and duplicates publishes
+- explicit `draft_id` from another product returns the structured not_found envelope
+- MultiPlatform moduledoc assertion: no longer claims `draft_id` will be made nullable; now points to 16.7
+
+Out of scope (deferred per spec):
+
+- Multi-agent review pipeline (Draft status state machine for agent-authored reviews) - sibling future slice.
+- Same Draft-pipeline integration for `cf_publish_video`. The video tool already records for YouTube via `video_job.draft_id`; the failure mode there is different. Address in a follow-up if it bites.
+
 ### Phase 16.6: Escalate-to-human as a cross-channel tool
 
 Status: DONE

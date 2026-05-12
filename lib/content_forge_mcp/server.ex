@@ -60,6 +60,7 @@ defmodule ContentForgeMCP.Server do
   import Ecto.Query, only: [from: 2]
 
   alias ContentForge.CompetitorScraper.SqliteImporter
+  alias ContentForge.ContentGeneration
   alias ContentForge.Jobs.CompetitorScraper
   alias ContentForge.Jobs.MetricsPollerScheduler
   alias ContentForge.Metrics.ScoreboardEntry
@@ -854,52 +855,165 @@ defmodule ContentForgeMCP.Server do
 
   # --- cf_publish_text ------------------------------------------------------
 
-  # Phase 16-tail rework: writes through the MCP surface gate
-  # through `Authorization.require/2`. `cf_publish_text` is a
-  # light write (text-only post, reversible by deletion on most
-  # platforms) - `:submitter` is sufficient per the 16.3/16.4
-  # split. The MCP channel resolves via
-  # `:content_forge, :mcp_authz, :default_role`; v1 default is
-  # `"owner"` because the MCP stdio transport is the authz
-  # boundary in single-operator usage.
+  # Phase 16.7: every cf_publish_text call routes through the
+  # Draft pipeline. Either (a) the caller passes an existing
+  # `draft_id` and that Draft is reused across all requested
+  # platforms (with per-platform skip for already-published
+  # `(draft_id, platform)` pairs - the idempotency primitive), or
+  # (b) the tool auto-creates one Draft per platform with
+  # `status: "approved"` + `generating_model:
+  # "agent:cf_publish_text:<sender>"` before fan-out. Either
+  # way, every PublishedPost row gets a non-nil draft_id, so
+  # cf_publish_text posts flow into the scoreboard /
+  # corrective-loop pipeline the same as AI-generated content.
+  #
+  # `:submitter` is the minimum role per the 16.3/16.4 light-vs-
+  # heavy-write split (PR #2 rework).
   defp cf_publish_text(args) do
     with {:ok, product_id} <- require_binary(args, "product_id"),
          {:ok, product} <- fetch_product(product_id),
          :ok <- Authorization.require(mcp_ctx(product), :submitter),
          {:ok, text} <- require_binary(args, "text") do
-      image_url = binary_param(args, "image_url")
-
-      platforms =
-        case parse_platforms(args, "platforms", Publishing.connected_platforms(product)) do
-          {:ok, p} -> p
-          _ -> Publishing.connected_platforms(product)
-        end
-
-      connected = Publishing.connected_platforms(product)
-      not_connected = platforms -- connected
-
-      if not_connected != [],
-        do:
-          Logger.info("cf_publish_text: platforms missing credentials: #{inspect(not_connected)}")
-
-      results = Publishing.publish_text(product, text, image_url, platforms)
-
-      serialized =
-        results
-        |> Enum.map(fn {platform, result} -> serialize_publish_result(platform, result) end)
-        |> Map.new()
-
-      ok(%{
-        product_id: product_id,
-        text_preview: String.slice(text, 0, 80),
-        results: serialized,
-        total_attempted: map_size(serialized),
-        total_succeeded: Enum.count(serialized, fn {_, r} -> r[:status] == "success" end)
-      })
+      do_cf_publish_text(args, product, text)
     else
       {:error, :forbidden} -> error("forbidden", "Insufficient role for cf_publish_text")
       other -> other
     end
+  end
+
+  defp do_cf_publish_text(args, product, text) do
+    image_url = binary_param(args, "image_url")
+    angle = binary_param(args, "angle") || "direct"
+    sender = binary_param(args, "sender_identity") || "unknown"
+    requested = resolve_text_platforms(args, product)
+
+    case resolve_text_drafts(args, product, text, angle, sender, requested) do
+      {:error, error_envelope} ->
+        error_envelope
+
+      {:ok, drafts_by_platform} ->
+        published_already =
+          published_platforms_for(product, Map.values(drafts_by_platform) |> Enum.uniq())
+
+        {to_publish, skipped} =
+          partition_skipped(requested, drafts_by_platform, published_already)
+
+        fan_out_results =
+          Publishing.publish_text(product, text, image_url, to_publish,
+            draft_ids_by_platform: drafts_by_platform
+          )
+
+        serialized =
+          fan_out_results
+          |> Enum.map(fn {p, r} -> serialize_publish_result(p, r) end)
+          |> Map.new()
+
+        serialized_with_skips =
+          Enum.reduce(skipped, serialized, fn p, acc ->
+            Map.put(acc, p, %{status: "skipped_already_published"})
+          end)
+
+        ok(%{
+          product_id: product.id,
+          text_preview: String.slice(text, 0, 80),
+          drafts: drafts_by_platform,
+          results: serialized_with_skips,
+          total_attempted: map_size(serialized),
+          total_succeeded: Enum.count(serialized, fn {_, r} -> r[:status] == "success" end),
+          total_skipped: length(skipped)
+        })
+    end
+  end
+
+  defp resolve_text_platforms(args, product) do
+    connected = Publishing.connected_platforms(product)
+
+    platforms =
+      case parse_platforms(args, "platforms", connected) do
+        {:ok, p} -> p
+        _ -> connected
+      end
+
+    not_connected = platforms -- connected
+
+    if not_connected != [] do
+      Logger.info("cf_publish_text: platforms missing credentials: #{inspect(not_connected)}")
+    end
+
+    Enum.uniq(platforms)
+  end
+
+  # When the caller passes an explicit draft_id, every requested
+  # platform shares it. Otherwise auto-create one Draft per
+  # platform.
+  defp resolve_text_drafts(args, product, text, angle, sender, platforms) do
+    case binary_param(args, "draft_id") do
+      nil -> autocreate_drafts(product, text, angle, sender, platforms)
+      draft_id -> reuse_draft(product, draft_id, platforms)
+    end
+  end
+
+  defp autocreate_drafts(product, text, angle, sender, platforms) do
+    Enum.reduce_while(platforms, {:ok, %{}}, fn platform, {:ok, acc} ->
+      attrs = %{
+        product_id: product.id,
+        platform: platform,
+        content_type: "post",
+        angle: angle,
+        content: text,
+        generating_model: "agent:cf_publish_text:#{sender}",
+        status: "approved"
+      }
+
+      case ContentGeneration.create_draft(attrs) do
+        {:ok, draft} ->
+          {:cont, {:ok, Map.put(acc, platform, draft.id)}}
+
+        {:error, _changeset} ->
+          {:halt, {:error, error("validation_failed", "draft insert failed")}}
+      end
+    end)
+  end
+
+  defp reuse_draft(product, draft_id, platforms) do
+    case fetch_owned_draft(product.id, draft_id) do
+      {:ok, draft} ->
+        {:ok, Map.new(platforms, &{&1, draft.id})}
+
+      :not_found ->
+        {:error, error("not_found", "Draft not found for this product", %{draft_id: draft_id})}
+    end
+  end
+
+  defp fetch_owned_draft(product_id, draft_id) do
+    case Ecto.UUID.cast(draft_id) do
+      {:ok, _} ->
+        case ContentGeneration.get_draft(draft_id) do
+          %{product_id: ^product_id} = draft -> {:ok, draft}
+          _ -> :not_found
+        end
+
+      :error ->
+        :not_found
+    end
+  end
+
+  defp published_platforms_for(_product, []), do: MapSet.new()
+
+  defp published_platforms_for(product, draft_ids) do
+    rows = Publishing.list_published_posts(product_id: product.id)
+
+    rows
+    |> Enum.filter(&(&1.draft_id in draft_ids))
+    |> Enum.map(&{&1.draft_id, &1.platform})
+    |> MapSet.new()
+  end
+
+  defp partition_skipped(platforms, drafts_by_platform, published_set) do
+    Enum.split_with(platforms, fn platform ->
+      draft_id = Map.get(drafts_by_platform, platform)
+      not MapSet.member?(published_set, {draft_id, platform})
+    end)
   end
 
   # --- cf_publish_video ------------------------------------------------------

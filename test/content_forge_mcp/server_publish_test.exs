@@ -170,6 +170,216 @@ defmodule ContentForgeMCP.ServerPublishTest do
     end
   end
 
+  # --- cf_publish_text Draft-pipeline integration (16.7) --------------------
+
+  describe "cf_publish_text Draft-pipeline integration" do
+    test "auto-creates one Draft per platform with the documented attrs", %{product: product} do
+      {:ok, body} =
+        Server.handle_tool_call("cf_publish_text", %{
+          "product_id" => product.id,
+          "text" => "agent-authored body",
+          "sender_identity" => "agent-alice",
+          "platforms" => "[\"twitter\",\"linkedin\"]"
+        })
+
+      assert is_map(body.drafts)
+      assert Map.keys(body.drafts) |> Enum.sort() == ["linkedin", "twitter"]
+
+      twitter_draft = ContentGeneration.get_draft(body.drafts["twitter"])
+      linkedin_draft = ContentGeneration.get_draft(body.drafts["linkedin"])
+
+      assert twitter_draft.product_id == product.id
+      assert twitter_draft.platform == "twitter"
+      assert twitter_draft.content_type == "post"
+      assert twitter_draft.angle == "direct"
+      assert twitter_draft.content == "agent-authored body"
+      assert twitter_draft.status == "approved"
+      assert twitter_draft.generating_model == "agent:cf_publish_text:agent-alice"
+
+      assert linkedin_draft.platform == "linkedin"
+      assert linkedin_draft.id != twitter_draft.id
+    end
+
+    test "creates one PublishedPost row per platform with the right draft_id", %{
+      product: product
+    } do
+      {:ok, body} =
+        Server.handle_tool_call("cf_publish_text", %{
+          "product_id" => product.id,
+          "text" => "tracked text",
+          "platforms" => "[\"twitter\",\"linkedin\"]"
+        })
+
+      rows = Publishing.list_published_posts(product_id: product.id)
+      assert length(rows) == 2
+
+      twitter_row = Enum.find(rows, &(&1.platform == "twitter"))
+      linkedin_row = Enum.find(rows, &(&1.platform == "linkedin"))
+
+      assert twitter_row.draft_id == body.drafts["twitter"]
+      assert linkedin_row.draft_id == body.drafts["linkedin"]
+    end
+
+    test "caller-supplied angle propagates onto each Draft row", %{product: product} do
+      {:ok, body} =
+        Server.handle_tool_call("cf_publish_text", %{
+          "product_id" => product.id,
+          "text" => "with angle",
+          "angle" => "humor",
+          "platforms" => "[\"twitter\"]"
+        })
+
+      draft = ContentGeneration.get_draft(body.drafts["twitter"])
+      assert draft.angle == "humor"
+    end
+
+    test "missing sender_identity falls back to 'unknown' in generating_model", %{
+      product: product
+    } do
+      {:ok, body} =
+        Server.handle_tool_call("cf_publish_text", %{
+          "product_id" => product.id,
+          "text" => "anon",
+          "platforms" => "[\"twitter\"]"
+        })
+
+      draft = ContentGeneration.get_draft(body.drafts["twitter"])
+      assert draft.generating_model == "agent:cf_publish_text:unknown"
+    end
+
+    test "explicit draft_id reuses the same Draft across platforms (no auto-create)", %{
+      product: product
+    } do
+      {:ok, draft} =
+        ContentGeneration.create_draft(%{
+          product_id: product.id,
+          content: "pre-existing body",
+          platform: "twitter",
+          content_type: "post",
+          generating_model: "agent:cf_publish_text:pre",
+          angle: "direct",
+          status: "approved"
+        })
+
+      {:ok, body} =
+        Server.handle_tool_call("cf_publish_text", %{
+          "product_id" => product.id,
+          "text" => "pre-existing body",
+          "draft_id" => draft.id,
+          "platforms" => "[\"twitter\",\"linkedin\"]"
+        })
+
+      assert body.drafts["twitter"] == draft.id
+      assert body.drafts["linkedin"] == draft.id
+
+      rows = Publishing.list_published_posts(product_id: product.id)
+      assert Enum.all?(rows, &(&1.draft_id == draft.id))
+    end
+
+    test "idempotent re-call with the same draft_id skips already-published platforms",
+         %{product: product} do
+      {:ok, draft} =
+        ContentGeneration.create_draft(%{
+          product_id: product.id,
+          content: "body",
+          platform: "twitter",
+          content_type: "post",
+          generating_model: "agent:cf_publish_text:agent",
+          angle: "direct",
+          status: "approved"
+        })
+
+      {:ok, first} =
+        Server.handle_tool_call("cf_publish_text", %{
+          "product_id" => product.id,
+          "text" => "body",
+          "draft_id" => draft.id,
+          "platforms" => "[\"twitter\"]"
+        })
+
+      assert first.total_attempted == 1
+      assert first.results["twitter"][:status] == "success"
+
+      {:ok, second} =
+        Server.handle_tool_call("cf_publish_text", %{
+          "product_id" => product.id,
+          "text" => "body",
+          "draft_id" => draft.id,
+          "platforms" => "[\"twitter\",\"linkedin\"]"
+        })
+
+      assert second.total_attempted == 1
+      assert second.results["linkedin"][:status] == "success"
+      assert second.results["twitter"][:status] == "skipped_already_published"
+
+      rows = Publishing.list_published_posts(product_id: product.id)
+      platforms = rows |> Enum.map(& &1.platform) |> Enum.sort()
+      assert platforms == ["linkedin", "twitter"]
+    end
+
+    test "no draft_id param: each re-call creates fresh drafts and duplicates publishes",
+         %{product: product} do
+      {:ok, first} =
+        Server.handle_tool_call("cf_publish_text", %{
+          "product_id" => product.id,
+          "text" => "no idempotency",
+          "platforms" => "[\"twitter\"]"
+        })
+
+      {:ok, second} =
+        Server.handle_tool_call("cf_publish_text", %{
+          "product_id" => product.id,
+          "text" => "no idempotency",
+          "platforms" => "[\"twitter\"]"
+        })
+
+      refute first.drafts["twitter"] == second.drafts["twitter"]
+      rows = Publishing.list_published_posts(product_id: product.id)
+      assert length(rows) == 2
+    end
+
+    test "explicit draft_id from another product is rejected", %{product: product} do
+      {:ok, other_product} =
+        Products.create_product(%{
+          name: "Other Product #{System.unique_integer()}",
+          voice_profile: "professional"
+        })
+
+      {:ok, foreign_draft} =
+        ContentGeneration.create_draft(%{
+          product_id: other_product.id,
+          content: "x",
+          platform: "twitter",
+          content_type: "post",
+          generating_model: "agent:cf_publish_text:x",
+          status: "approved"
+        })
+
+      {:error, %{code: code}} =
+        Server.handle_tool_call("cf_publish_text", %{
+          "product_id" => product.id,
+          "text" => "x",
+          "draft_id" => foreign_draft.id,
+          "platforms" => "[\"twitter\"]"
+        })
+
+      assert code == "not_found"
+    end
+  end
+
+  describe "MultiPlatform moduledoc no longer claims draft_id will be made nullable" do
+    test "moduledoc does NOT promise to make PublishedPost.draft_id nullable" do
+      {:docs_v1, _, _, _, %{"en" => moduledoc}, _, _} =
+        Code.fetch_docs(ContentForge.Publishing.MultiPlatform)
+
+      refute moduledoc =~ "make `draft_id` optional"
+      refute moduledoc =~ "Making `draft_id` optional"
+      refute moduledoc =~ "deferred schema follow-up"
+      # Positive: it should now point at the 16.7 fix.
+      assert moduledoc =~ "16.7"
+    end
+  end
+
   # --- cf_publish_video (two-turn confirmation) -----------------------------
 
   describe "cf_publish_video" do

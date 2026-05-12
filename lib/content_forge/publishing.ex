@@ -180,9 +180,10 @@ defmodule ContentForge.Publishing do
         product,
         text,
         image_url \\ nil,
-        platforms \\ ~w(twitter linkedin reddit facebook instagram)
+        platforms \\ ~w(twitter linkedin reddit facebook instagram),
+        opts \\ []
       ) do
-    MultiPlatform.publish_text(product, text, image_url, platforms)
+    MultiPlatform.publish_text(product, text, image_url, platforms, opts)
   end
 
   def publish_video(

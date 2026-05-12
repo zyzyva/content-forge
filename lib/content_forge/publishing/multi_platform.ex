@@ -8,24 +8,30 @@ defmodule ContentForge.Publishing.MultiPlatform do
 
   ## PublishedPost tracking
 
-  `PublishedPost` rows require a `draft_id` (schema NOT NULL), so
-  tracking happens for any publish path that has an originating
-  draft:
+  `PublishedPost` rows require a `draft_id` (schema NOT NULL).
+  Both fan-out paths thread a Draft through `record_publish/4`:
 
-    * **Video fan-out** (`publish_video/3`): every successful per-platform
-      publish writes a `PublishedPost` row threading
-      `video_job.draft_id`. All five video-supporting platforms
-      (YouTube, Twitter, Facebook, Instagram, LinkedIn) record.
-      Reddit short-circuits without an attempt (no API video upload).
-    * **Text fan-out** (`publish_text/4`): the MCP surface accepts
-      free-form text with no originating draft, so the
-      `PublishedPost` insert is intentionally skipped (logged at
-      `:info`) when `draft_id` is `nil`. Callers that want
-      tracking should publish through the draft-based publishing
-      worker, not through `publish_text/4`. Making `draft_id`
-      optional on `PublishedPost` is a deferred schema follow-up;
-      the current behavior is documented here so a future test
-      can pin it.
+    * **Video fan-out** (`publish_video/3`): uses `video_job.draft_id`.
+      All five video-supporting platforms (YouTube, Twitter, Facebook,
+      Instagram, LinkedIn) record. Reddit short-circuits without an
+      attempt (no API video upload).
+    * **Text fan-out** (`publish_text/5`): the caller passes a
+      `draft_ids_by_platform` option mapping each platform to its
+      Draft id. `ContentForgeMCP.Server.cf_publish_text/1` (Phase
+      16.7) auto-creates one Draft per platform before invoking
+      the fan-out and threads the resulting map through. Drafts
+      authored this way carry
+      `generating_model: "agent:cf_publish_text:<sender>"` so
+      multi-agent review chains can trace authorship to the
+      originating agent.
+
+  Calling `publish_text/4` without `draft_ids_by_platform` (or
+  with an empty map) skips the `PublishedPost` insert for that
+  platform - the publish-side HTTP call still runs and the
+  per-platform result is returned, just without database
+  tracking. Phase 16.7 made the draft-aware path the default
+  through the MCP surface; the no-draft path remains for any
+  caller that wants the fan-out without tracking.
 
   ## Idempotency
 
@@ -36,17 +42,17 @@ defmodule ContentForge.Publishing.MultiPlatform do
   (`cf_publish_video`) updates `published_platforms` after each
   successful per-platform publish, which closes the loop.
 
-  Text fan-out (`publish_text/4`) is intentionally **not**
-  idempotent in v1. A text post has no persistent identity (no
-  `text_job` row), so a re-run of `publish_text` will re-attempt
-  every platform regardless of whether the same text already
-  landed. Callers that need at-most-once semantics should
-  deduplicate at their own layer (e.g. by checking
-  `Publishing.list_published_posts/1` for a matching
-  `(product, platform, posted_at)` before invoking
-  `publish_text/4` again). Adding a generic text-side
-  idempotency marker is a follow-up if the operational pain
-  shows up.
+  Text fan-out idempotency lives at the `cf_publish_text` tool
+  layer (Phase 16.7): the agent passes an existing
+  `draft_id` and the tool short-circuits per-platform publishes
+  for any `(draft_id, platform)` pair already represented in
+  `PublishedPost`. Without an explicit `draft_id`, every call
+  creates fresh Drafts and duplicates the publish (the agent
+  owns dedup in that branch). Direct callers of
+  `MultiPlatform.publish_text/5` get no built-in dedup; the
+  draft-map shape is the dedup primitive and the caller is
+  responsible for not threading a draft that has already
+  been published.
   """
 
   require Logger
@@ -93,73 +99,84 @@ defmodule ContentForge.Publishing.MultiPlatform do
     - `text` - post body
     - `image_url` - optional image URL (supported by Twitter, Facebook, LinkedIn)
     - `platforms` - list of platform names to publish to
+    - `opts` - keyword list:
+      * `:draft_ids_by_platform` (default `%{}`) - per-platform Draft
+        id to attach on each `PublishedPost` row. When a platform
+        is absent from the map (or maps to nil), the publish-side
+        HTTP call still runs but no `PublishedPost` row is
+        written. Phase 16.7's `cf_publish_text` builds this map
+        before fan-out.
 
   ## Returns
     `%{platform_name => {:ok, result} | {:error, reason}}`
   """
-  @spec publish_text(Product.t(), String.t(), String.t() | nil, [String.t()]) :: multi_result()
+  @spec publish_text(Product.t(), String.t(), String.t() | nil, [String.t()], keyword()) ::
+          multi_result()
   def publish_text(
         %Product{} = product,
         text,
         image_url \\ nil,
-        platforms \\ @available_platforms
+        platforms \\ @available_platforms,
+        opts \\ []
       )
-      when is_binary(text) and is_list(platforms) do
+      when is_binary(text) and is_list(platforms) and is_list(opts) do
     creds = build_credentials(product)
+    draft_ids = Keyword.get(opts, :draft_ids_by_platform, %{})
 
     platforms
     |> Enum.reject(&is_nil(creds[:"#{&1}_access_token"]))
     |> Enum.map(fn platform ->
-      result = publish_to_platform(platform, text, image_url, creds, product)
+      draft_id = Map.get(draft_ids, platform)
+      result = publish_to_platform(platform, text, image_url, creds, product, draft_id)
       {platform, result}
     end)
     |> Map.new()
     |> tap_log_results("text post")
   end
 
-  defp publish_to_platform("twitter" = platform, text, image_url, creds, product) do
+  defp publish_to_platform("twitter" = platform, text, image_url, creds, product, draft_id) do
     opts = maybe_image_opt(image_url)
-    twitter_client().post(text, creds, opts) |> record_publish(product, nil, platform)
+    twitter_client().post(text, creds, opts) |> record_publish(product, draft_id, platform)
   end
 
-  defp publish_to_platform("linkedin" = platform, text, image_url, creds, product) do
+  defp publish_to_platform("linkedin" = platform, text, image_url, creds, product, draft_id) do
     linkedin_client().post(
       text,
       creds,
       maybe_image_opt(image_url) ++ maybe_organization_opt(product)
     )
-    |> record_publish(product, nil, platform)
+    |> record_publish(product, draft_id, platform)
   end
 
-  defp publish_to_platform("reddit" = platform, text, _image_url, creds, product) do
+  defp publish_to_platform("reddit" = platform, text, _image_url, creds, product, draft_id) do
     subreddit = get_in(product.publishing_targets, ["reddit", "subreddit"]) || "all"
     opts = [subreddit: subreddit]
-    reddit_client().post(text, creds, opts) |> record_publish(product, nil, platform)
+    reddit_client().post(text, creds, opts) |> record_publish(product, draft_id, platform)
   end
 
-  defp publish_to_platform("facebook", _text, nil, _creds, _product),
+  defp publish_to_platform("facebook", _text, nil, _creds, _product, _draft_id),
     do: {:error, "Facebook posts require an image URL"}
 
-  defp publish_to_platform("facebook" = platform, text, image_url, creds, product) do
+  defp publish_to_platform("facebook" = platform, text, image_url, creds, product, draft_id) do
     opts = [image_url: image_url] ++ maybe_page_opt(product)
-    facebook_client().post(text, creds, opts) |> record_publish(product, nil, platform)
+    facebook_client().post(text, creds, opts) |> record_publish(product, draft_id, platform)
   end
 
-  defp publish_to_platform("instagram", _text, nil, _creds, _product),
+  defp publish_to_platform("instagram", _text, nil, _creds, _product, _draft_id),
     do: {:error, "Instagram posts require an image URL"}
 
-  defp publish_to_platform("instagram" = platform, text, image_url, creds, product) do
+  defp publish_to_platform("instagram" = platform, text, image_url, creds, product, draft_id) do
     opts = [image_url: image_url] ++ maybe_instagram_opt(product)
 
     facebook_client().post(text, creds, [{:target, :instagram} | opts])
-    |> record_publish(product, nil, platform)
+    |> record_publish(product, draft_id, platform)
   end
 
-  defp publish_to_platform("youtube" = _platform, _text, _image_url, _creds, _product) do
+  defp publish_to_platform("youtube" = _platform, _text, _image_url, _creds, _product, _draft_id) do
     {:error, "YouTube requires video content, not text. Use publish_video/3."}
   end
 
-  defp publish_to_platform(platform, _text, _image_url, _creds, _product) do
+  defp publish_to_platform(platform, _text, _image_url, _creds, _product, _draft_id) do
     {:error, "Unknown platform: #{platform}"}
   end
 
