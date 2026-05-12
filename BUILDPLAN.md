@@ -760,7 +760,7 @@ Phase exit criteria: a marketer can text a photo in, get it tagged into a produc
 
 Phase exit criteria: (1) running `openclaw agent --message "give me an upload link for Acme"` from the CLI produces a real link through the tool path; (2) texting the same request via SMS lands the same link via Twilio; (3) an owner can text "approve the winter promo blog post" and the bot walks the confirmation flow, runs the publish gate, and reports the outcome; (4) every tool invocation appears in the audit dashboard; (5) a viewer attempting a write gets a clear refusal. None of these require new channels beyond SMS + CLI to demonstrate.
 
-- **16.7 cf_publish_text Draft-pipeline integration**
+- **16.7 cf_publish_text Draft-pipeline integration** ✅ Shipped `8d20b59`.
   - Blocks: nothing. Blocked by: 16.6 (the tool exists post-PR#2 but bypasses the Draft pipeline).
   - **Why this slice:** PR #2 added `cf_publish_text` as a heavy-write MCP tool that fans out free-form agent-authored text to multiple platforms. Today the tool's `record_publish/4` calls silently drop because `PublishedPost.draft_id` is NOT NULL and `cf_publish_text` has no originating Draft. This means cf_publish_text posts are invisible to the entire feedback loop (ScoreboardEntry comparison, MetricsPoller corrective trigger, WinnerRepurposingEngine, multi-model ranker). The user's stated principle: every published thing has an originating Draft, even agent-authored ones, so they can flow into the unified ranking + scoreboard pipeline same as AI-generated content. This slice realizes that principle.
   - **Auto-create-Draft pattern.** Inside `cf_publish_text`, before any platform fan-out, create one `Draft` row per requested platform with:

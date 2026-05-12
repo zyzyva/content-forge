@@ -84,8 +84,8 @@ Note: `ContentForge.Jobs.Publisher` now blocks social post drafts (content_type 
 
 ### Phase 16.7: cf_publish_text Draft-pipeline integration
 
-Status: IN REVIEW
-Branch: `swarmforge-coder` (pending commit hash on handoff). Gate: compile (warnings-as-errors) green, format check green, mix test 1288-0 (8 new tests for the Draft-pipeline path + moduledoc assertion), credo --strict diff vs `.credo_baseline.txt` zero new findings.
+Status: Merged `8d20b59` (reviewer merge `8526b03`).
+Gate: compile (warnings-as-errors) green, format check green, mix test 1288-0 (8 new tests for the Draft-pipeline path + moduledoc assertion), credo --strict diff vs `.credo_baseline.txt` zero new findings. Coverage: MultiPlatform 71.83% (up from PR-2-original 0.93% thanks to the rework), Publishing 51%, Server pre-merge 74%.
 
 Note: Closes the gap PR #2 left open. cf_publish_text now creates one `Draft` per platform (status `"approved"`, `generating_model: "agent:cf_publish_text:<sender>"`, content_type `"post"`, angle `"direct"` by default), threads the per-platform draft_ids through `MultiPlatform.publish_text/5`, and `PublishedPost` rows now land for every successful free-form agent publish. Posts authored through cf_publish_text are visible to the scoreboard, the MetricsPoller corrective trigger, WinnerRepurposingEngine, and the multi-model ranker - same pipeline as AI-generated content.
 
