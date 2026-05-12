@@ -380,13 +380,29 @@ Acceptance criteria:
 - [ ] Pending confirmations are tracked in a `ContentForge.OpenClawTools.PendingConfirmation` schema. Rows are never updated; a `consumed_at` timestamp records first use, and a separate lifecycle column records expiry. This keeps the audit trail append-only.
 - [ ] The shared helper `ContentForge.OpenClawTools.Confirmation` has two entry points: `request(tool_name, ctx, params, preview)` and `confirm(tool_name, ctx, params, echo_phrase)`. Heavy-write tools call `request/4` when the `confirm` param is absent from the incoming call, and `confirm/4` when it is present; they short-circuit on any classified error from either helper.
 
+**Audit contract (introduced in 16.5):**
+- [ ] Every tool invocation across every channel is recorded in `ContentForge.ToolAudit.ToolInvocationEvent`. The audit captures the dispatch result before the audit writer fires, so a logger failure can never affect tool behavior.
+- [ ] Channel namespacing distinguishes the two dispatchers: OpenClaw HTTP invocations record `channel: "openclaw_<original>"` (where `<original>` is the inbound channel: `"sms"`, `"cli"`, or future names); MCP invocations record `channel: "mcp"`. Cross-surface analytics queries can filter or group by this prefix.
+- [ ] PII redaction happens at audit-write time. Phone-shaped `sender_identity` values are hashed via SHA-256/base64url with a `sha256:` prefix. Per-tool param-key allow-lists redact configurable sensitive keys (default `phone_number`, `phone`, `email`, `sender_identity`).
+- [ ] Surfaces: a LiveView at `/dashboard/tool-activity` (filterable by tool, channel, status) and a REST mirror at `GET /api/v1/products/:product_id/tool-activity` for external inspection. The dashboard is gated by `:require_authenticated_user`; the REST endpoint is gated by the existing `:api_auth` bearer token.
+- [ ] The audit `result_status` field has four values: `"ok"` (tool returned `{:ok, _}`), `"error"` (tool returned a classified `{:error, _}`), `"unknown_tool"` (dispatch found no module for the name), and `"blocked_escalated"` (dispatcher short-circuited because of an open escalation; see escalation contract below).
+
+**Escalation contract (introduced in 16.6):**
+- [ ] `escalate_to_human` is a first-class tool the agent self-invokes when it cannot confidently handle the request, when the user asks for a human, when pricing or contract topics arise, when the conversation includes a complaint, or when the user expresses frustration. The tool requires `:viewer` (asking for help is not destructive).
+- [ ] An `EscalationEvent` row records every escalation: product, session, channel, hashed sender_identity, free-form `reason` from the agent, configurable `urgency`, and the `holding_reply` text the agent reads back to the user verbatim. The reply is persisted on the row at creation time so future copy changes do not retroactively rewrite past audit trails.
+- [ ] Idempotency: a partial unique index on `(product_id, session_id) WHERE resolved = false` ensures a re-escalation on an open session updates the existing row rather than stacking. The context's `create_or_update_open/1` enforces the same invariant at the application layer.
+- [ ] Cross-channel dispatcher hook: both the OpenClaw HTTP dispatcher and the MCP dispatcher pre-check for an open escalation (within a configurable session window, default 24 hours) before delegating to the tool module. When one is open, the dispatcher returns `{:error, :escalated}` short-circuit with the persisted `holding_reply`. Two exemptions: `escalate_to_human` itself (re-escalation must succeed; the agent may legitimately raise urgency or update the reason) and `cf_recent_scoreboard` on MCP (operator-facing read, harmless during escalation).
+- [ ] Auto-expiry without deletion: an escalation older than the session window is no longer blocking but stays in the table as audit. Operators see expired open rows in the dashboard distinctly and can still mark them resolved.
+- [ ] The 14.5 SMS escalation primitive (`Sms.escalate_session/3`) keeps its existing behavior and additionally writes an `EscalationEvent` so the cross-channel dispatcher hook fires uniformly. The pre-existing SMS needs-attention dashboard now sources from the channel-agnostic `Escalations` context.
+- [ ] Resolution: `POST /api/v1/escalations/:id/resolve` flips `resolved: true`, records `resolved_by`. A "Mark resolved" form on the needs-attention page calls the same endpoint.
+
 **Acceptance criteria (phase-level, refined per slice in `BUILDPLAN.md`):**
 - [x] `create_upload_link` ships end-to-end on SMS and CLI (16.1).
-- [ ] `list_recent_assets`, `draft_status`, `upcoming_schedule`, `competitor_intel_summary` ship as read-only tools (16.2) so the agent can answer status and reconnaissance questions.
-- [ ] `create_asset_bundle`, `record_memory`, `add_tag_to_asset` ship as light writes under the shared authorization helper (16.3).
-- [ ] `generate_drafts_from_bundle`, `schedule_reminder_change`, `approve_draft` ship as heavy writes behind a two-turn confirmation envelope (16.4).
-- [ ] Every tool invocation is recorded in a unified `ToolInvocationEvent` surface with a dashboard view and REST mirror (16.5).
-- [ ] `escalate_to_human` ships as a first-class tool the agent self-invokes on ambiguity, cost, or complaint (16.6), generalizing the SMS-scoped escalation primitive from Feature 12.
+- [x] `list_recent_assets`, `draft_status`, `upcoming_schedule`, `competitor_intel_summary` ship as read-only tools (16.2).
+- [x] `create_asset_bundle`, `record_memory`, `add_tag_to_asset` ship as light writes under the shared authorization helper (16.3).
+- [x] `generate_drafts_from_bundle`, `schedule_reminder_change`, `approve_draft` ship as heavy writes behind a two-turn confirmation envelope (16.4).
+- [x] Every tool invocation is recorded in a unified `ToolInvocationEvent` surface with a dashboard view and REST mirror (16.5).
+- [x] `escalate_to_human` ships as a first-class tool the agent self-invokes on ambiguity, cost, or complaint (16.6), generalizing the SMS-scoped escalation primitive from Feature 12.
 
 **Out of scope (for the tool surface as a whole):**
 - [ ] Streaming tool results. The current shape is request/response; long-running tools that need progress updates should enqueue Oban jobs and return an acknowledgement reason the agent surfaces as "I started that, I will let you know when it finishes."

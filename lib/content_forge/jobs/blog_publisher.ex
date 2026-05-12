@@ -7,6 +7,7 @@ defmodule ContentForge.Jobs.BlogPublisher do
   use Oban.Worker, max_attempts: 3
 
   alias ContentForge.{Products, Publishing, Storage}
+  alias ContentForge.Products.BlogWebhook
   alias ContentForge.ContentGeneration
 
   require Logger
@@ -73,8 +74,11 @@ defmodule ContentForge.Jobs.BlogPublisher do
     end
   end
 
-  defp get_product_slug(product) do
-    # Derive slug from product name: lowercase, replace spaces with hyphens
+  @doc false
+  # Public for testability. Derives a URL-safe slug from a
+  # product name: lowercase, spaces -> hyphens, drop anything
+  # that is not alphanumeric or `-`.
+  def get_product_slug(product) do
     product.name
     |> String.downcase()
     |> String.replace(~r/\s+/, "-")
@@ -84,24 +88,48 @@ defmodule ContentForge.Jobs.BlogPublisher do
   defp deliver_to_webhooks(draft, product, webhooks, r2_url) do
     product_slug = get_product_slug(product)
 
-    payload = %{
-      title: get_draft_title(draft),
-      content: draft.content,
-      r2_url: r2_url,
-      product_slug: product_slug,
-      timestamp: DateTime.utc_now() |> DateTime.to_iso8601()
-    }
-
     # Deliver to each webhook
     Enum.each(webhooks, fn webhook ->
+      payload = build_payload(draft, product_slug, r2_url, webhook)
       deliver_to_single_webhook(draft, product, webhook, payload)
     end)
 
     :ok
   end
 
-  defp get_draft_title(draft) do
-    # Try to extract title from content (first line that looks like a heading)
+  @doc false
+  # Public for testability. Builds the JSON payload sent to the
+  # receiver. When the webhook has CMS metadata (any persisted
+  # webhook does post-migration since `platform` defaults to
+  # `"generic"`), the payload carries a `metadata` block and the
+  # receiver fetches markdown from R2 via `r2_url`. The legacy
+  # branch (no metadata) inlines the markdown as `content`; that
+  # path remains for backward compatibility with pre-migration
+  # webhooks that still have a NULL `platform`.
+  def build_payload(draft, product_slug, r2_url, webhook) do
+    timestamp = DateTime.utc_now() |> DateTime.to_iso8601()
+    cms_meta = BlogWebhook.cms_metadata(webhook)
+
+    payload = %{
+      title: get_draft_title(draft),
+      r2_url: r2_url,
+      product_slug: product_slug,
+      timestamp: timestamp
+    }
+
+    if map_size(cms_meta) > 0 do
+      Map.put(payload, :metadata, cms_meta)
+    else
+      Map.put(payload, :content, draft.content)
+    end
+  end
+
+  @doc false
+  # Public for testability. Extracts a title from the first
+  # non-empty line of the draft, stripping markdown heading
+  # markers; falls back to "Untitled Blog Post" for empty content
+  # or empty heading lines.
+  def get_draft_title(draft) do
     lines = String.split(draft.content, "\n", trim: true)
 
     case lines do
@@ -109,7 +137,6 @@ defmodule ContentForge.Jobs.BlogPublisher do
         "Untitled Blog Post"
 
       [first | _] ->
-        # Remove markdown heading markers
         first
         |> String.replace(~r/^#+\s*/, "")
         |> String.trim()
@@ -117,7 +144,13 @@ defmodule ContentForge.Jobs.BlogPublisher do
     end
   end
 
-  defp deliver_to_single_webhook(draft, product, webhook, payload) do
+  @doc false
+  # Public for testability. Performs the actual HTTP delivery
+  # for one webhook (HMAC-signs the body when a secret is set,
+  # records the WebhookDelivery row, logs success/error). The
+  # `:http_post` Application env hook in `http_post/0` lets tests
+  # stub the wire without touching the network.
+  def deliver_to_single_webhook(draft, product, webhook, payload) do
     body = JSON.encode!(payload)
 
     # HMAC-sign request body when secret present
@@ -143,7 +176,7 @@ defmodule ContentForge.Jobs.BlogPublisher do
         status: "pending"
       })
 
-    case Req.post(webhook.url, body: body, headers: headers, timeout: 30_000) do
+    case http_post().(webhook.url, body, headers) do
       {:ok, %{status: status}} when status >= 200 and status < 300 ->
         Logger.info("BlogPublisher: Delivered to webhook #{webhook.id}, status #{status}")
 
@@ -179,5 +212,18 @@ defmodule ContentForge.Jobs.BlogPublisher do
 
         {:error, reason}
     end
+  end
+
+  # Test seam. Defaults to `Req.post/2`. Tests override via
+  # `Application.put_env(:content_forge, :blog_publisher, http_post: fn ... end)`
+  # so a fake HTTP client can stand in without touching the
+  # network and so log-output assertions can run deterministically.
+  defp http_post do
+    Application.get_env(:content_forge, :blog_publisher, [])
+    |> Keyword.get(:http_post, &default_http_post/3)
+  end
+
+  defp default_http_post(url, body, headers) do
+    Req.post(url, body: body, headers: headers, timeout: 30_000)
   end
 end

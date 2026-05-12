@@ -36,6 +36,10 @@ defmodule ContentForgeMCP.Server do
       indication of whether the corrective trigger fired. Used
       to verify the corrective loop is closing without trawling
       the DB
+    * `cf_publish_text` - publish a text post to one or more platforms
+    * `cf_publish_video` - publish a completed VideoJob to platforms
+    * `cf_platform_status` - check OAuth connection status per platform
+    * `cf_list_published_posts` - list published posts for a product
 
   ## Error envelope
 
@@ -56,15 +60,20 @@ defmodule ContentForgeMCP.Server do
   import Ecto.Query, only: [from: 2]
 
   alias ContentForge.CompetitorScraper.SqliteImporter
+  alias ContentForge.ContentGeneration
   alias ContentForge.Jobs.CompetitorScraper
   alias ContentForge.Jobs.MetricsPollerScheduler
   alias ContentForge.Metrics.ScoreboardEntry
+  alias ContentForge.OpenClawTools.Authorization
+  alias ContentForge.OpenClawTools.Confirmation
   alias ContentForge.Products
   alias ContentForge.Products.CompetitorAccount
   alias ContentForge.Products.CompetitorIntel
   alias ContentForge.Products.CompetitorPost
   alias ContentForge.Products.PendingIntelSynthesis
   alias ContentForge.Products.Product
+  alias ContentForge.Publishing
+  alias ContentForge.Publishing.VideoJob
   alias ContentForge.Repo
 
   @platforms ~w(twitter linkedin reddit facebook instagram youtube)
@@ -192,6 +201,54 @@ defmodule ContentForgeMCP.Server do
              description:
                "Cap on winners + losers returned per product (default 5, clamped to [1, 20])."}
         }
+      ),
+      SimpleMCP.Tool.new(
+        "cf_publish_text",
+        "Publish a text post to one or more social platforms for a product. Checks each platform for valid OAuth credentials before attempting.",
+        %{
+          product_id: {:required, :string, description: "Product UUID."},
+          text: {:required, :string, description: "Post body text."},
+          image_url:
+            {:optional, :string,
+             description: "Optional image URL (Twitter, Facebook, LinkedIn, Instagram only)."},
+          platforms:
+            {:optional, :string,
+             description:
+               "JSON-encoded list of platforms (default: all connected). Options: twitter, linkedin, reddit, facebook, instagram."}
+        }
+      ),
+      SimpleMCP.Tool.new(
+        "cf_publish_video",
+        "Publish a completed VideoJob to one or more social platforms. The video must have finished encoding (final R2 key present). Downloads from R2, then uploads to each platform.",
+        %{
+          video_job_id: {:required, :string, description: "VideoJob UUID."},
+          platforms:
+            {:optional, :string,
+             description:
+               "JSON-encoded list of platforms (default: all connected). Options: youtube, twitter, facebook, instagram, linkedin, reddit."},
+          product_id:
+            {:optional, :string,
+             description: "Product UUID (auto-derived from VideoJob if omitted)."}
+        }
+      ),
+      SimpleMCP.Tool.new(
+        "cf_platform_status",
+        "Check which social platforms have valid OAuth credentials configured for a product.",
+        %{
+          product_id: {:required, :string, description: "Product UUID."}
+        }
+      ),
+      SimpleMCP.Tool.new(
+        "cf_list_published_posts",
+        "List published posts for a product, optionally filtered by platform.",
+        %{
+          product_id: {:required, :string, description: "Product UUID."},
+          platform:
+            {:optional, :string,
+             description:
+               "Filter by platform: twitter, linkedin, reddit, facebook, instagram, youtube."},
+          limit: {:optional, :integer, description: "Max results (default 50, max 200)."}
+        }
       )
     ]
   end
@@ -267,6 +324,10 @@ defmodule ContentForgeMCP.Server do
   defp call_tool("cf_list_pending_syntheses", args), do: cf_list_pending_syntheses(args)
   defp call_tool("cf_import_twitter_sqlite", args), do: cf_import_twitter_sqlite(args)
   defp call_tool("cf_recent_scoreboard", args), do: cf_recent_scoreboard(args)
+  defp call_tool("cf_publish_text", args), do: cf_publish_text(args)
+  defp call_tool("cf_publish_video", args), do: cf_publish_video(args)
+  defp call_tool("cf_platform_status", args), do: cf_platform_status(args)
+  defp call_tool("cf_list_published_posts", args), do: cf_list_published_posts(args)
 
   defp call_tool(name, _args),
     do: error("not_found", "Unknown tool: #{name}")
@@ -791,6 +852,389 @@ defmodule ContentForgeMCP.Server do
       )
     )
   end
+
+  # --- cf_publish_text ------------------------------------------------------
+
+  # Phase 16.7: every cf_publish_text call routes through the
+  # Draft pipeline. Either (a) the caller passes an existing
+  # `draft_id` and that Draft is reused across all requested
+  # platforms (with per-platform skip for already-published
+  # `(draft_id, platform)` pairs - the idempotency primitive), or
+  # (b) the tool auto-creates one Draft per platform with
+  # `status: "approved"` + `generating_model:
+  # "agent:cf_publish_text:<sender>"` before fan-out. Either
+  # way, every PublishedPost row gets a non-nil draft_id, so
+  # cf_publish_text posts flow into the scoreboard /
+  # corrective-loop pipeline the same as AI-generated content.
+  #
+  # `:submitter` is the minimum role per the 16.3/16.4 light-vs-
+  # heavy-write split (PR #2 rework).
+  defp cf_publish_text(args) do
+    with {:ok, product_id} <- require_binary(args, "product_id"),
+         {:ok, product} <- fetch_product(product_id),
+         :ok <- Authorization.require(mcp_ctx(product), :submitter),
+         {:ok, text} <- require_binary(args, "text") do
+      do_cf_publish_text(args, product, text)
+    else
+      {:error, :forbidden} -> error("forbidden", "Insufficient role for cf_publish_text")
+      other -> other
+    end
+  end
+
+  defp do_cf_publish_text(args, product, text) do
+    image_url = binary_param(args, "image_url")
+    angle = binary_param(args, "angle") || "direct"
+    sender = binary_param(args, "sender_identity") || "unknown"
+    requested = resolve_text_platforms(args, product)
+
+    case resolve_text_drafts(args, product, text, angle, sender, requested) do
+      {:error, error_envelope} ->
+        error_envelope
+
+      {:ok, drafts_by_platform} ->
+        published_already =
+          published_platforms_for(product, Map.values(drafts_by_platform) |> Enum.uniq())
+
+        {to_publish, skipped} =
+          partition_skipped(requested, drafts_by_platform, published_already)
+
+        fan_out_results =
+          Publishing.publish_text(product, text, image_url, to_publish,
+            draft_ids_by_platform: drafts_by_platform
+          )
+
+        serialized =
+          fan_out_results
+          |> Enum.map(fn {p, r} -> serialize_publish_result(p, r) end)
+          |> Map.new()
+
+        serialized_with_skips =
+          Enum.reduce(skipped, serialized, fn p, acc ->
+            Map.put(acc, p, %{status: "skipped_already_published"})
+          end)
+
+        ok(%{
+          product_id: product.id,
+          text_preview: String.slice(text, 0, 80),
+          drafts: drafts_by_platform,
+          results: serialized_with_skips,
+          total_attempted: map_size(serialized),
+          total_succeeded: Enum.count(serialized, fn {_, r} -> r[:status] == "success" end),
+          total_skipped: length(skipped)
+        })
+    end
+  end
+
+  defp resolve_text_platforms(args, product) do
+    connected = Publishing.connected_platforms(product)
+
+    platforms =
+      case parse_platforms(args, "platforms", connected) do
+        {:ok, p} -> p
+        _ -> connected
+      end
+
+    not_connected = platforms -- connected
+
+    if not_connected != [] do
+      Logger.info("cf_publish_text: platforms missing credentials: #{inspect(not_connected)}")
+    end
+
+    Enum.uniq(platforms)
+  end
+
+  # When the caller passes an explicit draft_id, every requested
+  # platform shares it. Otherwise auto-create one Draft per
+  # platform.
+  defp resolve_text_drafts(args, product, text, angle, sender, platforms) do
+    case binary_param(args, "draft_id") do
+      nil -> autocreate_drafts(product, text, angle, sender, platforms)
+      draft_id -> reuse_draft(product, draft_id, platforms)
+    end
+  end
+
+  defp autocreate_drafts(product, text, angle, sender, platforms) do
+    Enum.reduce_while(platforms, {:ok, %{}}, fn platform, {:ok, acc} ->
+      attrs = %{
+        product_id: product.id,
+        platform: platform,
+        content_type: "post",
+        angle: angle,
+        content: text,
+        generating_model: "agent:cf_publish_text:#{sender}",
+        status: "approved"
+      }
+
+      case ContentGeneration.create_draft(attrs) do
+        {:ok, draft} ->
+          {:cont, {:ok, Map.put(acc, platform, draft.id)}}
+
+        {:error, _changeset} ->
+          {:halt, {:error, error("validation_failed", "draft insert failed")}}
+      end
+    end)
+  end
+
+  defp reuse_draft(product, draft_id, platforms) do
+    case fetch_owned_draft(product.id, draft_id) do
+      {:ok, draft} ->
+        {:ok, Map.new(platforms, &{&1, draft.id})}
+
+      :not_found ->
+        {:error, error("not_found", "Draft not found for this product", %{draft_id: draft_id})}
+    end
+  end
+
+  defp fetch_owned_draft(product_id, draft_id) do
+    case Ecto.UUID.cast(draft_id) do
+      {:ok, _} ->
+        case ContentGeneration.get_draft(draft_id) do
+          %{product_id: ^product_id} = draft -> {:ok, draft}
+          _ -> :not_found
+        end
+
+      :error ->
+        :not_found
+    end
+  end
+
+  defp published_platforms_for(_product, []), do: MapSet.new()
+
+  defp published_platforms_for(product, draft_ids) do
+    rows = Publishing.list_published_posts(product_id: product.id)
+
+    rows
+    |> Enum.filter(&(&1.draft_id in draft_ids))
+    |> Enum.map(&{&1.draft_id, &1.platform})
+    |> MapSet.new()
+  end
+
+  defp partition_skipped(platforms, drafts_by_platform, published_set) do
+    Enum.split_with(platforms, fn platform ->
+      draft_id = Map.get(drafts_by_platform, platform)
+      not MapSet.member?(published_set, {draft_id, platform})
+    end)
+  end
+
+  # --- cf_publish_video ------------------------------------------------------
+
+  # Phase 16-tail rework: video publishing is irreversible
+  # (YouTube uploads are durable; cross-posts hit external
+  # platforms that bill per call) and gets the full 16.4
+  # heavy-write treatment: `:owner` Authorization gate + the
+  # two-turn Confirmation envelope.
+  #
+  # First call (no `confirm` arg): returns an MCP-shaped envelope
+  # with `confirmation_required: true`, an `echo_phrase` the
+  # caller reads back, and a `preview` listing target platforms.
+  # Second call (`confirm` arg supplied): validates the phrase
+  # via `Confirmation.confirm/4`, then proceeds with the fan-out.
+  defp cf_publish_video(args) do
+    with {:ok, video_job_id} <- require_binary(args, "video_job_id"),
+         {:ok, video_job} <- fetch_video_job(video_job_id),
+         {:ok, product} <-
+           fetch_product(binary_param(args, "product_id") || video_job.product_id),
+         :ok <- Authorization.require(mcp_ctx(product), :owner) do
+      dispatch_publish_video_turn(args, video_job, product)
+    else
+      {:error, :forbidden} -> error("forbidden", "Insufficient role for cf_publish_video")
+      other -> other
+    end
+  end
+
+  defp dispatch_publish_video_turn(args, video_job, product) do
+    platforms = resolve_publish_platforms(args, product, video_job)
+
+    case binary_param(args, "confirm") do
+      nil -> request_publish_video_confirmation(args, video_job, product, platforms)
+      echo -> confirm_publish_video(args, echo, video_job, product, platforms)
+    end
+  end
+
+  defp resolve_publish_platforms(args, product, video_job) do
+    default = Publishing.connected_platforms(product) -- (video_job.published_platforms || [])
+
+    case parse_platforms(args, "platforms", default) do
+      {:ok, p} -> p
+      _ -> default
+    end
+  end
+
+  defp request_publish_video_confirmation(args, video_job, product, platforms) do
+    preview = %{
+      summary:
+        "Publish video #{video_job.id} to #{length(platforms)} platform(s). " <>
+          "Cross-posts hit external APIs and may incur platform-specific costs.",
+      product_id: product.id,
+      platform: Enum.join(platforms, ",")
+    }
+
+    case Confirmation.request("cf_publish_video", mcp_session_ctx(), args, preview) do
+      {:ok, envelope} ->
+        ok(%{
+          confirmation_required: true,
+          echo_phrase: envelope.echo_phrase,
+          expires_at: iso8601(envelope.expires_at),
+          preview: preview,
+          platforms: platforms
+        })
+
+      {:error, reason} ->
+        error("confirmation_request_failed", to_string(reason))
+    end
+  end
+
+  defp confirm_publish_video(args, echo, video_job, product, platforms) do
+    case Confirmation.confirm("cf_publish_video", mcp_session_ctx(), args, echo) do
+      :ok ->
+        do_publish_video(video_job, product, platforms)
+
+      {:error, :confirmation_mismatch} ->
+        error("confirmation_mismatch", "Echo phrase did not match the pending confirmation")
+
+      {:error, :confirmation_not_found} ->
+        error("confirmation_not_found", "No pending confirmation matches that echo phrase")
+
+      {:error, :confirmation_expired} ->
+        error("confirmation_expired", "The pending confirmation has expired; request a new one")
+
+      {:error, reason} ->
+        error("confirmation_failed", to_string(reason))
+    end
+  end
+
+  defp do_publish_video(video_job, product, platforms) do
+    case Publishing.publish_video(video_job, platforms, product) do
+      {:error, reason} ->
+        error("publish_failed", to_string(reason), %{video_job_id: video_job.id})
+
+      results when is_map(results) ->
+        serialized =
+          results
+          |> Enum.map(fn {platform, result} -> serialize_publish_result(platform, result) end)
+          |> Map.new()
+
+        Enum.each(results, fn
+          {platform, {:ok, _}} -> Publishing.record_video_published(video_job, platform)
+          _ -> :ok
+        end)
+
+        succeeded_platforms =
+          results
+          |> Enum.filter(fn {_, r} -> match?({:ok, _}, r) end)
+          |> Enum.map(fn {p, _} -> p end)
+
+        ok(%{
+          video_job_id: video_job.id,
+          product_id: product.id,
+          results: serialized,
+          all_published_platforms:
+            Enum.uniq((video_job.published_platforms || []) ++ succeeded_platforms),
+          total_attempted: map_size(serialized),
+          total_succeeded: length(succeeded_platforms)
+        })
+    end
+  end
+
+  defp mcp_ctx(product) do
+    %{channel: "mcp", sender_identity: "mcp", product: product}
+  end
+
+  defp mcp_session_ctx do
+    %{session_id: "mcp"}
+  end
+
+  # --- cf_platform_status ---------------------------------------------------
+
+  defp cf_platform_status(args) do
+    with {:ok, product_id} <- require_binary(args, "product_id"),
+         {:ok, product} <- fetch_product(product_id) do
+      status = Publishing.platform_status(product)
+      connected = Publishing.connected_platforms(product)
+
+      ok(%{
+        product_id: product_id,
+        connected_count: length(connected),
+        connected: connected,
+        platforms: status
+      })
+    end
+  end
+
+  # --- cf_list_published_posts ----------------------------------------------
+
+  defp cf_list_published_posts(args) do
+    with {:ok, product_id} <- require_binary(args, "product_id"),
+         {:ok, _product} <- fetch_product(product_id) do
+      opts =
+        []
+        |> maybe_put_platform(binary_param(args, "platform"))
+        |> maybe_put_limit(args["limit"] || args[:limit] || 50)
+
+      posts = Publishing.list_published_posts([{:product_id, product_id} | opts])
+
+      serialized = Enum.map(posts, &serialize_published_post/1)
+
+      ok(%{product_id: product_id, count: length(serialized), posts: serialized})
+    end
+  end
+
+  # ============================================
+  # Helpers
+  # ============================================
+
+  defp parse_platforms(args, key, default) do
+    case Map.get(args, key) do
+      list when is_list(list) ->
+        {:ok, list}
+
+      json when is_binary(json) ->
+        case JSON.decode(json) do
+          {:ok, list} when is_list(list) -> {:ok, list}
+          _ -> {:ok, default}
+        end
+
+      nil ->
+        {:ok, default}
+
+      _ ->
+        {:ok, default}
+    end
+  end
+
+  defp serialize_publish_result(platform, {:ok, %{post_id: id, post_url: url}}) do
+    {platform, %{status: "success", post_id: id, post_url: url}}
+  end
+
+  defp serialize_publish_result(platform, {:error, reason}) do
+    {platform, %{status: "failed", error: reason}}
+  end
+
+  defp serialize_published_post(%Publishing.PublishedPost{} = post) do
+    %{
+      id: post.id,
+      platform: post.platform,
+      platform_post_id: post.platform_post_id,
+      platform_post_url: post.platform_post_url,
+      posted_at: iso8601(post.posted_at),
+      engagement_data: post.engagement_data
+    }
+  end
+
+  defp fetch_video_job(id) do
+    case Publishing.get_video_job(id) do
+      %VideoJob{} = job -> {:ok, job}
+      _ -> {:error, "VideoJob not found", %{video_job_id: id}}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, "Invalid VideoJob ID format", %{video_job_id: id}}
+  end
+
+  defp maybe_put_platform(opts, nil), do: opts
+  defp maybe_put_platform(opts, platform), do: [{:platform, platform} | opts]
+
+  defp maybe_put_limit(opts, n) when is_integer(n) and n > 0, do: [{:limit, min(n, 200)} | opts]
+  defp maybe_put_limit(opts, _), do: opts
 
   # --- product / competitor lookups -----------------------------------------
 

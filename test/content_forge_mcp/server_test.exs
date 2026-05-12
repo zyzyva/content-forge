@@ -65,7 +65,7 @@ defmodule ContentForgeMCP.ServerTest do
       assert {"Content Forge", "1.0.0"} = Server.server_info()
     end
 
-    test "registers exactly the eleven documented tools (nine from 17.3 + cf_list_pending_syntheses from 17.4 + cf_recent_scoreboard from 17.6)" do
+    test "registers exactly the fifteen documented tools (eleven from prior phases + four publishing tools)" do
       names = Server.tools() |> Enum.map(& &1.name) |> MapSet.new()
 
       expected =
@@ -80,6 +80,10 @@ defmodule ContentForgeMCP.ServerTest do
           cf_get_intel
           cf_list_pending_syntheses
           cf_import_twitter_sqlite
+          cf_list_published_posts
+          cf_platform_status
+          cf_publish_text
+          cf_publish_video
           cf_recent_scoreboard
         ))
 

@@ -81,7 +81,10 @@ defmodule ContentForge.ContentGeneration.Draft do
     )
     |> validate_inclusion(
       :angle,
-      ~w(educational entertaining problem_aware social_proof humor testimonial case_study how_to listicle),
+      # `direct` is the default for Phase 16.7 cf_publish_text
+      # auto-created Drafts (the agent has no marketing-angle
+      # opinion - it just wants to ship the text).
+      ~w(educational entertaining problem_aware social_proof humor testimonial case_study how_to listicle direct),
       allow_nil: true
     )
     |> put_default_status()
